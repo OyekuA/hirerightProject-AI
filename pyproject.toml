@@ -1,0 +1,43 @@
+[project]
+name = "hireright-ai"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "pydantic-settings",
+    "httpx",
+    "python-dotenv",
+    "structlog",
+    "sentry-sdk[fastapi]",
+    "structlog-sentry",
+    "cachetools",
+    "slowapi",
+    "google-genai",
+    "qdrant-client",
+    "numpy",
+    "pymupdf",
+    "python-docx",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+managed = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+markers = ["integration: integration tests"]
+asyncio_mode = "auto"
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

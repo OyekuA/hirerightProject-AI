@@ -1,0 +1,494 @@
+"""Unit tests for ingestion service payload composition."""
+
+import json
+import unittest
+from unittest.mock import MagicMock, patch, ANY
+
+from app.services.ingestion_service import run_candidate_ingestion, run_job_ingestion
+
+
+class TestIngestionServicePayloads(unittest.IsolatedAsyncioTestCase):
+    """Verify that raw_profile_summary and raw_jd_summary are persisted in Qdrant upsert payloads."""
+
+    async def test_candidate_ingestion_includes_raw_profile_summary(self):
+        """Check that candidate payload contains raw_profile_summary."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "name": "John Doe",
+            "location": "Remote",
+            "experience_level": "Senior",
+            "industry": "Tech",
+            "employment_type": "Full-time",
+            "skills": ["Python", "ML"],
+            "past_roles": ["Engineer"],
+            "raw_profile_summary": "Experienced software engineer with ML background."
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = MagicMock(return_value=True)
+
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_fetch.return_value = "CV text"
+            mock_truncate.side_effect = lambda x: x
+            await run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={"name": "John"},
+                callback_url="https://example.com/callback",
+                event_id="evt_123",
+                qdrant=mock_qdrant,
+                gemini=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        mock_qdrant.upsert.assert_called_once()
+        call_args = mock_qdrant.upsert.call_args
+        payload = call_args[0][3]
+        self.assertIn("raw_profile_summary", payload)
+        self.assertEqual(payload["raw_profile_summary"],
+                         "Experienced software engineer with ML background.")
+        self.assertEqual(payload["candidate_id"], 123)
+
+    async def test_job_ingestion_includes_raw_jd_summary(self):
+        """Check that job payload contains raw_jd_summary."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "title": "Software Engineer",
+            "location": "Remote",
+            "experience_level": "Mid",
+            "industry": "Tech",
+            "employment_type": "Full-time",
+            "required_skills": ["Python", "AWS"],
+            "raw_jd_summary": "Looking for a software engineer with Python and AWS experience."
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = MagicMock(return_value=True)
+
+        with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_truncate.side_effect = lambda x: x
+            await run_job_ingestion(
+                job_id=456,
+                jd_text="Job description text",
+                metadata={"title": "Software Engineer"},
+                callback_url="https://example.com/callback",
+                event_id="evt_456",
+                qdrant=mock_qdrant,
+                gemini=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        mock_qdrant.upsert.assert_called_once()
+        payload = mock_qdrant.upsert.call_args[0][3]
+        self.assertIn("raw_jd_summary", payload)
+        self.assertEqual(payload["raw_jd_summary"],
+                         "Looking for a software engineer with Python and AWS experience.")
+        self.assertEqual(payload["job_id"], 456)
+
+
+class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
+    """Test hash-based deduplication in candidate and job ingestion."""
+
+    async def test_candidate_hash_match_skips_gemini_calls(self):
+        """When stored cv_hash matches new hash, Gemini not called, update_payload is called."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock()
+        mock_qdrant.update_payload = MagicMock()
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock()
+        mock_gemini.embed = MagicMock()
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = MagicMock(return_value=True)
+
+        cv_text = "CV text"
+        import hashlib
+        new_hash = hashlib.sha256(cv_text.encode()).hexdigest()
+        mock_qdrant.get.return_value = {"cv_hash": new_hash}
+
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_fetch.return_value = cv_text
+            mock_truncate.side_effect = lambda x: x
+            await run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={"name": "John", "candidate_version": 2},
+                callback_url="https://example.com/callback",
+                event_id="evt_123",
+                qdrant=mock_qdrant,
+                gemini=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        mock_gemini.generate.assert_not_called()
+        mock_gemini.embed.assert_not_called()
+        mock_qdrant.upsert.assert_not_called()
+        mock_qdrant.update_payload.assert_called_once()
+        call_args = mock_qdrant.update_payload.call_args
+        self.assertEqual(call_args[0][0], "candidates")
+        self.assertEqual(call_args[0][1], 123)
+        payload_fields = call_args[0][2]
+        self.assertEqual(payload_fields["candidate_version"], 2)
+        self.assertIn("ingested_at", payload_fields)
+        self.assertEqual(payload_fields["cv_hash"], new_hash)
+        mock_store.update.assert_called_with("evt_123", status="success", attempt_count=1)
+
+    async def test_candidate_hash_mismatch_runs_full_pipeline(self):
+        """When stored cv_hash differs, full pipeline runs, cv_hash added to upsert payload."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock()
+        mock_qdrant.update_payload = MagicMock()
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "name": "John Doe",
+            "location": "Remote",
+            "experience_level": "Senior",
+            "industry": "Tech",
+            "employment_type": "Full-time",
+            "skills": ["Python", "ML"],
+            "past_roles": ["Engineer"],
+            "raw_profile_summary": "Experienced software engineer with ML background."
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = MagicMock(return_value=True)
+
+        cv_text = "CV text"
+        import hashlib
+        new_hash = hashlib.sha256(cv_text.encode()).hexdigest()
+        mock_qdrant.get.return_value = {"cv_hash": "old_hash"}
+
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_fetch.return_value = cv_text
+            mock_truncate.side_effect = lambda x: x
+            await run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={"name": "John", "candidate_version": 2},
+                callback_url="https://example.com/callback",
+                event_id="evt_123",
+                qdrant=mock_qdrant,
+                gemini=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        mock_gemini.generate.assert_called_once()
+        mock_gemini.embed.assert_called_once()
+        mock_qdrant.upsert.assert_called_once()
+        mock_qdrant.update_payload.assert_not_called()
+        payload = mock_qdrant.upsert.call_args[0][3]
+        self.assertIn("cv_hash", payload)
+        self.assertEqual(payload["cv_hash"], new_hash)
+
+    async def test_candidate_no_existing_payload_runs_full_pipeline(self):
+        """When no existing payload (first ingest), full pipeline runs, cv_hash added."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=None)
+        mock_qdrant.update_payload = MagicMock()
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "name": "John Doe",
+            "location": "Remote",
+            "experience_level": "Senior",
+            "industry": "Tech",
+            "employment_type": "Full-time",
+            "skills": ["Python", "ML"],
+            "past_roles": ["Engineer"],
+            "raw_profile_summary": "Experienced software engineer with ML background."
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = MagicMock(return_value=True)
+
+        cv_text = "CV text"
+        import hashlib
+        new_hash = hashlib.sha256(cv_text.encode()).hexdigest()
+
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_fetch.return_value = cv_text
+            mock_truncate.side_effect = lambda x: x
+            await run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={"name": "John", "candidate_version": 2},
+                callback_url="https://example.com/callback",
+                event_id="evt_123",
+                qdrant=mock_qdrant,
+                gemini=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        mock_gemini.generate.assert_called_once()
+        mock_gemini.embed.assert_called_once()
+        mock_qdrant.upsert.assert_called_once()
+        mock_qdrant.update_payload.assert_not_called()
+        payload = mock_qdrant.upsert.call_args[0][3]
+        self.assertIn("cv_hash", payload)
+        self.assertEqual(payload["cv_hash"], new_hash)
+
+    async def test_job_hash_match_skips_gemini_calls(self):
+        """When stored jd_hash matches new hash, Gemini not called, update_payload is called."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock()
+        mock_qdrant.update_payload = MagicMock()
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock()
+        mock_gemini.embed = MagicMock()
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = MagicMock(return_value=True)
+
+        jd_text = "Job description text"
+        import hashlib
+        new_hash = hashlib.sha256(jd_text.encode()).hexdigest()
+        mock_qdrant.get.return_value = {"jd_hash": new_hash}
+
+        with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_truncate.side_effect = lambda x: x
+            await run_job_ingestion(
+                job_id=456,
+                jd_text=jd_text,
+                metadata={"title": "Software Engineer", "job_version": 2},
+                callback_url="https://example.com/callback",
+                event_id="evt_456",
+                qdrant=mock_qdrant,
+                gemini=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        mock_gemini.generate.assert_not_called()
+        mock_gemini.embed.assert_not_called()
+        mock_qdrant.upsert.assert_not_called()
+        mock_qdrant.update_payload.assert_called_once()
+        call_args = mock_qdrant.update_payload.call_args
+        self.assertEqual(call_args[0][0], "jobs")
+        self.assertEqual(call_args[0][1], 456)
+        payload_fields = call_args[0][2]
+        self.assertEqual(payload_fields["job_version"], 2)
+        self.assertIn("ingested_at", payload_fields)
+        self.assertEqual(payload_fields["jd_hash"], new_hash)
+        mock_store.update.assert_called_with("evt_456", status="success", attempt_count=1)
+
+    async def test_job_hash_mismatch_runs_full_pipeline(self):
+        """When stored jd_hash differs, full pipeline runs, jd_hash added to upsert payload."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock()
+        mock_qdrant.update_payload = MagicMock()
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "title": "Software Engineer",
+            "location": "Remote",
+            "experience_level": "Mid",
+            "industry": "Tech",
+            "employment_type": "Full-time",
+            "required_skills": ["Python", "AWS"],
+            "raw_jd_summary": "Looking for a software engineer with Python and AWS experience."
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = MagicMock(return_value=True)
+
+        jd_text = "Job description text"
+        import hashlib
+        new_hash = hashlib.sha256(jd_text.encode()).hexdigest()
+        mock_qdrant.get.return_value = {"jd_hash": "old_hash"}
+
+        with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_truncate.side_effect = lambda x: x
+            await run_job_ingestion(
+                job_id=456,
+                jd_text=jd_text,
+                metadata={"title": "Software Engineer", "job_version": 2},
+                callback_url="https://example.com/callback",
+                event_id="evt_456",
+                qdrant=mock_qdrant,
+                gemini=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        mock_gemini.generate.assert_called_once()
+        mock_gemini.embed.assert_called_once()
+        mock_qdrant.upsert.assert_called_once()
+        mock_qdrant.update_payload.assert_not_called()
+        payload = mock_qdrant.upsert.call_args[0][3]
+        self.assertIn("jd_hash", payload)
+        self.assertEqual(payload["jd_hash"], new_hash)
+
+    async def test_job_no_existing_payload_runs_full_pipeline(self):
+        """When no existing payload (first ingest), full pipeline runs, jd_hash added."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=None)
+        mock_qdrant.update_payload = MagicMock()
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "title": "Software Engineer",
+            "location": "Remote",
+            "experience_level": "Mid",
+            "industry": "Tech",
+            "employment_type": "Full-time",
+            "required_skills": ["Python", "AWS"],
+            "raw_jd_summary": "Looking for a software engineer with Python and AWS experience."
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = MagicMock(return_value=True)
+
+        jd_text = "Job description text"
+        import hashlib
+        new_hash = hashlib.sha256(jd_text.encode()).hexdigest()
+
+        with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_truncate.side_effect = lambda x: x
+            await run_job_ingestion(
+                job_id=456,
+                jd_text=jd_text,
+                metadata={"title": "Software Engineer", "job_version": 2},
+                callback_url="https://example.com/callback",
+                event_id="evt_456",
+                qdrant=mock_qdrant,
+                gemini=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        mock_gemini.generate.assert_called_once()
+        mock_gemini.embed.assert_called_once()
+        mock_qdrant.upsert.assert_called_once()
+        mock_qdrant.update_payload.assert_not_called()
+        payload = mock_qdrant.upsert.call_args[0][3]
+        self.assertIn("jd_hash", payload)
+        self.assertEqual(payload["jd_hash"], new_hash)
+
+
+class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
+    """Verify retry behavior of candidate and job ingestion."""
+
+    async def test_candidate_ingestion_retries_up_to_three_times(self):
+        """Candidate ingestion should retry up to 3 times (4 total attempts) on transient failure."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=None)
+        mock_qdrant.update_payload = MagicMock()
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(side_effect=Exception("Gemini error"))
+        mock_gemini.embed = MagicMock(side_effect=Exception("Embed error"))
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = MagicMock(return_value=True)
+
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate, \
+             patch("asyncio.sleep") as mock_sleep:
+            mock_fetch.side_effect = Exception("CV fetch error")
+            mock_truncate.side_effect = lambda x: x
+
+            await run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={"name": "John"},
+                callback_url="https://example.com/callback",
+                event_id="evt_123",
+                qdrant=mock_qdrant,
+                gemini=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        self.assertEqual(mock_fetch.call_count, 4)
+        self.assertEqual(mock_sleep.call_count, 3)
+        mock_sleep.assert_any_call(2.0)
+        mock_sleep.assert_any_call(4.0)
+        mock_sleep.assert_any_call(8.0)
+        mock_store.update.assert_any_call("evt_123", status="failed", error_summary=ANY)
+        mock_callback.send.assert_called_once_with(
+            callback_url="https://example.com/callback",
+            event_id="evt_123",
+            entity_type="candidate",
+            entity_id=123,
+            status="failed",
+            error=ANY,
+        )
+
+    async def test_job_ingestion_retries_up_to_three_times(self):
+        """Job ingestion should retry up to 3 times (4 total attempts) on transient failure."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=None)
+        mock_qdrant.update_payload = MagicMock()
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(side_effect=Exception("Gemini error"))
+        mock_gemini.embed = MagicMock(side_effect=Exception("Embed error"))
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = MagicMock(return_value=True)
+
+        with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate, \
+             patch("asyncio.sleep") as mock_sleep:
+            mock_truncate.side_effect = lambda x: x
+
+            await run_job_ingestion(
+                job_id=456,
+                jd_text="Job description text",
+                metadata={"title": "Software Engineer"},
+                callback_url="https://example.com/callback",
+                event_id="evt_456",
+                qdrant=mock_qdrant,
+                gemini=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        self.assertEqual(mock_truncate.call_count, 4)
+        self.assertEqual(mock_sleep.call_count, 3)
+        mock_sleep.assert_any_call(2.0)
+        mock_sleep.assert_any_call(4.0)
+        mock_sleep.assert_any_call(8.0)
+        mock_store.update.assert_any_call("evt_456", status="failed", error_summary=ANY)
+        mock_callback.send.assert_called_once_with(
+            callback_url="https://example.com/callback",
+            event_id="evt_456",
+            entity_type="job",
+            entity_id=456,
+            status="failed",
+            error=ANY,
+        )
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,34 @@
+"""Unit tests for TTLCacheBackend."""
+
+import unittest
+from app.clients.cache import TTLCacheBackend
+
+
+class TestTTLCacheBackend(unittest.TestCase):
+    """Test the TTLCacheBackend implementation."""
+
+    def test_set_then_get_returns_value(self):
+        """Setting a key should allow retrieving the same value."""
+        cache = TTLCacheBackend(maxsize=100, ttl=3600)
+        cache.set("k", {"x": 1}, 3600)
+        self.assertEqual(cache.get("k"), {"x": 1})
+
+    def test_get_missing_key_returns_none(self):
+        """Getting a nonexistent key should return None."""
+        cache = TTLCacheBackend(maxsize=100, ttl=3600)
+        self.assertIsNone(cache.get("nonexistent"))
+
+    def test_delete_existing_key(self):
+        """Deleting an existing key should remove it from the cache."""
+        cache = TTLCacheBackend(maxsize=100, ttl=3600)
+        cache.set("k", "value", 3600)
+        cache.delete("k")
+        self.assertIsNone(cache.get("k"))
+
+    def test_delete_missing_key_no_exception(self):
+        """Deleting a missing key should not raise an exception."""
+        cache = TTLCacheBackend(maxsize=100, ttl=3600)
+        try:
+            cache.delete("missing")
+        except Exception as e:
+            self.fail(f"delete raised unexpected exception: {e}")
