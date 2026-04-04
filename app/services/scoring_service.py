@@ -157,15 +157,16 @@ Your task is to evaluate the candidate's fit for this job and produce a JSON obj
     "location":        {{"status": "pass|warning|fail", "short_reason": "..."}},
     "employment_type": {{"status": "pass|warning|fail", "short_reason": "..."}}
   }},
-  "skill_gap_analysis": "A concise paragraph describing the most significant skill gaps and how the candidate could bridge them."
+  "skill_gap_analysis": "A concise paragraph describing the most significant gaps between the profile and the job requirements. State what the role requires and what the profile provides — do not use pronouns like 'the candidate', 'you', or 'they'. Write factually, e.g. 'The role requires Python and FastAPI; the profile reflects Go and Java. Bridging this gap would involve hands-on work with Python web frameworks.'"
 }}
 
 Rules:
 - Return **only** the JSON object, no markdown fences, no extra text.
 - For each category, choose "pass", "warning", or "fail" based on your professional judgment.
-- Provide a short_reason (1‑2 sentences) explaining the status.
+- Provide a `short_reason` (1–2 sentences) that describes the match or mismatch factually — state what the profile shows and what the job requires, without using pronouns like 'the candidate', 'you', or 'they'. Write as a neutral match statement, e.g. '8+ years of experience meets the 5-year requirement.' or 'Python and FastAPI are listed as required skills; the profile shows Go and Java instead.'
 - The overall_score_percentage should reflect the composite suitability (0‑100).
 - The skill_gap_analysis must be a plain‑text paragraph.
+- Do **not** use pronouns ('the candidate', 'you', 'they', 'their') anywhere in `short_reason` or `skill_gap_analysis`. All language must be neutral and factual, describing the match between the profile and the job.
 
 Now produce the JSON object.
 """
