@@ -12,7 +12,7 @@ from app.clients.gemini import GeminiClient, GeminiUnavailableError
 from app.clients.qdrant import QdrantClient
 from app.clients.cache import CacheBackend
 from app.config import get_settings
-from app.utils import truncate_to_prompt_cap
+from app.utils import truncate_to_prompt_cap, parse_gemini_json
 
 logger = structlog.get_logger()
 
@@ -174,11 +174,12 @@ Now produce the JSON object.
         generated = self.gemini.generate(prompt)
 
         try:
-            result = json.loads(generated.strip())
+            result = parse_gemini_json(generated)
         except json.JSONDecodeError as e:
             logger.error(
                 "Gemini returned non‑JSON response",
                 error=str(e),
+                raw=generated[:500],
             )
             raise GeminiUnavailableError(
                 f"Gemini returned malformed fit-score JSON: {e}"
