@@ -1,18 +1,18 @@
 import os
+import asyncio
 import structlog
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Depends
-from fastapi.security import APIKeyHeader
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 from app.logging_config import configure_logging
 
 from app.config import get_settings
-from app.middleware.auth import APIKeyMiddleware
 from app.middleware.correlation import CorrelationIdMiddleware
 from app.clients.gemini import GeminiUnavailableError
+from app.auth import verify_api_key
 from app.routers import (
     ingestion,
     assessment,
@@ -21,9 +21,7 @@ from app.routers import (
     career,
     jd,
 )
-from app.clients.dependencies import get_qdrant_client, get_gemini_client, get_rate_limiter
-from app.services.ingestion_store import IngestionStatusStore
-from app.services.callback_client import CallbackClient
+from app.clients.dependencies import get_qdrant_client, get_gemini_client, get_rate_limiter, get_ingestion_store, get_callback_client
 
 
 logger = structlog.get_logger()
@@ -43,7 +41,7 @@ async def lifespan(app: FastAPI):
         )
 
     lock_acquired = False
-    lock_path = "/tmp/hireright.lock"
+    lock_path = "/data/ingest_status/.hireright.lock"
     if settings.ENFORCE_SINGLE_REPLICA:
         attempt_lock = True
         if os.path.exists(lock_path):
@@ -89,31 +87,65 @@ async def lifespan(app: FastAPI):
     gemini_client = get_gemini_client()
     logger.info("Gemini client ready")
 
-    store = IngestionStatusStore(settings.INGEST_STATUS_STORE_PATH)
-    callback_client = CallbackClient(
-        hmac_secret=settings.CALLBACK_HMAC_SECRET,
-        max_retries=settings.CALLBACK_MAX_RETRIES,
-        retry_base_seconds=settings.CALLBACK_RETRY_BASE_SECONDS,
-    )
+    store = get_ingestion_store()
+    callback_client = get_callback_client()
     incomplete = store.get_all_incomplete()
     if incomplete:
         logger.info("Found incomplete ingestion records, marking as failed", count=len(incomplete))
+        RECOVERY_BUDGET = 30.0  # seconds
+        start_time = asyncio.get_event_loop().time()
+        deferred = []
         for record in incomplete:
             store.update(
                 record.event_id,
                 status="failed",
                 error_summary="interrupted_by_restart",
             )
-            delivered = callback_client.send(
-                callback_url=record.callback_url,
-                event_id=record.event_id,
-                entity_type=record.entity_type,
-                entity_id=record.entity_id,
-                status="failed",
-                error="interrupted_by_restart",
-            )
-            if not delivered:
-                store.update(record.event_id, callback_delivery_failed=True)
+            if asyncio.get_event_loop().time() - start_time >= RECOVERY_BUDGET:
+                deferred.append(record)
+                logger.debug("Recovery budget exceeded, deferring callback", event_id=record.event_id)
+                continue
+            try:
+                delivered = await asyncio.wait_for(
+                    callback_client.send(
+                        callback_url=record.callback_url,
+                        event_id=record.event_id,
+                        entity_type=record.entity_type,
+                        entity_id=record.entity_id,
+                        status="failed",
+                        error="interrupted_by_restart",
+                    ),
+                    timeout=callback_client.timeout_seconds,
+                )
+                if not delivered:
+                    store.update(record.event_id, callback_delivery_failed=True)
+            except asyncio.TimeoutError:
+                logger.warning("Callback timeout during startup recovery", event_id=record.event_id)
+                deferred.append(record)
+            except Exception as e:
+                logger.error("Unexpected error during startup callback", event_id=record.event_id, error=str(e))
+                deferred.append(record)
+        if deferred:
+            logger.info("Callbacks deferred due to recovery budget", count=len(deferred), event_ids=[r.event_id for r in deferred])
+            async def process_deferred_callbacks(records):
+                sem = asyncio.Semaphore(5)
+                async def process_one(rec):
+                    async with sem:
+                        try:
+                            delivered = await callback_client.send(
+                                callback_url=rec.callback_url,
+                                event_id=rec.event_id,
+                                entity_type=rec.entity_type,
+                                entity_id=rec.entity_id,
+                                status="failed",
+                                error="interrupted_by_restart",
+                            )
+                            if not delivered:
+                                store.update(rec.event_id, callback_delivery_failed=True)
+                        except Exception as e:
+                            logger.error("Deferred callback failed", event_id=rec.event_id, error=str(e))
+                await asyncio.gather(*(process_one(r) for r in records))
+            asyncio.create_task(process_deferred_callbacks(deferred))
     else:
         logger.debug("No incomplete ingestion records found")
 
@@ -130,14 +162,13 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     """Factory function to create and configure the FastAPI application."""
-    api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
     app = FastAPI(
         lifespan=lifespan,
-        dependencies=[Depends(api_key_header)],
-        security=[{"APIKeyHeader": []}],
+        openapi_url="/api/ai/openapi.json",
+        docs_url="/api/ai/docs",
+        redoc_url=None,
     )
 
-    app.add_middleware(APIKeyMiddleware)
     app.add_middleware(CorrelationIdMiddleware)
 
     limiter = get_rate_limiter().limiter
@@ -151,13 +182,12 @@ def create_app() -> FastAPI:
         )
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-    # Router registration (all under /api/ai)
-    app.include_router(ingestion.router, prefix="/api/ai")
-    app.include_router(assessment.router, prefix="/api/ai")
-    app.include_router(scoring.router, prefix="/api/ai")
-    app.include_router(recommend.router, prefix="/api/ai")
-    app.include_router(career.router, prefix="/api/ai")
-    app.include_router(jd.router, prefix="/api/ai")
+    app.include_router(ingestion.router, prefix="/api/ai", dependencies=[Depends(verify_api_key)])
+    app.include_router(assessment.router, prefix="/api/ai", dependencies=[Depends(verify_api_key)])
+    app.include_router(scoring.router, prefix="/api/ai", dependencies=[Depends(verify_api_key)])
+    app.include_router(recommend.router, prefix="/api/ai", dependencies=[Depends(verify_api_key)])
+    app.include_router(career.router, prefix="/api/ai", dependencies=[Depends(verify_api_key)])
+    app.include_router(jd.router, prefix="/api/ai", dependencies=[Depends(verify_api_key)])
 
     @app.get("/health")
     async def health():

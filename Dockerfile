@@ -20,6 +20,8 @@ COPY --from=builder /app/.venv /app/.venv
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
+RUN mkdir -p /data/ingest_status && chown -R appuser:appuser /data/ingest_status
+
 COPY app/ ./app/
 
 ENV PATH="/app/.venv/bin:$PATH"

@@ -5,7 +5,6 @@ Integration test — requires live stack, not in CI. Run with: `uv run pytest te
 import os
 import time
 import httpx
-import json
 import pytest
 from pathlib import Path
 from dotenv import load_dotenv
@@ -172,7 +171,8 @@ def test_03_ingest_candidates():
     with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
         event_ids = []
         for cand in CANDIDATES:
-            resp = client.post("/api/ai/ingest-candidate", headers=HEADERS, json=cand)
+            headers = {**HEADERS, "X-Candidate-ID": str(cand["candidate_id"])}
+            resp = client.post("/api/ai/ingest-candidate", headers=headers, json=cand)
             assert resp.status_code == 202
             data = resp.json()
             assert "event_id" in data
@@ -189,7 +189,8 @@ def test_04_ingest_jobs():
     with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
         event_ids = []
         for job in JOBS:
-            resp = client.post("/api/ai/ingest-job", headers=HEADERS, json=job)
+            headers = {**HEADERS, "X-Job-ID": str(job["job_id"])}
+            resp = client.post("/api/ai/ingest-job", headers=headers, json=job)
             assert resp.status_code == 202
             data = resp.json()
             assert "event_id" in data
@@ -217,11 +218,14 @@ def test_06_assessment_generate():
     """POST /api/ai/assessment/generate to create three questions."""
     with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
         payload = {
-            "candidate_id": 1001,
-            "target_role": "Senior Backend Engineer",
+            "candidate_context": {
+                "candidate_id": 1001,
+                "target_role": "Senior Backend Engineer"
+            },
             "num_questions": 3,
         }
-        resp = client.post("/api/ai/assessment/generate", headers=HEADERS, json=payload)
+        headers = {**HEADERS, "X-Candidate-ID": "1001"}
+        resp = client.post("/api/ai/assessment/generate", headers=headers, json=payload)
         assert resp.status_code == 200
         data = resp.json()
         questions = data.get("questions", [])
@@ -273,7 +277,8 @@ def test_08_fit_score_cache_miss():
             "job_version": 1,
             "force_refresh": False,
         }
-        resp = client.post("/api/ai/calculate-fit", headers=HEADERS, json=payload)
+        headers = {**HEADERS, "X-Candidate-ID": "1001"}
+        resp = client.post("/api/ai/calculate-fit", headers=headers, json=payload)
         assert resp.status_code == 200
         data = resp.json()
         assert "overall_score_percentage" in data
@@ -295,7 +300,8 @@ def test_09_fit_score_cache_hit():
             "job_version": 1,
             "force_refresh": False,
         }
-        resp = client.post("/api/ai/calculate-fit", headers=HEADERS, json=payload)
+        headers = {**HEADERS, "X-Candidate-ID": "1001"}
+        resp = client.post("/api/ai/calculate-fit", headers=headers, json=payload)
         assert resp.status_code == 200
         data = resp.json()
         # Compare with stored result
@@ -315,7 +321,8 @@ def test_10_recommend_jobs():
             "hard_filters": {},
             "limit": 5,
         }
-        resp = client.post("/api/ai/recommend", headers=HEADERS, json=payload)
+        headers = {**HEADERS, "X-Target-ID": "1001"}
+        resp = client.post("/api/ai/recommend", headers=headers, json=payload)
         assert resp.status_code == 200
         data = resp.json()
         assert "results" in data
@@ -339,7 +346,8 @@ def test_11_recommend_candidates():
             "hard_filters": {},
             "limit": 5,
         }
-        resp = client.post("/api/ai/recommend", headers=HEADERS, json=payload)
+        headers = {**HEADERS, "X-Target-ID": "2001"}
+        resp = client.post("/api/ai/recommend", headers=headers, json=payload)
         assert resp.status_code == 200
         data = resp.json()
         assert "results" in data
@@ -357,10 +365,14 @@ def test_12_career_paths():
     """POST /api/ai/analyze-career-paths returns three suggested paths."""
     with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
         payload = {"candidate_id": 1001}
-        resp = client.post("/api/ai/analyze-career-paths", headers=HEADERS, json=payload)
+        headers = {**HEADERS, "X-Candidate-ID": "1001"}
+        resp = client.post("/api/ai/analyze-career-paths", headers=headers, json=payload)
         assert resp.status_code == 200
         data = resp.json()
         assert "paths" in data
+        assert "profile_summary" in data
+        assert isinstance(data["profile_summary"], str)
+        assert len(data["profile_summary"]) > 0
         paths = data["paths"]
         print(f"Career paths response: {paths}")
         assert isinstance(paths, list)
@@ -454,3 +466,23 @@ def test_16_delete_job_and_verify_404():
         }
         resp = client.post("/api/ai/calculate-fit", headers=HEADERS, json=payload)
         assert resp.status_code == 404
+
+def test_17_pool_rank():
+    """POST /api/ai/recommend/pool with ranking."""
+    with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+        payload = {"job_id": 2002, "job_version": 1, "candidate_ids": [1002, 1003]}
+        resp = client.post("/api/ai/recommend/pool", headers=HEADERS, json=payload)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "results" in data
+        results = data["results"]
+        assert isinstance(results, list)
+        for item in results:
+            assert "candidate_id" in item
+            assert isinstance(item["candidate_id"], int)
+            assert "fit_score" in item
+            fit_score = item["fit_score"]
+            assert isinstance(fit_score, int)
+            assert 0 <= fit_score <= 100
+        for i in range(len(results) - 1):
+            assert results[i]["fit_score"] >= results[i + 1]["fit_score"]

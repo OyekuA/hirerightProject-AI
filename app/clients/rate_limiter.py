@@ -1,17 +1,23 @@
 """Abstract rate‑limiter interface and a slowapi‑based implementation."""
 
 import abc
-from typing import Optional, List
+import hashlib
+from typing import Optional
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 
 def get_api_key_or_ip(request):
-    """Return a rate‑limit key based on X‑API‑Key header, falling back to client IP."""
+    """Return a rate‑limit key based on X‑API‑Key header, falling back to client IP.
+
+    For API‑key authentication, the key is a SHA‑256 fingerprint of the raw key,
+    ensuring the original secret never appears in limiter state or logs.
+    """
     api_key = request.headers.get("X-API-Key")
     if api_key:
-        return f"api_key:{api_key}"
+        fingerprint = hashlib.sha256(api_key.encode()).hexdigest()
+        return f"api_key:{fingerprint}"
     return get_remote_address(request)
 
 

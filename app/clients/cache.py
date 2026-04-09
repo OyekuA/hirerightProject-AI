@@ -1,6 +1,7 @@
 """Abstract cache interface and a TTLCache‑based implementation."""
 
 import abc
+import threading
 from typing import Any, Optional
 
 import cachetools
@@ -35,6 +36,16 @@ class CacheBackend(abc.ABC):
         """
         pass
 
+    @abc.abstractmethod
+    def delete_by_prefix(self, prefix: str) -> None:
+        """Delete all cache keys that start with the given prefix."""
+        pass
+
+    @abc.abstractmethod
+    def delete_by_job_id(self, job_id: int) -> None:
+        """Delete all cache keys where the third component matches the given job ID."""
+        pass
+
 class TTLCacheBackend(CacheBackend):
     """Concrete cache backend built on top of cachetools.TTLCache.
 
@@ -55,6 +66,7 @@ class TTLCacheBackend(CacheBackend):
             ttl: Default TTL in seconds for each entry.
         """
         self._cache = cachetools.TTLCache(maxsize=maxsize, ttl=ttl)
+        self._lock = threading.RLock()
 
     def get(self, key: str) -> Optional[Any]:
         """Retrieve the value associated with `key`.
@@ -62,7 +74,8 @@ class TTLCacheBackend(CacheBackend):
         Returns:
             The cached value, or None if the key does not exist or has expired.
         """
-        return self._cache.get(key)
+        with self._lock:
+            return self._cache.get(key)
 
     def set(self, key: str, value: Any, ttl: int) -> None:
         """Store `value` under `key`.
@@ -75,11 +88,32 @@ class TTLCacheBackend(CacheBackend):
             value: Value to store.
             ttl: Ignored.
         """
-        self._cache[key] = value
+        _ = ttl
+        with self._lock:
+            self._cache[key] = value
 
     def delete(self, key: str) -> None:
         """Remove the key from the cache.
 
         If the key does not exist, the method does nothing (silent no‑op).
         """
-        self._cache.pop(key, None)
+        with self._lock:
+            self._cache.pop(key, None)
+
+    def delete_by_prefix(self, prefix: str) -> None:
+        """Delete all cache keys that start with the given prefix."""
+        with self._lock:
+            keys_to_delete = [k for k in self._cache.keys() if k.startswith(prefix)]
+            for key in keys_to_delete:
+                self._cache.pop(key, None)
+
+    def delete_by_job_id(self, job_id: int) -> None:
+        """Delete all cache keys where the third component matches the given job ID."""
+        with self._lock:
+            keys_to_delete = []
+            for key in self._cache.keys():
+                parts = key.split(':')
+                if len(parts) == 4 and parts[2] == str(job_id):
+                    keys_to_delete.append(key)
+            for key in keys_to_delete:
+                self._cache.pop(key, None)

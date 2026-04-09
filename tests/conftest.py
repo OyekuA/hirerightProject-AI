@@ -34,7 +34,7 @@ def mock_get_settings():
     mock.EMBEDDING_BREAKER_COOLDOWN_SECONDS = 60
     mock.MAX_PROMPT_CHARS = 50000
     mock.CALLBACK_HMAC_SECRET = "test-secret"
-    mock.CALLBACK_MAX_RETRIES = 3
+    mock.CALLBACK_MAX_ATTEMPTS = 3
     mock.CALLBACK_RETRY_BASE_SECONDS = 0
     mock.INGEST_STATUS_STORE_PATH = "/tmp/test_store"
     mock.API_KEY = "test-api-key"
@@ -64,14 +64,10 @@ def patch_settings():
         "app.config.get_settings",
         "app.logging_config.get_settings",
         "app.main.get_settings",
-        "app.utils.get_settings",
-        "app.middleware.auth.get_settings",
         "app.clients.gemini.get_settings",
         "app.clients.dependencies.get_settings",
         "app.clients.qdrant.get_settings",
         "app.services.scoring_service.get_settings",
-        "app.services.ingestion_service.get_settings",
-        "app.services.ingestion_fetch.get_settings",
         "app.services.jd_service.get_settings",
     ]
     patches = []

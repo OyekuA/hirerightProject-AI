@@ -4,6 +4,7 @@ This module provides the RecommendationService class that combines vector simila
 intent embeddings, and cached LLM scores to produce a ranked list of recommendations.
 """
 
+import math
 import numpy as np
 import structlog
 from typing import Literal
@@ -14,10 +15,16 @@ from app.clients.dependencies import CANDIDATES_COLLECTION, JOBS_COLLECTION
 from app.clients.gemini import GeminiClient
 from app.clients.qdrant import QdrantClient
 from app.clients.cache import CacheBackend
-from app.utils import truncate_to_prompt_cap
+from app.services.scoring_service import ScoringService
+from app.utils.ingestion import truncate_to_prompt_cap
 
 logger = structlog.get_logger()
 
+from app.constants import EXPERIENCE_LEVEL_LADDER
+
+POOL_RANK_CONCURRENCY = 5
+POOL_RANK_TIMEOUT_SECONDS = 30
+POOL_RANK_DEFAULT_FIT_SCORE = 0
 
 class RecommendationService:
     """Service that encapsulates hybrid recommendation logic."""
@@ -38,6 +45,187 @@ class RecommendationService:
         self.gemini = gemini
         self.qdrant = qdrant
         self.cache = cache
+
+    @staticmethod
+    def _jaccard_similarity(list_a, list_b):
+        if not list_a and not list_b:
+            return 0.0
+        set_a = {s.lower().strip() for s in list_a}
+        set_b = {s.lower().strip() for s in list_b}
+        intersection = len(set_a & set_b)
+        union = len(set_a | set_b)
+        return intersection / union if union > 0 else 0.0
+
+    @staticmethod
+    def _canonicalize_level(level: str) -> str:
+        """Map common experience level variants to standard ladder values."""
+        variant_map = {
+            "mid": "mid level",
+            "mid-level": "mid level",
+            "midlevel": "mid level",
+            "jr": "junior",
+            "jr.": "junior",
+            "sr": "senior",
+            "sr.": "senior",
+            "principle": "principal",
+            "principle engineer": "principal",
+            "staff engineer": "staff",
+            "lead engineer": "lead",
+            "senior engineer": "senior",
+            "managerial": "manager",
+            "director level": "director",
+            "vp": "vice president",
+            "svp": "senior vice president",
+            "evp": "executive vice president",
+            "c-level": "chief officer (cto, cio, cdo, etc.)",
+            "cto": "chief officer (cto, cio, cdo, etc.)",
+            "cio": "chief officer (cto, cio, cdo, etc.)",
+            "cdo": "chief officer (cto, cio, cdo, etc.)",
+            "ceo": "ceo",
+            "president": "president",
+        }
+        return variant_map.get(level, level)
+
+    def _build_filter(self, hard_filters: dict):
+        """Build a Qdrant filter from the provided hard_filters dict.
+
+        Returns:
+            Optional[qdrant_models.Filter]: constructed filter if any conditions,
+            otherwise None.
+        """
+        conditions = []
+        filter_mapping = {
+            "location": qdrant_models.FieldCondition(
+                key="location",
+                match=qdrant_models.MatchValue(value=hard_filters["location"]),
+            ) if "location" in hard_filters else None,
+            "experience_level": qdrant_models.FieldCondition(
+                key="experience_level",
+                match=qdrant_models.MatchValue(value=hard_filters["experience_level"]),
+            ) if "experience_level" in hard_filters else None,
+            "industry": qdrant_models.FieldCondition(
+                key="industry",
+                match=qdrant_models.MatchValue(value=hard_filters["industry"]),
+            ) if "industry" in hard_filters else None,
+            "employment_type": qdrant_models.FieldCondition(
+                key="employment_type",
+                match=qdrant_models.MatchValue(value=hard_filters["employment_type"]),
+            ) if "employment_type" in hard_filters else None,
+        }
+        for cond in filter_mapping.values():
+            if cond is not None:
+                conditions.append(cond)
+        return qdrant_models.Filter(must=conditions) if conditions else None
+
+    def _compute_composite_score(self, target_payload, result, target_skills, vector_score, collection=None):
+        """Compute composite similarity score from multiple components.
+
+        Args:
+            target_payload: dict of the target profile (candidate or job)
+            result: dict of the result profile from vector search
+            target_skills: list of pre‑extracted target skills (lower‑cased, stripped)
+            vector_score: float, the pure vector similarity (0.0 for cold‑start)
+            collection: optional collection name (CANDIDATES_COLLECTION or JOBS_COLLECTION)
+                used to determine the skill field of the result. If not provided, falls back
+                to heuristics.
+
+        Returns:
+            float: weighted composite score (0.0–1.0)
+        """
+        if collection is not None:
+            skill_field = self._resolve_skill_field(collection)
+            result_skills = [s.lower().strip() for s in result.get(skill_field, [])]
+        else:
+            result_skills = [s.lower().strip() for s in (result.get("skills", []) or result.get("required_skills", []))]
+        skill_overlap = self._jaccard_similarity(target_skills, result_skills)
+        target_city = target_payload.get("location", "").split(",")[0].strip().lower()
+        result_city = result.get("location", "").split(",")[0].strip().lower()
+        location_match = 1.0 if target_city and target_city == result_city else 0.0
+        target_level = target_payload.get("experience_level", "").lower().strip().replace("-", " ")
+        result_level = result.get("experience_level", "").lower().strip().replace("-", " ")
+        target_level_canon = self._canonicalize_level(target_level)
+        result_level_canon = self._canonicalize_level(result_level)
+        
+        if target_level_canon in EXPERIENCE_LEVEL_LADDER and result_level_canon in EXPERIENCE_LEVEL_LADDER:
+            idx_a = EXPERIENCE_LEVEL_LADDER.index(target_level_canon)
+            idx_b = EXPERIENCE_LEVEL_LADDER.index(result_level_canon)
+            level_match = max(0.0, 1.0 - abs(idx_a - idx_b) / 4)
+        elif target_level_canon == result_level_canon:
+            level_match = 1.0
+        else:
+            level_match = 0.0
+        employment_match = 1.0 if target_payload.get("employment_type") == result.get("employment_type") else 0.0
+        return (
+            0.60 * vector_score
+            + 0.15 * skill_overlap
+            + 0.10 * location_match
+            + 0.10 * level_match
+            + 0.05 * employment_match
+        )
+
+    def _resolve_cache_ids(self, rec_type, target_id, target_version, result_id, result_version):
+        """Return (candidate_id, candidate_version, job_id, job_version) for cache key.
+
+        The order depends on rec_type:
+          - rec_type == "jobs": candidate = target, job = result
+          - rec_type == "candidates": candidate = result, job = target
+        """
+        if rec_type == "jobs":
+            return target_id, target_version, result_id, result_version
+        else:
+            return result_id, result_version, target_id, target_version
+
+    def _lookup_llm_score(self, candidate_id, candidate_version, job_id, job_version, result_version, force_refresh):
+        """Look up a cached LLM score for a candidate‑job pair.
+
+        Returns:
+            Optional[int]: overall_score_percentage if found in cache, otherwise None.
+        """
+        if force_refresh or result_version is None:
+            return None
+        cache_key = f"{candidate_id}:{candidate_version}:{job_id}:{job_version}"
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            llm_score = cached.get("overall_score_percentage")
+            if llm_score is not None:
+                logger.debug(
+                    "LLM score cache hit",
+                    cache_key=cache_key,
+                    llm_score=llm_score,
+                )
+            return llm_score
+        return None
+
+    @staticmethod
+    def _resolve_skill_field(collection: str) -> str:
+        """Return the skill field name for the given collection.
+
+        Args:
+            collection: either CANDIDATES_COLLECTION or JOBS_COLLECTION
+
+        Returns:
+            "skills" for candidates, "required_skills" for jobs.
+        """
+        if collection == CANDIDATES_COLLECTION:
+            return "skills"
+        else:
+            return "required_skills"
+
+    def _compute_weights(self, recent_searches, recent_clicks, recent_saves, recent_positive_outcomes):
+        """Compute the four adaptive weights used in the hybrid recommendation.
+
+        Returns:
+            tuple[float, float, float, float]: intent_weight, cooccurrence_weight,
+                peer_weight, profile_weight
+        """
+        intent_signals = len(recent_searches) + len(recent_clicks) + len(recent_saves) + len(recent_positive_outcomes)
+        intent_weight = min(0.45, 0.10 + 0.05 * intent_signals) if len(recent_searches) >= 3 else 0.0
+        cooccurrence_weight = min(0.20, 0.05 * (len(recent_saves) + len(recent_positive_outcomes))) if (len(recent_saves) + len(recent_positive_outcomes)) >= 2 else 0.0
+        peer_weight = 0.10
+        profile_weight = 1.0 - intent_weight - cooccurrence_weight - peer_weight
+        profile_weight = max(0.0, profile_weight)
+
+        return intent_weight, cooccurrence_weight, peer_weight, profile_weight
 
     def recommend(
         self,
@@ -105,59 +293,45 @@ class RecommendationService:
         if rec_type == "jobs":
             search_collection = JOBS_COLLECTION
             target_collection = CANDIDATES_COLLECTION
-            id_field = "job_id"
             version_field = "job_version"
         else:
             search_collection = CANDIDATES_COLLECTION
             target_collection = JOBS_COLLECTION
-            id_field = "candidate_id"
             version_field = "candidate_version"
 
         target_payload, profile_vec = self.qdrant.get_with_vector(target_collection, target_id)
-        if not target_payload or profile_vec is None:
-            if not target_payload:
-                logger.warning(
-                    "Target profile not found in vector store",
-                    target_id=target_id,
-                    collection=target_collection,
-                )
-                raise ValueError(f"Target profile not found: {target_id}")
-            else:
-                logger.error(
-                    "Target profile vector is missing",
-                    target_id=target_id,
-                    collection=target_collection,
-                )
-                raise ValueError(f"Target profile vector is missing: {target_id}")
-
+        if not target_payload:
+            logger.warning(
+                "Target profile not found in vector store",
+                target_id=target_id,
+                collection=target_collection,
+            )
+            raise ValueError(f"Target profile not found: {target_id}")
         if target_collection == CANDIDATES_COLLECTION:
-            target_skills = target_payload.get("skills", [])
+            target_version_field = "candidate_version"
         else:
-            target_skills = target_payload.get("required_skills", [])
-        if len(target_skills) < 3:
-            conditions = []
-            filter_mapping = {
-                "location": qdrant_models.FieldCondition(
-                    key="location",
-                    match=qdrant_models.MatchValue(value=hard_filters["location"]),
-                ) if "location" in hard_filters else None,
-                "experience_level": qdrant_models.FieldCondition(
-                    key="experience_level",
-                    match=qdrant_models.MatchValue(value=hard_filters["experience_level"]),
-                ) if "experience_level" in hard_filters else None,
-                "industry": qdrant_models.FieldCondition(
-                    key="industry",
-                    match=qdrant_models.MatchValue(value=hard_filters["industry"]),
-                ) if "industry" in hard_filters else None,
-                "employment_type": qdrant_models.FieldCondition(
-                    key="employment_type",
-                    match=qdrant_models.MatchValue(value=hard_filters["employment_type"]),
-                ) if "employment_type" in hard_filters else None,
-            }
-            for cond in filter_mapping.values():
-                if cond is not None:
-                    conditions.append(cond)
-            filter_obj = qdrant_models.Filter(must=conditions) if conditions else None
+            target_version_field = "job_version"
+        stored_target_version = target_payload.get(target_version_field, 1)
+        if stored_target_version != target_version:
+            logger.warning(
+                "Target version mismatch",
+                target_id=target_id,
+                stored_version=stored_target_version,
+                requested_version=target_version,
+            )
+            raise ValueError(f"Target version mismatch: stored {stored_target_version}, requested {target_version}")
+        if profile_vec is None:
+            logger.warning(
+                "Target profile vector is missing – falling back to cold‑start",
+                target_id=target_id,
+                collection=target_collection,
+            )
+
+        target_skills = [s.lower().strip() for s in target_payload.get(self._resolve_skill_field(target_collection), [])]
+
+
+        if profile_vec is None:
+            filter_obj = self._build_filter(hard_filters)
 
             effective_limit = min(limit, 50)
             scroll_results = self.qdrant.scroll(
@@ -165,65 +339,43 @@ class RecommendationService:
                 query_filter=filter_obj,
                 limit=effective_limit,
             )
-            if search_collection == CANDIDATES_COLLECTION:
-                skill_field = "skills"
-            else:
-                skill_field = "required_skills"
-            scroll_results.sort(
-                key=lambda r: (
-                    r.get("ingested_at", ""),
-                    len(r.get(skill_field, [])),
-                ),
-                reverse=True,
-            )
-            output = []
+
+            scored_results = []
             for result in scroll_results:
                 result_id = result["_point_id"]
                 result_version = result.get(version_field)
 
-                if rec_type == "jobs":
-                    candidate_id_for_key = target_id
-                    candidate_version_for_key = target_version
-                    job_id_for_key = result_id
-                    job_version_for_key = result_version
-                else:
-                    candidate_id_for_key = result_id
-                    candidate_version_for_key = result_version
-                    job_id_for_key = target_id
-                    job_version_for_key = target_version
+                candidate_id_for_key, candidate_version_for_key, job_id_for_key, job_version_for_key = self._resolve_cache_ids(
+                    rec_type, target_id, target_version, result_id, result_version
+                )
 
-                llm_score = None
-                if not force_refresh and result_version is not None:
-                    cache_key = f"{candidate_id_for_key}:{candidate_version_for_key}:{job_id_for_key}:{job_version_for_key}"
-                    cached = self.cache.get(cache_key)
-                    if cached is not None:
-                        llm_score = cached.get("overall_score_percentage")
-                        if llm_score is not None:
-                            logger.debug(
-                                "LLM score cache hit",
-                                cache_key=cache_key,
-                                llm_score=llm_score,
-                            )
+                similarity_score = self._compute_composite_score(target_payload, result, target_skills, 0.0, search_collection)
 
-                output.append({
+                llm_score = self._lookup_llm_score(
+                    candidate_id_for_key, candidate_version_for_key,
+                    job_id_for_key, job_version_for_key,
+                    result_version, force_refresh
+                )
+
+                scored_results.append({
                     "id": result_id,
-                    "similarity_score": 0.0,
+                    "similarity_score": similarity_score,
                     "llm_score": llm_score,
                 })
+            # sort by similarity_score descending
+            scored_results.sort(key=lambda x: x["similarity_score"], reverse=True)
+            output = scored_results
 
             logger.info(
-                "Cold‑start recommendations (skills < 3)",
+                "Cold‑start recommendations (missing vector)",
                 target_id=target_id,
                 result_count=len(output),
             )
             return output
 
-        total_signals = len(recent_searches) + len(recent_clicks) + len(recent_saves) + len(recent_positive_outcomes)
-        intent_weight = min(0.45, 0.10 + 0.05 * total_signals) if len(recent_searches) >= 3 else 0.0
-        cooccurrence_weight = min(0.20, 0.05 * (len(recent_saves) + len(recent_positive_outcomes))) if (len(recent_saves) + len(recent_positive_outcomes)) >= 2 else 0.0
-        peer_weight = 0.10
-        profile_weight = 1.0 - intent_weight - cooccurrence_weight - peer_weight
-        profile_weight = max(0.0, profile_weight)
+        intent_weight, cooccurrence_weight, peer_weight, profile_weight = self._compute_weights(
+            recent_searches, recent_clicks, recent_saves, recent_positive_outcomes
+        )
 
         dim = len(profile_vec)
         zero_vec = np.zeros(dim)
@@ -289,29 +441,7 @@ class RecommendationService:
             query_vec = query_vec / norm
         query_vec = query_vec.tolist()
 
-        conditions = []
-        filter_mapping = {
-            "location": qdrant_models.FieldCondition(
-                key="location",
-                match=qdrant_models.MatchValue(value=hard_filters["location"]),
-            ) if "location" in hard_filters else None,
-            "experience_level": qdrant_models.FieldCondition(
-                key="experience_level",
-                match=qdrant_models.MatchValue(value=hard_filters["experience_level"]),
-            ) if "experience_level" in hard_filters else None,
-            "industry": qdrant_models.FieldCondition(
-                key="industry",
-                match=qdrant_models.MatchValue(value=hard_filters["industry"]),
-            ) if "industry" in hard_filters else None,
-            "employment_type": qdrant_models.FieldCondition(
-                key="employment_type",
-                match=qdrant_models.MatchValue(value=hard_filters["employment_type"]),
-            ) if "employment_type" in hard_filters else None,
-        }
-        for cond in filter_mapping.values():
-            if cond is not None:
-                conditions.append(cond)
-        filter_obj = qdrant_models.Filter(must=conditions) if conditions else None
+        filter_obj = self._build_filter(hard_filters)
 
         effective_limit = min(limit, 50)
         raw_results = self.qdrant.search(
@@ -321,28 +451,9 @@ class RecommendationService:
             query_filter=filter_obj,
         )
 
-        def jaccard_similarity(list_a, list_b):
-            if not list_a and not list_b:
-                return 0.0
-            set_a = set(list_a)
-            set_b = set(list_b)
-            intersection = len(set_a & set_b)
-            union = len(set_a | set_b)
-            return intersection / union if union > 0 else 0.0
 
         for result in raw_results:
-            result_skills = result.get("skills", []) or result.get("required_skills", [])
-            skill_overlap = jaccard_similarity(target_skills, result_skills)
-            location_match = 1.0 if target_payload.get("location") == result.get("location") else 0.0
-            level_match = 1.0 if target_payload.get("experience_level") == result.get("experience_level") else 0.0
-            employment_match = 1.0 if target_payload.get("employment_type") == result.get("employment_type") else 0.0
-            final_score = (
-                0.55 * result["score"]
-                + 0.20 * skill_overlap
-                + 0.10 * location_match
-                + 0.10 * level_match
-                + 0.05 * employment_match
-            )
+            final_score = self._compute_composite_score(target_payload, result, target_skills, result["score"], search_collection)
             result["final_score"] = final_score
 
         raw_results.sort(key=lambda r: r["final_score"], reverse=True)
@@ -363,7 +474,7 @@ class RecommendationService:
         clustered_results.sort(key=lambda r: r["final_score"], reverse=True)
         selected = []
         for result in clustered_results:
-            if len(selected) >= effective_limit - 2:
+            if len(selected) >= max(0, effective_limit - 2):
                 break
             selected.append(result)
 
@@ -391,29 +502,15 @@ class RecommendationService:
             similarity_score = result["final_score"]
             result_version = result.get(version_field)
 
-            if rec_type == "jobs":
-                candidate_id_for_key = target_id
-                candidate_version_for_key = target_version
-                job_id_for_key = result_id
-                job_version_for_key = result_version
-            else:
-                candidate_id_for_key = result_id
-                candidate_version_for_key = result_version
-                job_id_for_key = target_id
-                job_version_for_key = target_version
+            candidate_id_for_key, candidate_version_for_key, job_id_for_key, job_version_for_key = self._resolve_cache_ids(
+                rec_type, target_id, target_version, result_id, result_version
+            )
 
-            llm_score = None
-            if not force_refresh and result_version is not None:
-                cache_key = f"{candidate_id_for_key}:{candidate_version_for_key}:{job_id_for_key}:{job_version_for_key}"
-                cached = self.cache.get(cache_key)
-                if cached is not None:
-                    llm_score = cached.get("overall_score_percentage")
-                    if llm_score is not None:
-                        logger.debug(
-                            "LLM score cache hit",
-                            cache_key=cache_key,
-                            llm_score=llm_score,
-                        )
+            llm_score = self._lookup_llm_score(
+                candidate_id_for_key, candidate_version_for_key,
+                job_id_for_key, job_version_for_key,
+                result_version, force_refresh
+            )
 
             output.append({
                 "id": result_id,
@@ -428,3 +525,153 @@ class RecommendationService:
             result_count=len(output),
         )
         return output
+
+    def rank_pool(
+        self,
+        job_id: int,
+        job_version: int,
+        candidate_ids: list[int],
+        force_refresh: bool = False,
+    ) -> list[dict]:
+        """Rank a pre‑filtered candidate pool by fit score with bounded concurrency.
+
+        Args:
+            job_id: Unique identifier of the job in the vector store.
+            job_version: Version of the job profile.
+            candidate_ids: List of candidate IDs to rank (max 100).
+            force_refresh: If True, bypass cached LLM scores and recompute.
+
+        Returns:
+            A list of dicts sorted descending by fit score, each with keys:
+                - candidate_id (int)
+                - fit_score (int)  # overall_score_percentage
+
+        Raises:
+            ValueError: If the job is not found in the vector store.
+            GeminiUnavailableError: If the Gemini circuit breaker is open.
+        """
+        job_payload = self.qdrant.get(JOBS_COLLECTION, job_id)
+        if not job_payload:
+            logger.warning(
+                "Job not found in vector store",
+                job_id=job_id,
+                collection=JOBS_COLLECTION,
+            )
+            raise ValueError(f"Job not found: {job_id}")
+
+        stored_version = job_payload.get("job_version")
+        if stored_version is not None and stored_version != job_version:
+            logger.warning(
+                "Stale job version supplied",
+                job_id=job_id,
+                supplied_version=job_version,
+                stored_version=stored_version,
+            )
+            raise ValueError(
+                f"Job version mismatch: supplied {job_version}, stored {stored_version}"
+            )
+
+        scoring_service = ScoringService(
+            gemini=self.gemini,
+            qdrant=self.qdrant,
+            cache=self.cache,
+        )
+        candidate_versions = {}
+        missing_ids = []
+        for candidate_id in candidate_ids:
+            payload = self.qdrant.get(CANDIDATES_COLLECTION, candidate_id)
+            if not payload:
+                missing_ids.append(candidate_id)
+            else:
+                candidate_versions[candidate_id] = payload.get("candidate_version", 1)
+        if missing_ids:
+            logger.warning(
+                "Candidate(s) not found in vector store, rejecting request",
+                missing_ids=missing_ids,
+            )
+            raise ValueError(
+                f"Candidate(s) not found in vector store: {missing_ids}"
+            )
+
+        import concurrent.futures
+        from concurrent.futures import wait
+        from app.clients.gemini import GeminiUnavailableError
+
+        results = []
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=POOL_RANK_CONCURRENCY)
+        future_to_candidate = {}
+        for candidate_id, candidate_version in candidate_versions.items():
+            future = executor.submit(
+                scoring_service.calculate_fit,
+                candidate_id,
+                candidate_version,
+                job_id,
+                job_version,
+                force_refresh,
+            )
+            future_to_candidate[future] = candidate_id
+
+        try:
+            effective_timeout = POOL_RANK_TIMEOUT_SECONDS * max(
+                1, math.ceil(len(candidate_ids) / POOL_RANK_CONCURRENCY)
+            )
+            done, not_done = wait(
+                future_to_candidate.keys(),
+                timeout=effective_timeout,
+                return_when=concurrent.futures.ALL_COMPLETED
+            )
+        except Exception:
+            for future in future_to_candidate:
+                future.cancel()
+            executor.shutdown(wait=False)
+            raise
+
+        timed_out = bool(not_done)
+
+        for future in done:
+            candidate_id = future_to_candidate[future]
+            try:
+                fit_result = future.result()
+                results.append({
+                    "candidate_id": candidate_id,
+                    "fit_score": fit_result["overall_score_percentage"],
+                })
+            except GeminiUnavailableError:
+                for f in not_done:
+                    f.cancel()
+                executor.shutdown(wait=False)
+                raise
+            except Exception as e:
+                logger.warning(
+                    "Candidate scoring failed",
+                    candidate_id=candidate_id,
+                    error=str(e),
+                )
+                results.append({
+                    "candidate_id": candidate_id,
+                    "fit_score": POOL_RANK_DEFAULT_FIT_SCORE,
+                })
+
+        if not_done:
+            logger.warning(
+                "Candidate scoring global timeout",
+                candidate_ids=[future_to_candidate[f] for f in not_done],
+            )
+            for future in not_done:
+                candidate_id = future_to_candidate[future]
+                future.cancel()
+                results.append({
+                    "candidate_id": candidate_id,
+                    "fit_score": POOL_RANK_DEFAULT_FIT_SCORE,
+                })
+
+        executor.shutdown(wait=not timed_out)
+
+        results.sort(key=lambda r: r["fit_score"], reverse=True)
+        logger.info(
+            "Pool ranking completed",
+            job_id=job_id,
+            job_version=job_version,
+            result_count=len(results),
+        )
+        return results

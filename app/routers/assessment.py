@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, model_validator
-from typing import List
+import json
 import structlog
+import asyncio
 from app.clients.dependencies import get_qdrant_client, get_gemini_client
 from app.clients.gemini import GeminiClient, GeminiUnavailableError
 from app.clients.qdrant import QdrantClient
 from app.services.assessment_service import AssessmentService
+from app.routers._rate_limit_keys import candidate_or_job_id_key
 
 router = APIRouter(tags=["Assessment"])
 
@@ -14,57 +15,20 @@ from app.clients.dependencies import get_rate_limiter
 limiter = get_rate_limiter().limiter
 
 
-async def _candidate_id_key(request: Request) -> str:
-    """Extract candidate_id from request body for rate limiting."""
-    try:
-        body = await request.json()
-        candidate_id = body.get("candidate_id")
-        if candidate_id is None:
-            return "unknown"
-        return f"candidate:{candidate_id}"
-    except Exception:
-        return "unknown"
 
 
-# --- Request/Response models ---
-
-class GenerateAssessmentRequest(BaseModel):
-    candidate_id: int
-    target_role: str
-    num_questions: int = Field(default=3)
-
-
-class GradeAssessmentRequest(BaseModel):
-    questions: List[str]
-    answers: List[str]
-    time_taken_seconds: int
-
-    @model_validator(mode='after')
-    def validate_questions_answers(self) -> 'GradeAssessmentRequest':
-        if len(self.questions) != len(self.answers):
-            raise ValueError('Number of questions must match number of answers')
-        return self
-
-class GenerateAssessmentResponse(BaseModel):
-    questions: List[str]
-
-
-class AuthenticityFlag(BaseModel):
-    is_suspicious: bool
-    reason: str
-
-
-class GradeAssessmentResponse(BaseModel):
-    overall_score: int = Field(..., ge=0, le=100)
-    feedback: str
-    authenticity_flag: AuthenticityFlag
-
+from app.schemas.assessment import (
+    GenerateAssessmentRequest,
+    GradeAssessmentRequest,
+    GenerateAssessmentResponse,
+    GradeAssessmentResponse,
+)
 
 # --- Route handlers ---
 
 @router.post("/assessment/generate", response_model=GenerateAssessmentResponse)
 @limiter.limit("200/day")
-@limiter.limit("10/day", key_func=_candidate_id_key)
+@limiter.limit("10/day", key_func=candidate_or_job_id_key)
 async def generate_assessment(
     request: Request,
     req: GenerateAssessmentRequest,
@@ -72,13 +36,19 @@ async def generate_assessment(
     gemini: GeminiClient = Depends(get_gemini_client),
 ):
     """Generate scenario‑based interview questions for a candidate."""
-    structlog.contextvars.bind_contextvars(entity_id=req.candidate_id)
+    candidate_id = req.candidate_context.candidate_id if req.candidate_context else None
+    target_role = req.candidate_context.target_role if req.candidate_context else None
+    job_id = req.job_context.job_id if req.job_context else None
+    structlog.contextvars.bind_contextvars(entity_id=candidate_id)
     service = AssessmentService(gemini=gemini, qdrant=qdrant)
     try:
-        questions = service.generate_questions(
-            candidate_id=req.candidate_id,
-            target_role=req.target_role,
+        questions = await asyncio.to_thread(
+            service.generate_questions,
+            candidate_id=candidate_id,
+            target_role=target_role,
             num_questions=req.num_questions,
+            job_id=job_id,
+            question_type=req.question_type,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -87,7 +57,7 @@ async def generate_assessment(
             status_code=503,
             detail="Assessment generation service temporarily unavailable",
         )
-    return GenerateAssessmentResponse(questions=questions)
+    return GenerateAssessmentResponse(question_type=req.question_type, questions=questions)
 
 
 @router.post("/assessment/grade", response_model=GradeAssessmentResponse)
@@ -97,11 +67,13 @@ async def grade_assessment(
     req: GradeAssessmentRequest,
     gemini: GeminiClient = Depends(get_gemini_client),
 ):
-    """Grade candidate answers and produce a score, feedback, and authenticity flag."""
+    """Grade candidate answers and produce a score, feedback, and authenticity flag.
+    Questions can be plain strings or multiple‑choice objects (as returned by /assessment/generate)."""
     structlog.contextvars.bind_contextvars(entity_id="unknown")
     service = AssessmentService(gemini=gemini, qdrant=None)
     try:
-        result = service.grade_answers(
+        result = await asyncio.to_thread(
+            service.grade_answers,
             questions=req.questions,
             answers=req.answers,
             time_taken_seconds=req.time_taken_seconds,
@@ -116,4 +88,4 @@ async def grade_assessment(
             status_code=503,
             detail="Grading service temporarily unavailable",
         )
-    return GradeAssessmentResponse(**result)
+    return GradeAssessmentResponse.model_validate(result)

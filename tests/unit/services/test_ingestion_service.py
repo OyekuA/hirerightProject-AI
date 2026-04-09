@@ -2,7 +2,7 @@
 
 import json
 import unittest
-from unittest.mock import MagicMock, patch, ANY
+from unittest.mock import MagicMock, patch, ANY, AsyncMock
 
 from app.services.ingestion_service import run_candidate_ingestion, run_job_ingestion
 
@@ -29,7 +29,7 @@ class TestIngestionServicePayloads(unittest.IsolatedAsyncioTestCase):
         mock_store = MagicMock()
         mock_store.update = MagicMock()
         mock_callback = MagicMock()
-        mock_callback.send = MagicMock(return_value=True)
+        mock_callback.send = AsyncMock(return_value=True)
 
         with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
              patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
@@ -38,7 +38,14 @@ class TestIngestionServicePayloads(unittest.IsolatedAsyncioTestCase):
             await run_candidate_ingestion(
                 candidate_id=123,
                 cv_url="https://example.com/cv.pdf",
-                profile_data={"name": "John"},
+                profile_data={
+                    "name": "John",
+                    "location": "Remote",
+                    "experience_level": "Senior",
+                    "industry": "Tech",
+                    "employment_type": "Full-time",
+                    "candidate_version": 1
+                },
                 callback_url="https://example.com/callback",
                 event_id="evt_123",
                 qdrant=mock_qdrant,
@@ -73,14 +80,23 @@ class TestIngestionServicePayloads(unittest.IsolatedAsyncioTestCase):
         mock_store = MagicMock()
         mock_store.update = MagicMock()
         mock_callback = MagicMock()
-        mock_callback.send = MagicMock(return_value=True)
+        mock_callback.send = AsyncMock(return_value=True)
 
         with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
             mock_truncate.side_effect = lambda x: x
             await run_job_ingestion(
                 job_id=456,
                 jd_text="Job description text",
-                metadata={"title": "Software Engineer"},
+                metadata={
+                    "title": "Software Engineer",
+                    "location": "Remote",
+                    "experience_level": "Mid",
+                    "industry": "Tech",
+                    "employment_type": "Full-time",
+                    "job_version": 1,
+                    "company_name": "ORACLE",
+                    "about": "Nice",
+                },
                 callback_url="https://example.com/callback",
                 event_id="evt_456",
                 qdrant=mock_qdrant,
@@ -95,6 +111,8 @@ class TestIngestionServicePayloads(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["raw_jd_summary"],
                          "Looking for a software engineer with Python and AWS experience.")
         self.assertEqual(payload["job_id"], 456)
+        self.assertEqual(payload["company_name"], "ORACLE")
+        self.assertEqual(payload["about"], "Nice")
 
 
 class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
@@ -112,7 +130,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         mock_store = MagicMock()
         mock_store.update = MagicMock()
         mock_callback = MagicMock()
-        mock_callback.send = MagicMock(return_value=True)
+        mock_callback.send = AsyncMock(return_value=True)
 
         cv_text = "CV text"
         import hashlib
@@ -126,7 +144,14 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             await run_candidate_ingestion(
                 candidate_id=123,
                 cv_url="https://example.com/cv.pdf",
-                profile_data={"name": "John", "candidate_version": 2},
+                profile_data={
+                    "name": "John",
+                    "location": "Remote",
+                    "experience_level": "Senior",
+                    "industry": "Tech",
+                    "employment_type": "Full-time",
+                    "candidate_version": 2
+                },
                 callback_url="https://example.com/callback",
                 event_id="evt_123",
                 qdrant=mock_qdrant,
@@ -169,7 +194,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         mock_store = MagicMock()
         mock_store.update = MagicMock()
         mock_callback = MagicMock()
-        mock_callback.send = MagicMock(return_value=True)
+        mock_callback.send = AsyncMock(return_value=True)
 
         cv_text = "CV text"
         import hashlib
@@ -183,7 +208,14 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             await run_candidate_ingestion(
                 candidate_id=123,
                 cv_url="https://example.com/cv.pdf",
-                profile_data={"name": "John", "candidate_version": 2},
+                profile_data={
+                    "name": "John",
+                    "location": "Remote",
+                    "experience_level": "Senior",
+                    "industry": "Tech",
+                    "employment_type": "Full-time",
+                    "candidate_version": 2
+                },
                 callback_url="https://example.com/callback",
                 event_id="evt_123",
                 qdrant=mock_qdrant,
@@ -221,7 +253,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         mock_store = MagicMock()
         mock_store.update = MagicMock()
         mock_callback = MagicMock()
-        mock_callback.send = MagicMock(return_value=True)
+        mock_callback.send = AsyncMock(return_value=True)
 
         cv_text = "CV text"
         import hashlib
@@ -234,7 +266,14 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             await run_candidate_ingestion(
                 candidate_id=123,
                 cv_url="https://example.com/cv.pdf",
-                profile_data={"name": "John", "candidate_version": 2},
+                profile_data={
+                    "name": "John",
+                    "location": "Remote",
+                    "experience_level": "Senior",
+                    "industry": "Tech",
+                    "employment_type": "Full-time",
+                    "candidate_version": 2
+                },
                 callback_url="https://example.com/callback",
                 event_id="evt_123",
                 qdrant=mock_qdrant,
@@ -263,7 +302,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         mock_store = MagicMock()
         mock_store.update = MagicMock()
         mock_callback = MagicMock()
-        mock_callback.send = MagicMock(return_value=True)
+        mock_callback.send = AsyncMock(return_value=True)
 
         jd_text = "Job description text"
         import hashlib
@@ -275,7 +314,16 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             await run_job_ingestion(
                 job_id=456,
                 jd_text=jd_text,
-                metadata={"title": "Software Engineer", "job_version": 2},
+                metadata={
+                    "title": "Software Engineer",
+                    "location": "Remote",
+                    "experience_level": "Mid",
+                    "industry": "Tech",
+                    "employment_type": "Full-time",
+                    "job_version": 2,
+                    "company_name": "ORACLE",
+                    "about": "Nice",
+                },
                 callback_url="https://example.com/callback",
                 event_id="evt_456",
                 qdrant=mock_qdrant,
@@ -295,6 +343,8 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload_fields["job_version"], 2)
         self.assertIn("ingested_at", payload_fields)
         self.assertEqual(payload_fields["jd_hash"], new_hash)
+        self.assertEqual(payload_fields["company_name"], "ORACLE")
+        self.assertEqual(payload_fields["about"], "Nice")
         mock_store.update.assert_called_with("evt_456", status="success", attempt_count=1)
 
     async def test_job_hash_mismatch_runs_full_pipeline(self):
@@ -317,7 +367,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         mock_store = MagicMock()
         mock_store.update = MagicMock()
         mock_callback = MagicMock()
-        mock_callback.send = MagicMock(return_value=True)
+        mock_callback.send = AsyncMock(return_value=True)
 
         jd_text = "Job description text"
         import hashlib
@@ -329,7 +379,16 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             await run_job_ingestion(
                 job_id=456,
                 jd_text=jd_text,
-                metadata={"title": "Software Engineer", "job_version": 2},
+                metadata={
+                    "title": "Software Engineer",
+                    "location": "Remote",
+                    "experience_level": "Mid",
+                    "industry": "Tech",
+                    "employment_type": "Full-time",
+                    "job_version": 2,
+                    "company_name": "ORACLE",
+                    "about": "Nice",
+                },
                 callback_url="https://example.com/callback",
                 event_id="evt_456",
                 qdrant=mock_qdrant,
@@ -345,6 +404,8 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         payload = mock_qdrant.upsert.call_args[0][3]
         self.assertIn("jd_hash", payload)
         self.assertEqual(payload["jd_hash"], new_hash)
+        self.assertEqual(payload["company_name"], "ORACLE")
+        self.assertEqual(payload["about"], "Nice")
 
     async def test_job_no_existing_payload_runs_full_pipeline(self):
         """When no existing payload (first ingest), full pipeline runs, jd_hash added."""
@@ -366,7 +427,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         mock_store = MagicMock()
         mock_store.update = MagicMock()
         mock_callback = MagicMock()
-        mock_callback.send = MagicMock(return_value=True)
+        mock_callback.send = AsyncMock(return_value=True)
 
         jd_text = "Job description text"
         import hashlib
@@ -377,7 +438,16 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             await run_job_ingestion(
                 job_id=456,
                 jd_text=jd_text,
-                metadata={"title": "Software Engineer", "job_version": 2},
+                metadata={
+                    "title": "Software Engineer",
+                    "location": "Remote",
+                    "experience_level": "Mid",
+                    "industry": "Tech",
+                    "employment_type": "Full-time",
+                    "job_version": 2,
+                    "company_name": "ORACLE",
+                    "about": "Nice",
+                },
                 callback_url="https://example.com/callback",
                 event_id="evt_456",
                 qdrant=mock_qdrant,
@@ -393,7 +463,134 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         payload = mock_qdrant.upsert.call_args[0][3]
         self.assertIn("jd_hash", payload)
         self.assertEqual(payload["jd_hash"], new_hash)
+        self.assertEqual(payload["company_name"], "ORACLE")
+        self.assertEqual(payload["about"], "Nice")
 
+    async def test_candidate_hash_differs_when_only_content_beyond_prompt_cap_changes(self):
+        """Hash should differ when raw text differs beyond truncation limit."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=None)
+        mock_qdrant.update_payload = MagicMock()
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "name": "John Doe",
+            "location": "Remote",
+            "experience_level": "Senior",
+            "industry": "Tech",
+            "employment_type": "Full-time",
+            "skills": ["Python", "ML"],
+            "past_roles": ["Engineer"],
+            "raw_profile_summary": "Experienced software engineer with ML background."
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = AsyncMock(return_value=True)
+
+        # Raw CV text longer than prompt cap
+        raw_cv_text = "A" * 1000
+        # Different raw text that truncates to same first 500 characters
+        raw_cv_text2 = raw_cv_text[:500] + "EXTRA DIFFERENT CONTENT"
+        import hashlib
+        existing_hash = hashlib.sha256(raw_cv_text.encode()).hexdigest()
+        mock_qdrant.get.return_value = {"cv_hash": existing_hash}
+
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_fetch.return_value = raw_cv_text2
+            mock_truncate.side_effect = lambda x: x[:500]  # simulate truncation
+            await run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={
+                    "name": "John",
+                    "location": "Remote",
+                    "experience_level": "Senior",
+                    "industry": "Tech",
+                    "employment_type": "Full-time",
+                    "candidate_version": 1
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_123",
+                qdrant=mock_qdrant,
+                gemini=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        # Hash mismatch should trigger full pipeline, not skip
+        mock_gemini.generate.assert_called_once()
+        mock_gemini.embed.assert_called_once()
+        mock_qdrant.upsert.assert_called_once()
+        mock_qdrant.update_payload.assert_not_called()
+        payload = mock_qdrant.upsert.call_args[0][3]
+        expected_hash = hashlib.sha256(raw_cv_text2.encode()).hexdigest()
+        self.assertEqual(payload["cv_hash"], expected_hash)
+
+    async def test_job_hash_differs_when_only_content_beyond_prompt_cap_changes(self):
+        """Hash should differ when raw JD text differs beyond truncation limit."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=None)
+        mock_qdrant.update_payload = MagicMock()
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "title": "Software Engineer",
+            "location": "Remote",
+            "experience_level": "Mid",
+            "industry": "Tech",
+            "employment_type": "Full-time",
+            "required_skills": ["Python", "AWS"],
+            "raw_jd_summary": "Looking for a software engineer with Python and AWS experience."
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = AsyncMock(return_value=True)
+
+        # Raw JD text longer than prompt cap
+        raw_jd_text = "B" * 1000
+        raw_jd_text2 = raw_jd_text[:500] + "EXTRA DIFFERENT CONTENT"
+        import hashlib
+        existing_hash = hashlib.sha256(raw_jd_text.encode()).hexdigest()
+        mock_qdrant.get.return_value = {"jd_hash": existing_hash}
+
+        with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_truncate.side_effect = lambda x: x[:500]  # simulate truncation
+            await run_job_ingestion(
+                job_id=456,
+                jd_text=raw_jd_text2,
+                metadata={
+                    "title": "Software Engineer",
+                    "location": "Remote",
+                    "experience_level": "Mid",
+                    "industry": "Tech",
+                    "employment_type": "Full-time",
+                    "job_version": 1,
+                    "company_name": "ORACLE",
+                    "about": "Nice",
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_456",
+                qdrant=mock_qdrant,
+                gemini=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        # Hash mismatch should trigger full pipeline, not skip
+        mock_gemini.generate.assert_called_once()
+        mock_gemini.embed.assert_called_once()
+        mock_qdrant.upsert.assert_called_once()
+        mock_qdrant.update_payload.assert_not_called()
+        payload = mock_qdrant.upsert.call_args[0][3]
+        expected_hash = hashlib.sha256(raw_jd_text2.encode()).hexdigest()
+        self.assertEqual(payload["jd_hash"], expected_hash)
+        self.assertEqual(payload["company_name"], "ORACLE")
+        self.assertEqual(payload["about"], "Nice")
 
 class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
     """Verify retry behavior of candidate and job ingestion."""
@@ -410,7 +607,7 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
         mock_store = MagicMock()
         mock_store.update = MagicMock()
         mock_callback = MagicMock()
-        mock_callback.send = MagicMock(return_value=True)
+        mock_callback.send = AsyncMock(return_value=True)
 
         with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
              patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate, \
@@ -421,7 +618,14 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
             await run_candidate_ingestion(
                 candidate_id=123,
                 cv_url="https://example.com/cv.pdf",
-                profile_data={"name": "John"},
+                profile_data={
+                    "name": "John",
+                    "location": "Remote",
+                    "experience_level": "Senior",
+                    "industry": "Tech",
+                    "employment_type": "Full-time",
+                    "candidate_version": 1
+                },
                 callback_url="https://example.com/callback",
                 event_id="evt_123",
                 qdrant=mock_qdrant,
@@ -432,9 +636,9 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(mock_fetch.call_count, 4)
         self.assertEqual(mock_sleep.call_count, 3)
-        mock_sleep.assert_any_call(2.0)
-        mock_sleep.assert_any_call(4.0)
-        mock_sleep.assert_any_call(8.0)
+        mock_sleep.assert_any_call(2)
+        mock_sleep.assert_any_call(4)
+        mock_sleep.assert_any_call(8)
         mock_store.update.assert_any_call("evt_123", status="failed", error_summary=ANY)
         mock_callback.send.assert_called_once_with(
             callback_url="https://example.com/callback",
@@ -457,7 +661,7 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
         mock_store = MagicMock()
         mock_store.update = MagicMock()
         mock_callback = MagicMock()
-        mock_callback.send = MagicMock(return_value=True)
+        mock_callback.send = AsyncMock(return_value=True)
 
         with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate, \
              patch("asyncio.sleep") as mock_sleep:
@@ -466,7 +670,16 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
             await run_job_ingestion(
                 job_id=456,
                 jd_text="Job description text",
-                metadata={"title": "Software Engineer"},
+                metadata={
+                    "title": "Software Engineer",
+                    "location": "Remote",
+                    "experience_level": "Mid",
+                    "industry": "Tech",
+                    "employment_type": "Full-time",
+                    "job_version": 1,
+                    "company_name": "ORACLE",
+                    "about": "Nice",
+                },
                 callback_url="https://example.com/callback",
                 event_id="evt_456",
                 qdrant=mock_qdrant,
@@ -475,11 +688,11 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
                 callback_client=mock_callback,
             )
 
-        self.assertEqual(mock_truncate.call_count, 4)
+        self.assertEqual(mock_truncate.call_count, 1)
         self.assertEqual(mock_sleep.call_count, 3)
-        mock_sleep.assert_any_call(2.0)
-        mock_sleep.assert_any_call(4.0)
-        mock_sleep.assert_any_call(8.0)
+        mock_sleep.assert_any_call(2)
+        mock_sleep.assert_any_call(4)
+        mock_sleep.assert_any_call(8)
         mock_store.update.assert_any_call("evt_456", status="failed", error_summary=ANY)
         mock_callback.send.assert_called_once_with(
             callback_url="https://example.com/callback",
@@ -489,6 +702,102 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
             status="failed",
             error=ANY,
         )
+
+    async def test_candidate_ingestion_handles_malformed_extraction(self):
+        """Verify that malformed extraction (non-list skills, non-string summary) is handled gracefully."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=None)
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "name": "John",
+            "skills": "Python, ML",  # string instead of list
+            "raw_profile_summary": {"key": "value"}  # dict instead of string
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = AsyncMock(return_value=True)
+
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_fetch.return_value = "CV text"
+            mock_truncate.side_effect = lambda x: x
+
+            await run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={
+                    "name": "John",
+                    "location": "Remote",
+                    "experience_level": "Senior",
+                    "industry": "Tech",
+                    "employment_type": "Full-time",
+                    "candidate_version": 1
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_123",
+                qdrant=mock_qdrant,
+                gemini=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        mock_qdrant.upsert.assert_called_once()
+        payload = mock_qdrant.upsert.call_args[0][3]
+        # skills should be empty list (fallback)
+        self.assertEqual(payload["skills"], [])
+        # raw_profile_summary should be string (default empty)
+        self.assertIsInstance(payload["raw_profile_summary"], str)
+
+    async def test_job_ingestion_handles_malformed_extraction(self):
+        """Verify that malformed extraction (non-list required_skills, non-string summary) is handled gracefully."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=None)
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "title": "Software Engineer",
+            "required_skills": "Python, AWS",  # string instead of list
+            "raw_jd_summary": {"key": "value"}  # dict instead of string
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = AsyncMock(return_value=True)
+
+        with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_truncate.side_effect = lambda x: x
+
+            await run_job_ingestion(
+                job_id=456,
+                jd_text="Job description text",
+                metadata={
+                    "title": "Software Engineer",
+                    "location": "Remote",
+                    "experience_level": "Mid",
+                    "industry": "Tech",
+                    "employment_type": "Full-time",
+                    "job_version": 1,
+                    "company_name": "ORACLE",
+                    "about": "Nice",
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_456",
+                qdrant=mock_qdrant,
+                gemini=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        mock_qdrant.upsert.assert_called_once()
+        payload = mock_qdrant.upsert.call_args[0][3]
+        # required_skills should be empty list (fallback)
+        self.assertEqual(payload["required_skills"], [])
+        # raw_jd_summary should be string (default empty)
+        self.assertIsInstance(payload["raw_jd_summary"], str)
 
 if __name__ == "__main__":
     unittest.main()

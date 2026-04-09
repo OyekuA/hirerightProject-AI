@@ -12,7 +12,9 @@ from app.clients.gemini import GeminiClient, GeminiUnavailableError
 from app.clients.qdrant import QdrantClient
 from app.clients.cache import CacheBackend
 from app.config import get_settings
-from app.utils import truncate_to_prompt_cap, parse_gemini_json
+from app.utils.ingestion import truncate_to_prompt_cap
+from app.utils import parse_gemini_json
+from app.prompts import SCORING_FIT_PROMPT_TEMPLATE
 
 logger = structlog.get_logger()
 
@@ -81,38 +83,30 @@ class ScoringService:
             if cached is not None:
                 logger.info("Cache hit", cache_key=cache_key)
                 candidate_payload = self.qdrant.get(CANDIDATES_COLLECTION, candidate_id)
-                if not candidate_payload:
-                    logger.warning(
-                        "Candidate not found in vector store (stale cache)",
-                        candidate_id=candidate_id,
-                        collection=CANDIDATES_COLLECTION,
-                    )
-                    self.cache.delete(cache_key)
-                    raise ValueError("Candidate not found")
                 job_payload = self.qdrant.get(JOBS_COLLECTION, job_id)
-                if not job_payload:
-                    logger.warning(
-                        "Job not found in vector store (stale cache)",
-                        job_id=job_id,
-                        collection=JOBS_COLLECTION,
-                    )
-                    self.cache.delete(cache_key)
-                    raise ValueError("Job not found")
-                candidate_version_in_store = candidate_payload.get("candidate_version", 1)
-                job_version_in_store = job_payload.get("job_version", 1)
-                if candidate_version_in_store != candidate_version or job_version_in_store != job_version:
-                    logger.warning(
-                        "Version mismatch detected (stale cache)",
-                        candidate_id=candidate_id,
-                        expected_candidate_version=candidate_version,
-                        found_candidate_version=candidate_version_in_store,
-                        job_id=job_id,
-                        expected_job_version=job_version,
-                        found_job_version=job_version_in_store,
-                    )
-                    self.cache.delete(cache_key)
+                if candidate_payload and job_payload:
+                    cached_candidate_version = candidate_payload.get("candidate_version", 1)
+                    cached_job_version = job_payload.get("job_version", 1)
+                    if cached_candidate_version == candidate_version and cached_job_version == job_version:
+                        return cached
+                    else:
+                        logger.warning(
+                            "Stale cache entry due to version mismatch, deleting",
+                            cache_key=cache_key,
+                            cached_candidate_version=cached_candidate_version,
+                            expected_candidate_version=candidate_version,
+                            cached_job_version=cached_job_version,
+                            expected_job_version=job_version,
+                        )
+                        self.cache.delete(cache_key)
                 else:
-                    return cached
+                    logger.warning(
+                        "Stale cache entry for deleted entity, deleting",
+                        cache_key=cache_key,
+                        candidate_exists=bool(candidate_payload),
+                        job_exists=bool(job_payload),
+                    )
+                    self.cache.delete(cache_key)
 
         logger.info("Cache miss or forced refresh", cache_key=cache_key)
 
@@ -124,6 +118,15 @@ class ScoringService:
                 collection=CANDIDATES_COLLECTION,
             )
             raise ValueError("Candidate not found")
+        stored_candidate_version = candidate_payload.get("candidate_version", 1)
+        if stored_candidate_version != candidate_version:
+            logger.warning(
+                "Candidate version mismatch",
+                candidate_id=candidate_id,
+                stored_version=stored_candidate_version,
+                requested_version=candidate_version,
+            )
+            raise ValueError(f"Candidate version mismatch: stored {stored_candidate_version}, requested {candidate_version}")
 
         job_payload = self.qdrant.get(JOBS_COLLECTION, job_id)
         if not job_payload:
@@ -133,43 +136,26 @@ class ScoringService:
                 collection=JOBS_COLLECTION,
             )
             raise ValueError("Job not found")
+        stored_job_version = job_payload.get("job_version", 1)
+        if stored_job_version != job_version:
+            logger.warning(
+                "Job version mismatch",
+                job_id=job_id,
+                stored_version=stored_job_version,
+                requested_version=job_version,
+            )
+            raise ValueError(f"Job version mismatch: stored {stored_job_version}, requested {job_version}")
 
-        prompt = f"""
-You are a senior recruiter evaluating a candidate for a specific job opening.
-
-CANDIDATE PROFILE (ID {candidate_id}, version {candidate_version}):
-```json
-{json.dumps(candidate_payload, indent=2)}
-```
-
-JOB PROFILE (ID {job_id}, version {job_version}):
-```json
-{json.dumps(job_payload, indent=2)}
-```
-
-Your task is to evaluate the candidate's fit for this job and produce a JSON object with exactly the following structure:
-
-{{
-  "overall_score_percentage": <integer between 0 and 100>,
-  "category_breakdown": {{
-    "role_match":      {{"status": "pass|warning|fail", "short_reason": "..."}},
-    "experience":      {{"status": "pass|warning|fail", "short_reason": "..."}},
-    "location":        {{"status": "pass|warning|fail", "short_reason": "..."}},
-    "employment_type": {{"status": "pass|warning|fail", "short_reason": "..."}}
-  }},
-  "skill_gap_analysis": "A concise paragraph describing the most significant gaps between the profile and the job requirements. State what the role requires and what the profile provides — do not use pronouns like 'the candidate', 'you', or 'they'. Write factually, e.g. 'The role requires Python and FastAPI; the profile reflects Go and Java. Bridging this gap would involve hands-on work with Python web frameworks.'"
-}}
-
-Rules:
-- Return **only** the JSON object, no markdown fences, no extra text.
-- For each category, choose "pass", "warning", or "fail" based on your professional judgment.
-- Provide a `short_reason` (1–2 sentences) that describes the match or mismatch factually — state what the profile shows and what the job requires, without using pronouns like 'the candidate', 'you', or 'they'. Write as a neutral match statement, e.g. '8+ years of experience meets the 5-year requirement.' or 'Python and FastAPI are listed as required skills; the profile shows Go and Java instead.'
-- The overall_score_percentage should reflect the composite suitability (0‑100).
-- The skill_gap_analysis must be a plain‑text paragraph.
-- Do **not** use pronouns ('the candidate', 'you', 'they', 'their') anywhere in `short_reason` or `skill_gap_analysis`. All language must be neutral and factual, describing the match between the profile and the job.
-
-Now produce the JSON object.
-"""
+        candidate_payload_json = json.dumps(candidate_payload, indent=2)
+        job_payload_json = json.dumps(job_payload, indent=2)
+        prompt = SCORING_FIT_PROMPT_TEMPLATE.format(
+            candidate_id=candidate_id,
+            candidate_version=candidate_version,
+            candidate_payload_json=candidate_payload_json,
+            job_id=job_id,
+            job_version=job_version,
+            job_payload_json=job_payload_json
+        )
 
         prompt = truncate_to_prompt_cap(prompt)
         generated = self.gemini.generate(prompt)
@@ -184,6 +170,16 @@ Now produce the JSON object.
             )
             raise GeminiUnavailableError(
                 f"Gemini returned malformed fit-score JSON: {e}"
+            )
+
+        if not isinstance(result, dict):
+            logger.error(
+                "Gemini returned a non‑dict JSON payload",
+                payload_type=type(result).__name__,
+                raw=generated[:500],
+            )
+            raise GeminiUnavailableError(
+                "Gemini returned malformed fit‑score JSON: expected a dict"
             )
 
         required_top = {"overall_score_percentage", "category_breakdown", "skill_gap_analysis"}
@@ -228,6 +224,26 @@ Now produce the JSON object.
                 raise GeminiUnavailableError(
                     f"Gemini returned invalid status '{sub['status']}' in category {key}"
                 )
+
+        try:
+            overall = int(result["overall_score_percentage"])
+        except (TypeError, ValueError):
+            logger.error(
+                "Gemini returned non-integer overall_score_percentage",
+                value=result["overall_score_percentage"],
+            )
+            raise GeminiUnavailableError(
+                "overall_score_percentage must be an integer between 0 and 100"
+            )
+        if not (0 <= overall <= 100):
+            logger.error(
+                "Gemini returned out-of-range overall_score_percentage",
+                value=overall,
+            )
+            raise GeminiUnavailableError(
+                "overall_score_percentage must be an integer between 0 and 100"
+            )
+        result["overall_score_percentage"] = overall
 
         settings = get_settings()
         self.cache.set(cache_key, result, ttl=settings.CACHE_TTL_SECONDS)

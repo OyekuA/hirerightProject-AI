@@ -3,6 +3,7 @@
 Implements SSRF safety, retries with exponential backoff, and configurable timeouts.
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -11,7 +12,7 @@ import structlog
 from typing import Optional
 import httpx
 
-from app.services.ingestion_fetch import validate_ingest_url
+from app.utils.ingestion import validate_ingest_url
 
 
 logger = structlog.get_logger()
@@ -23,12 +24,14 @@ class CallbackClient:
     def __init__(
         self,
         hmac_secret: str,
-        max_retries: int = 3,
+        max_attempts: int = 3,
         retry_base_seconds: int = 2,
+        timeout_seconds: float = 10.0,
     ):
         self.hmac_secret = hmac_secret
-        self.max_retries = max_retries
+        self.max_attempts = max_attempts
         self.retry_base_seconds = retry_base_seconds
+        self.timeout_seconds = timeout_seconds
 
     def _sign_payload(self, body_bytes: bytes, timestamp: int) -> str:
         """Compute HMAC‑SHA256 signature of the payload."""
@@ -40,7 +43,7 @@ class CallbackClient:
         ).hexdigest()
         return f"sha256={digest}"
 
-    def send(
+    async def send(
         self,
         callback_url: str,
         event_id: str,
@@ -51,7 +54,7 @@ class CallbackClient:
     ) -> bool:
         """Deliver a callback to the external system.
 
-        Returns True if a HTTP 2xx response was received within the retry budget,
+        Returns True if a HTTP 2xx response was received within `max_attempts` total attempts,
         False otherwise.
         """
         base_payload = {
@@ -62,7 +65,7 @@ class CallbackClient:
             "error": error,
         }
 
-        for attempt in range(self.max_retries):
+        for attempt in range(self.max_attempts):
             try:
                 validate_ingest_url(callback_url)
 
@@ -83,12 +86,13 @@ class CallbackClient:
                     "Content-Type": "application/json",
                 }
 
-                resp = httpx.post(
-                    callback_url,
-                    content=body_bytes,
-                    headers=headers,
-                    timeout=10.0,
-                )
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(
+                        callback_url,
+                        content=body_bytes,
+                        headers=headers,
+                        timeout=self.timeout_seconds,
+                    )
                 resp.raise_for_status()
 
                 logger.info(
@@ -104,13 +108,13 @@ class CallbackClient:
                     "Callback attempt failed",
                     event_id=event_id,
                     attempt=attempt + 1,
-                    max_retries=self.max_retries,
+                    max_attempts=self.max_attempts,
                     error=str(e),
                 )
-                if attempt == self.max_retries - 1:
+                if attempt == self.max_attempts - 1:
                     break
                 backoff = self.retry_base_seconds * (2 ** attempt)
-                time.sleep(backoff)
+                await asyncio.sleep(backoff)
 
         logger.error(
             "Callback delivery exhausted all retries",

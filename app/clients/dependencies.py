@@ -47,6 +47,10 @@ def get_gemini_client() -> GeminiClient:
             api_key=settings.GEMINI_API_KEY,
             generation_cooldown=settings.GENERATION_BREAKER_COOLDOWN_SECONDS,
             embedding_cooldown=settings.EMBEDDING_BREAKER_COOLDOWN_SECONDS,
+            generation_timeout=settings.GEMINI_GENERATION_TIMEOUT_SECONDS,
+            embedding_timeout=settings.GEMINI_EMBEDDING_TIMEOUT_SECONDS,
+            max_retries=settings.GEMINI_MAX_RETRIES,
+            retry_backoff_base=settings.GEMINI_RETRY_BACKOFF_BASE_SECONDS,
         )
     return _gemini_instance
 
@@ -81,8 +85,9 @@ def get_callback_client() -> CallbackClient:
         settings = get_settings()
         _callback_client_instance = CallbackClient(
             hmac_secret=settings.CALLBACK_HMAC_SECRET,
-            max_retries=settings.CALLBACK_MAX_RETRIES,
+            max_attempts=settings.CALLBACK_MAX_ATTEMPTS,
             retry_base_seconds=settings.CALLBACK_RETRY_BASE_SECONDS,
+            timeout_seconds=settings.CALLBACK_TIMEOUT_SECONDS,
         )
     return _callback_client_instance
 

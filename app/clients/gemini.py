@@ -13,41 +13,77 @@ class GeminiUnavailableError(Exception):
 
 
 class CircuitBreaker:
-    """Simple failure‑counting circuit breaker with a cooldown window.
+    """Circuit breaker with CLOSED, OPEN, and HALF_OPEN states and single‑probe recovery.
 
     Attributes:
         threshold: Number of consecutive failures needed to open the breaker.
-        cooldown_seconds: Seconds the breaker stays open before auto‑resetting.
+        cooldown_seconds: Seconds the breaker stays open before moving to HALF_OPEN.
     """
+
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
 
     def __init__(self, threshold: int = 3, cooldown_seconds: float = 60.0):
         self.threshold = threshold
         self.cooldown_seconds = cooldown_seconds
+        self.state = self.CLOSED
         self.failure_count = 0
         self.opened_at: Optional[float] = None
+        self._probe_sent = False
         self._log = structlog.get_logger()
 
     def is_open(self) -> bool:
-        """Return True if the breaker is currently open.
-
-        If the breaker is open but the cooldown period has elapsed,
-        the breaker is automatically reset and the method returns False.
+        """Return True if the breaker is currently open (no requests should pass).
+        
+        If the breaker is OPEN and cooldown has elapsed, it transitions to HALF_OPEN
+        and allows a single probe (returns False for that probe).
+        Subsequent calls while HALF_OPEN and probe already sent return True.
         """
-        if self.failure_count < self.threshold:
+        if self.state == self.CLOSED:
             return False
-        if self.opened_at is None:
-            self.opened_at = time.monotonic()
+        
+        if self.state == self.OPEN:
+            if self.opened_at is None:
+                self.opened_at = time.monotonic()
+                return True
+            elapsed = time.monotonic() - self.opened_at
+            if elapsed >= self.cooldown_seconds:
+                self.state = self.HALF_OPEN
+                self._probe_sent = False
+                self.opened_at = None
+                self._log.info(
+                    "Circuit breaker moving to HALF_OPEN",
+                    threshold=self.threshold,
+                    cooldown_seconds=self.cooldown_seconds,
+                )
+                self._probe_sent = True
+                return False
             return True
-        elapsed = time.monotonic() - self.opened_at
-        if elapsed >= self.cooldown_seconds:
-            self._reset()
+        
+        if not self._probe_sent:
+            self._probe_sent = True
             return False
         return True
 
     def record_failure(self) -> None:
-        """Increment the failure count and open the breaker if threshold is reached."""
+        """Record a failure, possibly opening the breaker or keeping it open."""
+        if self.state == self.HALF_OPEN:
+            self.state = self.OPEN
+            self.opened_at = time.monotonic()
+            self._probe_sent = False
+            self.failure_count = self.threshold
+            self._log.warning(
+                "Circuit breaker probe failed, reopening",
+                failure_count=self.failure_count,
+                threshold=self.threshold,
+                cooldown_seconds=self.cooldown_seconds,
+            )
+            return
+        
         self.failure_count += 1
-        if self.failure_count >= self.threshold and self.opened_at is None:
+        if self.failure_count >= self.threshold and self.state == self.CLOSED:
+            self.state = self.OPEN
             self.opened_at = time.monotonic()
             self._log.warning(
                 "Circuit breaker opened",
@@ -57,18 +93,40 @@ class CircuitBreaker:
             )
 
     def record_success(self) -> None:
-        """Reset the failure count and close the breaker."""
-        self._reset()
-
-    def _reset(self) -> None:
-        """Internal reset of the breaker's state."""
+        """Record a success, resetting the breaker if CLOSED or moving to CLOSED if HALF_OPEN."""
+        if self.state == self.HALF_OPEN:
+            self.state = self.CLOSED
+            self.failure_count = 0
+            self.opened_at = None
+            self._probe_sent = False
+            self._log.info(
+                "Circuit breaker probe succeeded, closing",
+                threshold=self.threshold,
+                cooldown_seconds=self.cooldown_seconds,
+            )
+            return
+        
         if self.failure_count > 0:
             self._log.debug(
                 "Circuit breaker reset",
                 previous_failures=self.failure_count,
             )
         self.failure_count = 0
+        self.state = self.CLOSED
         self.opened_at = None
+        self._probe_sent = False
+
+    def _reset(self) -> None:
+        """Internal reset of the breaker's state (kept for compatibility)."""
+        if self.failure_count > 0:
+            self._log.debug(
+                "Circuit breaker reset",
+                previous_failures=self.failure_count,
+            )
+        self.state = self.CLOSED
+        self.failure_count = 0
+        self.opened_at = None
+        self._probe_sent = False
 
 
 class GeminiClient:
@@ -79,6 +137,10 @@ class GeminiClient:
         api_key: str,
         generation_cooldown: float,
         embedding_cooldown: float,
+        generation_timeout: int = 30,
+        embedding_timeout: int = 30,
+        max_retries: int = 2,
+        retry_backoff_base: float = 1.0,
     ):
         """Initialize the Gemini client and its circuit breakers.
 
@@ -86,14 +148,26 @@ class GeminiClient:
             api_key: Google AI Studio API key
             generation_cooldown: Seconds the generation breaker stays open
             embedding_cooldown: Seconds the embedding breaker stays open
+            generation_timeout: Timeout in seconds for generation requests
+            embedding_timeout: Timeout in seconds for embedding requests
+            max_retries: Maximum retries for transient failures before recording breaker failure
+            retry_backoff_base: Base backoff seconds for exponential retry
         """
-        self._client = genai.Client(api_key=api_key)
+        http_options = types.HttpOptions(
+            timeout=max(generation_timeout, embedding_timeout) * 1000
+        )
+
+        self._client = genai.Client(api_key=api_key, http_options=http_options)
         self._generation_breaker = CircuitBreaker(
             cooldown_seconds=generation_cooldown
         )
         self._embedding_breaker = CircuitBreaker(
             cooldown_seconds=embedding_cooldown
         )
+        self._generation_timeout = generation_timeout
+        self._embedding_timeout = embedding_timeout
+        self._max_retries = max_retries
+        self._retry_backoff_base = retry_backoff_base
         self._log = structlog.get_logger()
 
     def generate(self, prompt: str) -> str:
@@ -113,22 +187,29 @@ class GeminiClient:
             self._log_token_usage(len(prompt), 0, "generation", outcome="breaker_open")
             raise GeminiUnavailableError("Generation circuit breaker is open")
 
-        try:
-            response = self._client.models.generate_content(
-                model="gemini-2.5-flash-lite",
-                contents=prompt,
-            )
-            text = response.text
-        except Exception as exc:
-            self._generation_breaker.record_failure()
-            self._log_token_usage(len(prompt), 0, "generation", outcome="failure")
-            raise GeminiUnavailableError(
-                f"Gemini generation failed: {exc}"
-            ) from exc
-
-        self._generation_breaker.record_success()
-        self._log_token_usage(len(prompt), len(text), "generation", outcome="success")
-        return text
+        import time
+        last_exc = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                response = self._client.models.generate_content(
+                    model="gemini-2.5-flash-lite",
+                    contents=prompt,
+                )
+                text = response.text
+                self._generation_breaker.record_success()
+                self._log_token_usage(len(prompt), len(text), "generation", outcome="success")
+                return text
+            except Exception as exc:
+                last_exc = exc
+                if attempt < self._max_retries:
+                    backoff = self._retry_backoff_base * (2 ** attempt)
+                    time.sleep(backoff)
+                else:
+                    self._generation_breaker.record_failure()
+                    self._log_token_usage(len(prompt), 0, "generation", outcome="failure")
+                    raise GeminiUnavailableError(
+                        f"Gemini generation failed after {self._max_retries + 1} attempts: {exc}"
+                    ) from exc
 
     def embed(self, text: str) -> list[float]:
         """Embed a piece of text using the gemini‑embedding‑001 model.
@@ -147,23 +228,30 @@ class GeminiClient:
             self._log_token_usage(len(text), 0, "embedding", outcome="breaker_open")
             raise GeminiUnavailableError("Embedding circuit breaker is open")
 
-        try:
-            result = self._client.models.embed_content(
-                model="gemini-embedding-001",
-                contents=text,
-                config=types.EmbedContentConfig(output_dimensionality=768),
-            )
-            vector = result.embeddings[0].values
-        except Exception as exc:
-            self._embedding_breaker.record_failure()
-            self._log_token_usage(len(text), 0, "embedding", outcome="failure")
-            raise GeminiUnavailableError(
-                f"Gemini embedding failed: {exc}"
-            ) from exc
-
-        self._embedding_breaker.record_success()
-        self._log_token_usage(len(text), 0, "embedding", outcome="success")
-        return vector
+        import time
+        last_exc = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                result = self._client.models.embed_content(
+                    model="gemini-embedding-001",
+                    contents=text,
+                    config=types.EmbedContentConfig(output_dimensionality=768),
+                )
+                vector = result.embeddings[0].values
+                self._embedding_breaker.record_success()
+                self._log_token_usage(len(text), 0, "embedding", outcome="success")
+                return vector
+            except Exception as exc:
+                last_exc = exc
+                if attempt < self._max_retries:
+                    backoff = self._retry_backoff_base * (2 ** attempt)
+                    time.sleep(backoff)
+                else:
+                    self._embedding_breaker.record_failure()
+                    self._log_token_usage(len(text), 0, "embedding", outcome="failure")
+                    raise GeminiUnavailableError(
+                        f"Gemini embedding failed after {self._max_retries + 1} attempts: {exc}"
+                    ) from exc
 
     def _log_token_usage(
         self, input_chars: int, output_chars: int, operation: str, outcome: str = "success"

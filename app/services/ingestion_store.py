@@ -11,9 +11,9 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional, List, Dict, Any
-import logging
+import structlog
 
-_logger = logging.getLogger(__name__)
+_logger = structlog.get_logger(__name__)
 
 
 EntityType = Literal["candidate", "job"]

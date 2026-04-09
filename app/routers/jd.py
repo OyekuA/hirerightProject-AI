@@ -2,10 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional, List
 import structlog
+import asyncio
 
-from app.clients.dependencies import get_gemini_client, get_rate_limiter
+from app.clients.dependencies import get_gemini_client, get_rate_limiter, get_qdrant_client
 from app.clients.gemini import GeminiClient, GeminiUnavailableError
+from app.clients.qdrant import QdrantClient
 from app.services.jd_service import JDService
+from app.routers._rate_limit_keys import job_id_key
 
 router = APIRouter(tags=["Job Description"])
 
@@ -17,58 +20,54 @@ async def _unknown_key(request: Request) -> str:
     return "unknown"
 
 
-# --- Request/Response models ---
-
-class GenerateJDRequest(BaseModel):
-    """Request payload for JD generation."""
-    prompt: str
-    existing_draft: Optional[str] = None
-
-
-class GenerateJDResponse(BaseModel):
-    """Response payload containing the generated job description."""
-    jd_text: str
-
-
-class AnalyzeJDRequest(BaseModel):
-    """Request payload for JD analysis."""
-    jd_text: str
-
-
-class AnalyzeJDResponse(BaseModel):
-    """Response payload containing a list of critique points."""
-    critiques: List[str]
-
+from app.schemas.jd import (
+    GenerateJDRequest,
+    GenerateJDResponse,
+    AnalyzeJDRequest,
+    AnalyzeJDResponse,
+)
 
 # --- Route handlers ---
 
 @router.post("/generate-jd", response_model=GenerateJDResponse)
 @limiter.limit("200/day")
-@limiter.limit("10/day", key_func=_unknown_key)
+@limiter.limit("10/day", key_func=job_id_key)
 async def generate_jd(
     request: Request,
     req: GenerateJDRequest,
     gemini: GeminiClient = Depends(get_gemini_client),
+    qdrant: QdrantClient = Depends(get_qdrant_client),
 ):
     """Generate or refine a job description."""
     structlog.contextvars.bind_contextvars(entity_id="unknown")
-    service = JDService(gemini=gemini)
+    service = JDService(gemini=gemini, qdrant=qdrant)
     try:
-        jd_text = service.generate_jd(
+        jd_text = await asyncio.to_thread(
+            service.generate_jd,
             prompt=req.prompt,
             existing_draft=req.existing_draft,
+            job_id=req.job_id,
         )
     except GeminiUnavailableError:
         raise HTTPException(
             status_code=503,
             detail="JD generation service temporarily unavailable",
         )
+    except ValueError as e:
+        if "Qdrant client is not configured" in str(e):
+            status_code = 400
+        else:
+            status_code = 404
+        raise HTTPException(
+            status_code=status_code,
+            detail=str(e),
+        )
     return GenerateJDResponse(jd_text=jd_text)
 
 
 @router.post("/analyze-jd", response_model=AnalyzeJDResponse)
 @limiter.limit("200/day")
-@limiter.limit("10/day", key_func=_unknown_key)
+@limiter.limit("10/day", key_func=job_id_key)
 async def analyze_jd(
     request: Request,
     req: AnalyzeJDRequest,
@@ -78,7 +77,7 @@ async def analyze_jd(
     structlog.contextvars.bind_contextvars(entity_id="unknown")
     service = JDService(gemini=gemini)
     try:
-        critiques = service.analyze_jd(jd_text=req.jd_text)
+        critiques = await asyncio.to_thread(service.analyze_jd, jd_text=req.jd_text)
     except GeminiUnavailableError:
         raise HTTPException(
             status_code=503,

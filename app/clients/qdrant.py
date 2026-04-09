@@ -10,8 +10,7 @@ from qdrant_client.models import Distance, VectorParams
 
 from app.config import get_settings
 
-CANDIDATES_COLLECTION = "candidates"
-JOBS_COLLECTION = "jobs"
+from app.constants import CANDIDATES_COLLECTION, JOBS_COLLECTION
 
 
 class QdrantClient:
