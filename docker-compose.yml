@@ -1,13 +1,11 @@
 services:
   fastapi:
-    build: .
+    image: ghcr.io/oyekua/hirerightproject-ai:latest
     env_file: .env
     depends_on: [qdrant]
     restart: unless-stopped
     volumes:
       - ingest_status_data:/data/ingest_status
-    ports: 
-      - "8000:8000"
     deploy:
       replicas: 1
       resources:
@@ -24,11 +22,10 @@ services:
       retries: 3
 
   qdrant:
-    image: qdrant/qdrant
+    image: qdrant/qdrant:v1.17.0
     restart: unless-stopped
     environment:
       - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=2
-    ports: ["6333:6333"]
     volumes:
       - qdrant_data:/qdrant/storage
     deploy:
@@ -41,12 +38,13 @@ services:
           memory: 512m
 
   nginx:
-    image: nginx:alpine
-    ports: ["80:80", "443:443"]
+    image: docker.io/library/nginx:1.29.7-alpine
+    ports:
+      - "80:80"
+      - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      # - ./nginx/.htpasswd:/etc/nginx/.htpasswd:ro
-      # - ./nginx/certs:/etc/nginx/certs:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
     depends_on: [fastapi]
     restart: unless-stopped
     deploy:
