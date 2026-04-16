@@ -164,8 +164,8 @@ def create_app() -> FastAPI:
     """Factory function to create and configure the FastAPI application."""
     app = FastAPI(
         lifespan=lifespan,
-        openapi_url="/api/ai/openapi.json",
-        docs_url="/api/ai/docs",
+        openapi_url="/openapi.json", 
+        docs_url="/", 
         redoc_url=None,
     )
 
