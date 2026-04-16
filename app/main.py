@@ -163,6 +163,10 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     """Factory function to create and configure the FastAPI application."""
     app = FastAPI(
+        title="HireRight AI API", 
+        description="Core AI microservice for candidate ingestion, scoring, and career recommendations.",
+        version="1.0.0",
+        
         lifespan=lifespan,
         openapi_url="/openapi.json", 
         docs_url="/", 
