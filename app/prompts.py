@@ -8,7 +8,7 @@ You are an expert interviewer for a {target_role} position.
 """
 
 GRADE_ANSWERS_PROMPT_TEMPLATE = """
-You are a strict, top-tier expert interview grader with a focus on detecting AI‑generated answers and providing detailed skill‑based evaluation.
+You are a strict, top‑tier expert interview grader. Your task is to evaluate a set of candidate answers. Some questions may be multiple‑choice (objective) and some free‑form (subjective).
 
 TIME DATA:
 Total time: {time_taken_seconds} seconds.
@@ -18,36 +18,50 @@ System Hard Flag: {hard_flag}
 {qa_pairs}
 
 ---
+## Grading Rules – CRITICAL
 
-## Grading Rules (CRITICAL - STRICT ADHERENCE REQUIRED)
+### A. Multiple‑Choice (Objective) Questions
+- Each MC question includes:
+  - `options`: list of possible answers.
+  - `user_answer`: the option selected by the candidate.
+  - `correct_answer`: the single correct option.
+- **Scoring**:
+  - If `user_answer` exactly matches `correct_answer` → **1 point**.
+  - Otherwise → **0 points**.
+- **DO NOT** award partial credit or infer correctness from surrounding text. The match must be exact.
+- The **overall MC score** = `(total_correct_MC / total_MC_questions) * 100`.
+- If **any** MC question is answered incorrectly, the `overall_score` cannot be 100%.
 
-{grading_rules_block}
+### B. Single Response (Subjective) Questions
+- Evaluate against professional standards for the target role.
+- A score of 100% is **only** possible if the answer:
+  - Fully addresses all parts of the question.
+  - Demonstrates deep domain knowledge.
+  - Is clear, concise, and free of errors.
+  - Shows no signs of AI‑generated hedging or generic filler.
+- Partial answers receive proportional deduction.
+- Vague or off‑topic answers receive 0 for that question.
+
+### C. Authenticity Detection
+1. **System Speed Check**: If `hard_flag` is TRUE → `is_suspicious: true` with the reason: "Completion time of {time_taken_seconds}s ({wps} words/sec) is impossible for human typing."
+2. **AI‑patterned phrasing**: Look for numbered lists of exactly 3‑5 points, “I would…”, “Additionally,”, “In conclusion,”, and overly balanced hedging.
+3. **Structural uniformity**: If all answers follow identical paragraph/list templates, flag it.
+
+If any indicator is present (including hard flag), set `is_suspicious: true` and **reduce `overall_score` by 20–30 points** (after computing the raw score from MC + subjective).
 
 ---
-
-## Authenticity Detection
-
-1. **System Speed Check**: The system has calculated the typing speed at {wps} words/second. If the "System Hard Flag" is TRUE, the candidate's typing speed is mathematically impossible for a human. You MUST set `is_suspicious: true` and state: "Completion time of {time_taken_seconds}s ({wps} words per second) is impossible for human typing."
-2. **AI‑patterned phrasing**: Even if the System Hard Flag is FALSE, look for telltale structures — numbered lists of exactly 3–5 points per answer, phrases like “I would…”, “Additionally,”, “Furthermore,”, “In conclusion,”, overly balanced hedging, and suspiciously complete coverage of every sub‑question.
-3. **Structural uniformity**: If all answers follow the same paragraph/list template regardless of question type, flag it.
-
-If any of the above indicators (including the System Hard Flag) are present, set `is_suspicious: true` and explain which indicator triggered it in the `reason` field. When `is_suspicious` is `true`, you **must** reduce the `overall_score` by 20–30 points from the raw content quality score.
-
----
-
 ## Skill Breakdown
 
-Derive exactly 3–5 high-level skill categories **from the themes of the questions** (e.g., “System Architecture”, “Debugging & QA”, “Data Modeling”). For each category:
-
-- `category`: descriptive name of the skill.
-- `score`: integer between 0 and 100. This MUST be the average score of the specific questions that fall under this category.
-- `feedback`: 1–2 sentences written in **strict second‑person** (“You show…”, “You tend to…”). Based on the questions they got right or wrong in this category, provide specific, factual feedback about their strengths or gaps.
+- Derive exactly 3‑5 skill categories from the **themes of the questions**.
+- For each category:
+  - `score`: average of the question scores (MC or subjective) that belong to that category, expressed as 0‑100.
+  - `feedback`: 1‑2 sentences in **second‑person** (“You show…”, “You tend to…”).
+- **Special rule for MC**: If overall MC score = 100%, each category that consists **only** of MC questions gets 100. If overall MC score < 100%, category scores are the percentage of correct MC answers within that category.
 
 ---
-
 ## Required JSON Output
 
-Return **only** a JSON object with the exact keys below:
+Return **only** a JSON object with the exact structure below:
 
 ```json
 {{
@@ -61,7 +75,7 @@ Return **only** a JSON object with the exact keys below:
   ],
   "authenticity_flag": {{
     "is_suspicious": <bool>,
-    "reason": "<explicit reference to wps calculation, phrasing patterns, or structural flags>"
+    "reason": "<explicit reference to wps, phrasing, or structural flags>"
   }}
 }}
 ```
@@ -70,22 +84,22 @@ Return **only** a JSON object with the exact keys below:
 
 ```json
 {{
-  "overall_score": 62,
+  "overall_score": 88,
   "skill_breakdown": [
     {{
       "category": "System Design",
       "score": 75,
-      "feedback": "You demonstrate good knowledge of scalability patterns, though you missed the key concept on distributed caching."
+      "feedback": "You demonstrated good knowledge of scalability but missed a key caching concept."
     }},
     {{
       "category": "Debugging",
       "score": 100,
-      "feedback": "You perfectly identified the correct troubleshooting steps and logical order for diagnosing memory leaks."
+      "feedback": "You correctly identified all troubleshooting steps for memory leaks."
     }}
   ],
   "authenticity_flag": {{
-    "is_suspicious": true,
-    "reason": "Words‑per‑second calculated at 4.2 (>3 threshold) and answers exhibit uniform numbered‑list formatting typical of AI generators."
+    "is_suspicious": false,
+    "reason": "No suspicious indicators detected."
   }}
 }}
 ```

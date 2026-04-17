@@ -72,3 +72,17 @@ class GradeAssessmentResponse(BaseModel):
     overall_score: int = Field(..., ge=0, le=100)
     skill_breakdown: List[SkillBreakdownItem] = Field(..., min_length=3, max_length=5)
     authenticity_flag: AuthenticityFlag
+
+
+class MultipleChoiceQuestion(BaseModel):
+    question: str
+    options: List[str]
+    correct_answer: str
+
+    @model_validator(mode='after')
+    def validate_options(self) -> 'MultipleChoiceQuestion':
+        if len(self.options) != 4:
+            raise ValueError('Exactly 4 options are required')
+        if self.correct_answer not in self.options:
+            raise ValueError('correct_answer must be one of the provided options')
+        return self
