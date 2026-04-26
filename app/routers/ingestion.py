@@ -36,7 +36,7 @@ from app.schemas.ingestion import (
 )
 
 @router.post("/ingest-candidate")
-@limiter.limit("200/day")
+@limiter.limit("500/day")
 @limiter.limit("5/day", key_func=candidate_id_key)
 async def ingest_candidate(
     request: Request,
