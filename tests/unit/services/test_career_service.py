@@ -3,6 +3,7 @@
 import json
 import unittest
 from unittest.mock import MagicMock, patch
+from pydantic import ValidationError
 from app.services.career_service import CareerPathService
 from app.clients.llm import LLMUnavailableError
 from app.clients.dependencies import CANDIDATES_COLLECTION
@@ -76,8 +77,8 @@ class TestCareerPathService(unittest.TestCase):
         self.assertIn("malformed", str(cm.exception).lower())
         self.gemini_mock.generate.assert_called_once()
 
-    def test_core_skills_not_a_list_raises_error(self):
-        """Item with core_skills as a string raises LLMUnavailableError."""
+    def test_core_skills_not_a_list_succeeds(self):
+        """Item with core_skills as a string is gracefully defaulted to empty list."""
         mutated = VALID_ITEM.copy()
         mutated["core_skills"] = "Python"
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
@@ -85,12 +86,13 @@ class TestCareerPathService(unittest.TestCase):
             "profile_summary": VALID_PROFILE_SUMMARY,
             "paths": [mutated, VALID_ITEM, VALID_ITEM]
         })
-        with self.assertRaises(LLMUnavailableError) as cm:
-            self.service.analyze_career_paths(candidate_id=42)
+        result = self.service.analyze_career_paths(candidate_id=42)
+        # String core_skills should be defaulted to empty list
+        self.assertEqual(result["paths"][0]["core_skills"], [])
         self.gemini_mock.generate.assert_called_once()
 
-    def test_core_skills_empty_list_raises_error(self):
-        """Item with empty core_skills list raises LLMUnavailableError."""
+    def test_core_skills_empty_list_succeeds(self):
+        """Item with empty core_skills list is accepted."""
         mutated = VALID_ITEM.copy()
         mutated["core_skills"] = []
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
@@ -98,12 +100,12 @@ class TestCareerPathService(unittest.TestCase):
             "profile_summary": VALID_PROFILE_SUMMARY,
             "paths": [mutated, VALID_ITEM, VALID_ITEM]
         })
-        with self.assertRaises(LLMUnavailableError) as cm:
-            self.service.analyze_career_paths(candidate_id=42)
+        result = self.service.analyze_career_paths(candidate_id=42)
+        self.assertEqual(result["paths"][0]["core_skills"], [])
         self.gemini_mock.generate.assert_called_once()
 
-    def test_core_skills_non_string_item_raises_error(self):
-        """Item with non‑string skill raises LLMUnavailableError."""
+    def test_core_skills_non_string_item_succeeds(self):
+        """Item with non‑string skill is gracefully filtered out."""
         mutated = VALID_ITEM.copy()
         mutated["core_skills"] = ["Python", 123, "SQL"]
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
@@ -111,12 +113,13 @@ class TestCareerPathService(unittest.TestCase):
             "profile_summary": VALID_PROFILE_SUMMARY,
             "paths": [mutated, VALID_ITEM, VALID_ITEM]
         })
-        with self.assertRaises(LLMUnavailableError) as cm:
-            self.service.analyze_career_paths(candidate_id=42)
+        result = self.service.analyze_career_paths(candidate_id=42)
+        # Non‑string items should be filtered out
+        self.assertEqual(result["paths"][0]["core_skills"], ["Python", "SQL"])
         self.gemini_mock.generate.assert_called_once()
 
-    def test_core_skills_too_few_raises_error(self):
-        """Item with fewer than three skills raises LLMUnavailableError."""
+    def test_core_skills_too_few_succeeds(self):
+        """Item with fewer than three skills is accepted (schema min_length=0)."""
         mutated = VALID_ITEM.copy()
         mutated["core_skills"] = ["Python", "SQL"]
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
@@ -124,12 +127,12 @@ class TestCareerPathService(unittest.TestCase):
             "profile_summary": VALID_PROFILE_SUMMARY,
             "paths": [mutated, VALID_ITEM, VALID_ITEM]
         })
-        with self.assertRaises(LLMUnavailableError) as cm:
-            self.service.analyze_career_paths(candidate_id=42)
+        result = self.service.analyze_career_paths(candidate_id=42)
+        self.assertEqual(result["paths"][0]["core_skills"], ["Python", "SQL"])
         self.gemini_mock.generate.assert_called_once()
 
-    def test_core_skills_too_many_raises_error(self):
-        """Item with more than five skills raises LLMUnavailableError."""
+    def test_core_skills_too_many_raises_validation_error(self):
+        """Item with more than five skills raises pydantic.ValidationError (schema max_length=5)."""
         mutated = VALID_ITEM.copy()
         mutated["core_skills"] = ["a", "b", "c", "d", "e", "f"]
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
@@ -137,7 +140,7 @@ class TestCareerPathService(unittest.TestCase):
             "profile_summary": VALID_PROFILE_SUMMARY,
             "paths": [mutated, VALID_ITEM, VALID_ITEM]
         })
-        with self.assertRaises(LLMUnavailableError) as cm:
+        with self.assertRaises(ValidationError):
             self.service.analyze_career_paths(candidate_id=42)
         self.gemini_mock.generate.assert_called_once()
 

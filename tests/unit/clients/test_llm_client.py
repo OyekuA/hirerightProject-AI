@@ -18,6 +18,7 @@ class TestLLMClientTimeout(unittest.TestCase):
             client = LLMClient(
                 model="gemini/gemini-2.5-flash-lite",
                 embedding_model="gemini/text-embedding-004",
+                embedding_dimensions=768,
                 generation_cooldown=60,
                 embedding_cooldown=60,
                 generation_timeout=45,
@@ -41,6 +42,7 @@ class TestLLMClientTimeout(unittest.TestCase):
             client = LLMClient(
                 model="gemini/gemini-2.5-flash-lite",
                 embedding_model="gemini/text-embedding-004",
+                embedding_dimensions=768,
                 generation_cooldown=60,
                 embedding_cooldown=60,
                 generation_timeout=45,
@@ -53,6 +55,7 @@ class TestLLMClientTimeout(unittest.TestCase):
             mock_embedding.assert_called_once_with(
                 model="gemini/text-embedding-004",
                 input=["text"],
+                dimensions=768,
                 timeout=30,
             )
 
@@ -76,6 +79,7 @@ class TestLLMClientTimeout(unittest.TestCase):
             client = LLMClient(
                 model="gemini/gemini-2.5-flash-lite",
                 embedding_model="gemini/text-embedding-004",
+                embedding_dimensions=768,
                 generation_cooldown=60,
                 embedding_cooldown=60,
                 generation_timeout=30,
@@ -96,6 +100,7 @@ class TestLLMClientTimeout(unittest.TestCase):
             client = LLMClient(
                 model="gemini/gemini-2.5-flash-lite",
                 embedding_model="gemini/text-embedding-004",
+                embedding_dimensions=768,
                 generation_cooldown=60,
                 embedding_cooldown=60,
                 generation_timeout=30,
@@ -122,6 +127,7 @@ class TestLLMClientTimeout(unittest.TestCase):
             client = LLMClient(
                 model="gemini/gemini-2.5-flash-lite",
                 embedding_model="gemini/text-embedding-004",
+                embedding_dimensions=768,
                 generation_cooldown=60,
                 embedding_cooldown=60,
                 generation_timeout=30,
@@ -140,6 +146,7 @@ class TestLLMClientTimeout(unittest.TestCase):
             client = LLMClient(
                 model="gemini/gemini-2.5-flash-lite",
                 embedding_model="gemini/text-embedding-004",
+                embedding_dimensions=768,
                 generation_cooldown=60,
                 embedding_cooldown=60,
             )
