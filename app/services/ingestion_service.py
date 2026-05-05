@@ -1,6 +1,6 @@
 """Background ingestion logic for candidates and jobs.
 
-Implements the retry loop, Gemini extraction, embedding, Qdrant upsert,
+Implements the retry loop, LLM extraction, embedding, Qdrant upsert,
 and final status/callback update.
 """
 
@@ -8,14 +8,17 @@ import asyncio
 import hashlib
 import structlog
 from datetime import datetime, timezone
+from typing import Optional
 
 from app.clients.dependencies import CANDIDATES_COLLECTION, JOBS_COLLECTION
-from app.clients.gemini import GeminiClient
+from app.clients.llm import LLMClient, LLMUnavailableError
 from app.clients.qdrant import QdrantClient
 from app.services.ingestion_store import IngestionStatusStore
 from app.utils.ingestion import fetch_and_parse_cv, truncate_to_prompt_cap
 from app.services.callback_client import CallbackClient
-from app.utils import parse_gemini_json
+from app.services.ingest_queue import IngestQueue
+from app.config import get_settings
+from app.utils import parse_llm_json
 from app.prompts import CV_EXTRACTION_PROMPT_TEMPLATE, JD_EXTRACTION_PROMPT_TEMPLATE
 from app.schemas.ingestion import ProfileData, JobMetadata, CandidateExtraction, JobExtraction
 from pydantic import ValidationError
@@ -31,14 +34,20 @@ async def run_candidate_ingestion(
     callback_url: str,
     event_id: str,
     qdrant: QdrantClient,
-    gemini: GeminiClient,
+    llm: LLMClient,
     store: IngestionStatusStore,
     callback_client: CallbackClient,
+    ingest_queue: Optional[IngestQueue] = None,
+    suppress_callback: bool = False,
 ) -> None:
     """Ingest a candidate CV, extract structured profile, embed, and store in Qdrant.
 
     Performs up to 4 attempts with exponential backoff (2s, 4s, 8s). Updates the status store
     and sends a callback upon completion.
+
+    When *suppress_callback* is True the final callback is skipped — used by the
+    queue worker so that only the queue's own dead‑letter path emits a terminal
+    failure callback.
     """
     logger.info("Started candidate ingestion", event_id=event_id, candidate_id=candidate_id)
 
@@ -79,14 +88,14 @@ async def run_candidate_ingestion(
                 cv_text=cv_text,
                 profile_data_json=profile_data_json
             )
-            generated = await asyncio.to_thread(gemini.generate, extraction_prompt)
-            extracted = parse_gemini_json(generated)
+            generated = await asyncio.to_thread(llm.generate, extraction_prompt)
+            extracted = parse_llm_json(generated)
             
             # Validate extraction output
             try:
                 validated_extraction = CandidateExtraction.model_validate(extracted)
             except ValidationError as e:
-                logger.warning("Gemini extraction output failed validation, using fallback values",
+                logger.warning("LLM extraction output failed validation, using fallback values",
                                event_id=event_id, errors=str(e))
                 validated_extraction = CandidateExtraction()
             
@@ -95,7 +104,7 @@ async def run_candidate_ingestion(
                 raw_profile_summary = generated[:500]
             raw_profile_summary = truncate_to_prompt_cap(raw_profile_summary)
             
-            vector = await asyncio.to_thread(gemini.embed, raw_profile_summary)
+            vector = await asyncio.to_thread(llm.embed, raw_profile_summary)
 
             payload = {
                 "name": validated_extraction.name or validated_profile.name,
@@ -121,6 +130,13 @@ async def run_candidate_ingestion(
 
         except Exception as e:
             error_summary = f"{type(e).__name__}: {str(e)}"
+
+            # Short-circuit retries when the LLM circuit breaker is open
+            if isinstance(e, LLMUnavailableError) and "circuit breaker is open" in str(e).lower():
+                store.update(event_id, status="failed", error_summary=error_summary[:500])
+                logger.error("Aborting retries — circuit breaker is open", event_id=event_id)
+                break
+
             logger.warning(
                 "Candidate ingestion attempt failed",
                 event_id=event_id,
@@ -136,27 +152,33 @@ async def run_candidate_ingestion(
                     status="failed",
                     error_summary=error_summary[:500]
                 )
+                if ingest_queue is not None:
+                    record = store.get_by_event_id(event_id)
+                    settings = get_settings()
+                    ingest_queue.enqueue(record, backoff_base=settings.INGEST_QUEUE_BACKOFF_BASE_SECONDS)
+                    suppress_callback = True  # queue will manage terminal callbacks
                 logger.error("Candidate ingestion failed after all retries", event_id=event_id)
             else:
                 backoff = backoff_base * (2 ** attempt)
                 await asyncio.sleep(backoff)
                 continue
 
-    try:
-        delivered = await callback_client.send(
-            callback_url=callback_url,
-            event_id=event_id,
-            entity_type="candidate",
-            entity_id=candidate_id,
-            status="success" if error_summary is None else "failed",
-            error=error_summary,
-        )
-        if not delivered:
+    if not suppress_callback:
+        try:
+            delivered = await callback_client.send(
+                callback_url=callback_url,
+                event_id=event_id,
+                entity_type="candidate",
+                entity_id=candidate_id,
+                status="success" if error_summary is None else "failed",
+                error=error_summary,
+            )
+            if not delivered:
+                store.update(event_id, callback_delivery_failed=True)
+                logger.warning("Callback delivery failed", event_id=event_id)
+        except Exception as e:
+            logger.error("Callback dispatch failed unexpectedly", event_id=event_id, error=str(e))
             store.update(event_id, callback_delivery_failed=True)
-            logger.warning("Callback delivery failed", event_id=event_id)
-    except Exception as e:
-        logger.error("Callback dispatch failed unexpectedly", event_id=event_id, error=str(e))
-        store.update(event_id, callback_delivery_failed=True)
 
 
 async def run_job_ingestion(
@@ -166,13 +188,19 @@ async def run_job_ingestion(
     callback_url: str,
     event_id: str,
     qdrant: QdrantClient,
-    gemini: GeminiClient,
+    llm: LLMClient,
     store: IngestionStatusStore,
     callback_client: CallbackClient,
+    ingest_queue: Optional[IngestQueue] = None,
+    suppress_callback: bool = False,
 ) -> None:
     """Ingest a job description, extract structured metadata, embed, and store in Qdrant.
 
     Same retry pattern as candidate ingestion, but no CV fetch step.
+
+    When *suppress_callback* is True the final callback is skipped — used by the
+    queue worker so that only the queue's own dead‑letter path emits a terminal
+    failure callback.
     """
     logger.info("Started job ingestion", event_id=event_id, job_id=job_id)
 
@@ -213,14 +241,14 @@ async def run_job_ingestion(
                 jd_text=jd_text,
                 metadata_json=metadata_json
             )
-            generated = await asyncio.to_thread(gemini.generate, extraction_prompt)
-            extracted = parse_gemini_json(generated)
+            generated = await asyncio.to_thread(llm.generate, extraction_prompt)
+            extracted = parse_llm_json(generated)
             
             # Validate extraction output
             try:
                 validated_extraction = JobExtraction.model_validate(extracted)
             except ValidationError as e:
-                logger.warning("Gemini extraction output failed validation, using fallback values",
+                logger.warning("LLM extraction output failed validation, using fallback values",
                                event_id=event_id, errors=str(e))
                 validated_extraction = JobExtraction()
             
@@ -229,7 +257,7 @@ async def run_job_ingestion(
                 raw_jd_summary = generated[:500]
             raw_jd_summary = truncate_to_prompt_cap(raw_jd_summary)
 
-            vector = await asyncio.to_thread(gemini.embed, raw_jd_summary)
+            vector = await asyncio.to_thread(llm.embed, raw_jd_summary)
 
             payload = {
                 "title": validated_extraction.title or validated_metadata.title,
@@ -256,6 +284,13 @@ async def run_job_ingestion(
 
         except Exception as e:
             error_summary = f"{type(e).__name__}: {str(e)}"
+
+            # Short-circuit retries when the LLM circuit breaker is open
+            if isinstance(e, LLMUnavailableError) and "circuit breaker is open" in str(e).lower():
+                store.update(event_id, status="failed", error_summary=error_summary[:500])
+                logger.error("Aborting retries — circuit breaker is open", event_id=event_id)
+                break
+
             logger.warning(
                 "Job ingestion attempt failed",
                 event_id=event_id,
@@ -271,24 +306,30 @@ async def run_job_ingestion(
                     status="failed",
                     error_summary=error_summary[:500]
                 )
+                if ingest_queue is not None:
+                    record = store.get_by_event_id(event_id)
+                    settings = get_settings()
+                    ingest_queue.enqueue(record, backoff_base=settings.INGEST_QUEUE_BACKOFF_BASE_SECONDS)
+                    suppress_callback = True  # queue will manage terminal callbacks
                 logger.error("Job ingestion failed after all retries", event_id=event_id)
             else:
                 backoff = backoff_base * (2 ** attempt)
                 await asyncio.sleep(backoff)
                 continue
 
-    try:
-        delivered = await callback_client.send(
-            callback_url=callback_url,
-            event_id=event_id,
-            entity_type="job",
-            entity_id=job_id,
-            status="success" if error_summary is None else "failed",
-            error=error_summary,
-        )
-        if not delivered:
+    if not suppress_callback:
+        try:
+            delivered = await callback_client.send(
+                callback_url=callback_url,
+                event_id=event_id,
+                entity_type="job",
+                entity_id=job_id,
+                status="success" if error_summary is None else "failed",
+                error=error_summary,
+            )
+            if not delivered:
+                store.update(event_id, callback_delivery_failed=True)
+                logger.warning("Callback delivery failed", event_id=event_id)
+        except Exception as e:
+            logger.error("Callback dispatch failed unexpectedly", event_id=event_id, error=str(e))
             store.update(event_id, callback_delivery_failed=True)
-            logger.warning("Callback delivery failed", event_id=event_id)
-    except Exception as e:
-        logger.error("Callback dispatch failed unexpectedly", event_id=event_id, error=str(e))
-        store.update(event_id, callback_delivery_failed=True)

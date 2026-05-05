@@ -20,13 +20,19 @@ class TestIngestionStoreLogging(unittest.TestCase):
     def test_create_logging_no_exception(self):
         """Creating a record should log without raising TypeError."""
         # If logging raises an exception, the test will fail.
-        record = self.store.create("candidate", 123, "https://example.com/callback")
+        record = self.store.create(
+            "candidate", 123, "https://example.com/callback",
+            payload={"cv_url": "https://example.com/cv.pdf", "profile_data": {}},
+        )
         self.assertEqual(record.entity_type, "candidate")
         self.assertEqual(record.entity_id, 123)
 
     def test_update_logging_no_exception(self):
         """Updating a record should log without raising TypeError."""
-        record = self.store.create("candidate", 123, "https://example.com/callback")
+        record = self.store.create(
+            "candidate", 123, "https://example.com/callback",
+            payload={"cv_url": "https://example.com/cv.pdf", "profile_data": {}},
+        )
         # If logging raises an exception, the test will fail.
         self.store.update(record.event_id, status="running")
         updated = self.store.get_by_event_id(record.event_id)
@@ -55,7 +61,10 @@ class TestIngestionStoreLogging(unittest.TestCase):
             self.assertIn('store_path', call_args.kwargs)
             mock_logger.reset_mock()
             # Create a record and check debug log
-            record = store.create("job", 456, "https://example.com/callback")
+            record = store.create(
+                "job", 456, "https://example.com/callback",
+                payload={"jd_text": "Some JD", "metadata": {}},
+            )
             mock_logger.debug.assert_called_once()
             call_args = mock_logger.debug.call_args
             self.assertEqual(call_args.args[0], "Created ingestion record")
@@ -78,6 +87,25 @@ class TestIngestionStoreLogging(unittest.TestCase):
             self.assertEqual(call_args.args[0], "Skipping corrupt status file")
             self.assertIn('file_path', call_args.kwargs)
             self.assertIn('error', call_args.kwargs)
+
+
+    def test_payload_is_persisted_and_retrievable(self):
+        """Payload passed to create() should be stored and retrievable via get_by_event_id."""
+        payload = {"cv_url": "https://example.com/cv.pdf", "profile_data": {"name": "Alice"}}
+        record = self.store.create("candidate", 1, "https://example.com/cb", payload=payload)
+
+        self.assertEqual(record.payload, payload)
+
+        retrieved = self.store.get_by_event_id(record.event_id)
+        self.assertEqual(retrieved.payload, payload)
+
+    def test_payload_defaults_to_none(self):
+        """Creating a record without payload should store None and survive round-trip."""
+        record = self.store.create("job", 2, "https://example.com/cb")
+        self.assertIsNone(record.payload)
+
+        retrieved = self.store.get_by_event_id(record.event_id)
+        self.assertIsNone(retrieved.payload)
 
 
 if __name__ == "__main__":

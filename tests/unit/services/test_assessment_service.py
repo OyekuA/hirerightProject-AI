@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 from app.services.assessment_service import AssessmentService
-from app.clients.gemini import GeminiUnavailableError
+from app.clients.llm import LLMUnavailableError
 from app.clients.dependencies import JOBS_COLLECTION, CANDIDATES_COLLECTION
 from app.schemas.assessment import GenerateAssessmentRequest, CandidateContext, JobContext
 from pydantic import ValidationError
@@ -17,10 +17,10 @@ class TestAssessmentService(unittest.TestCase):
         """Create mocked dependencies for each test."""
         self.gemini_mock = MagicMock()
         self.qdrant_mock = MagicMock()
-        self.service = AssessmentService(gemini=self.gemini_mock, qdrant=self.qdrant_mock)
+        self.service = AssessmentService(llm=self.gemini_mock, qdrant=self.qdrant_mock)
 
     def test_generate_questions_valid_response(self):
-        """generate_questions should return the list of questions from Gemini."""
+        """generate_questions should return the list of questions from LLM."""
         candidate_payload = {"past_roles": ["Engineer at Acme"], "skills": ["Python"]}
         self.qdrant_mock.get.return_value = candidate_payload
         self.gemini_mock.generate.return_value = '["Q1", "Q2", "Q3"]'
@@ -78,11 +78,11 @@ class TestAssessmentService(unittest.TestCase):
         self.gemini_mock.generate.assert_not_called()
 
     def test_generate_questions_fewer_than_requested(self):
-        """If Gemini returns fewer questions than requested, raise GeminiUnavailableError."""
+        """If LLM returns fewer questions than requested, raise LLMUnavailableError."""
         candidate_payload = {"past_roles": [], "skills": []}
         self.qdrant_mock.get.return_value = candidate_payload
         self.gemini_mock.generate.return_value = '["Q1"]'
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.generate_questions(
                 candidate_id=42,
                 target_role="Software Engineer",
@@ -210,7 +210,7 @@ class TestAssessmentService(unittest.TestCase):
         self.gemini_mock.generate.return_value = json.dumps([
             {"question": "Q1", "distractors": ["Option 2", "Option 3", "Option 4"]}
         ])
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.generate_questions(
                 candidate_id=42,
                 target_role="Software Engineer",
@@ -233,7 +233,7 @@ class TestAssessmentService(unittest.TestCase):
         self.gemini_mock.generate.assert_not_called()
 
     def test_grade_answers_valid_response_single(self):
-        """grade_answers should return the parsed JSON dict from Gemini for single response."""
+        """grade_answers should return the parsed JSON dict from LLM for single response."""
         questions = ["What is Python?", "Explain OOP"]
         answers = ["Python is a language.", "OOP is about objects."]
         expected_result = {
@@ -330,17 +330,17 @@ class TestAssessmentService(unittest.TestCase):
                 self.gemini_mock.generate.assert_not_called()
 
     def test_grade_answers_malformed_json(self):
-        """If Gemini returns non‑JSON, raise GeminiUnavailableError."""
+        """If LLM returns non‑JSON, raise LLMUnavailableError."""
         questions = ["Q1"]
         answers = ["A1"]
         self.gemini_mock.generate.return_value = "not json"
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.grade_answers(questions=questions, answers=answers, time_taken_seconds=30)
         self.assertIn("malformed", str(cm.exception).lower())
         self.gemini_mock.generate.assert_called_once()
 
     def test_grade_answers_skill_breakdown_too_short(self):
-        """Gemini returns a skill_breakdown with fewer than three items."""
+        """LLM returns a skill_breakdown with fewer than three items."""
         questions = ["Q1"]
         answers = ["A1"]
         invalid_result = {
@@ -357,7 +357,7 @@ class TestAssessmentService(unittest.TestCase):
         self.assertIn("must be a list of 3‑5 items", str(cm.exception))
 
     def test_grade_answers_skill_breakdown_malformed_item(self):
-        """Gemini returns a skill_breakdown with a missing key."""
+        """LLM returns a skill_breakdown with a missing key."""
         questions = ["Q1"]
         answers = ["A1"]
         invalid_result = {
@@ -375,7 +375,7 @@ class TestAssessmentService(unittest.TestCase):
         self.assertIn("missing required keys", str(cm.exception))
 
     def test_grade_answers_overall_score_out_of_bounds(self):
-        """Gemini returns an overall_score outside 0‑100."""
+        """LLM returns an overall_score outside 0‑100."""
         questions = ["Q1"]
         answers = ["A1"]
         invalid_result = {

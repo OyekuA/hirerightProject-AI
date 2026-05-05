@@ -12,7 +12,7 @@ from typing import Literal
 import qdrant_client.http.models as qdrant_models
 
 from app.clients.dependencies import CANDIDATES_COLLECTION, JOBS_COLLECTION
-from app.clients.gemini import GeminiClient
+from app.clients.llm import LLMClient
 from app.clients.qdrant import QdrantClient
 from app.clients.cache import CacheBackend
 from app.services.scoring_service import ScoringService
@@ -31,18 +31,18 @@ class RecommendationService:
 
     def __init__(
         self,
-        gemini: GeminiClient,
+        llm: LLMClient,
         qdrant: QdrantClient,
         cache: CacheBackend,
     ):
         """Initialize the recommendation service.
 
         Args:
-            gemini: A configured GeminiClient instance.
+            llm: A configured LLMClient instance.
             qdrant: A QdrantClient instance.
             cache: A CacheBackend instance.
         """
-        self.gemini = gemini
+        self.llm = llm
         self.qdrant = qdrant
         self.cache = cache
 
@@ -262,7 +262,7 @@ class RecommendationService:
 
         Raises:
             ValueError: If the target profile is not found in the vector store.
-            GeminiUnavailableError: If the Gemini circuit breaker is open or the call fails.
+            LLMUnavailableError: If the LLM circuit breaker is open or the call fails.
         """
         if behavioral_signals is None:
             behavioral_signals = {}
@@ -386,7 +386,7 @@ class RecommendationService:
             intent_embeddings = []
             for search in recent_searches:
                 truncated_search = truncate_to_prompt_cap(search)
-                embedding = self.gemini.embed(truncated_search)
+                embedding = self.llm.embed(truncated_search)
                 intent_embeddings.append(embedding)
             intent_vec = np.mean(intent_embeddings, axis=0)
         else:
@@ -548,7 +548,7 @@ class RecommendationService:
 
         Raises:
             ValueError: If the job is not found in the vector store.
-            GeminiUnavailableError: If the Gemini circuit breaker is open.
+            LLMUnavailableError: If the LLM circuit breaker is open.
         """
         job_payload = self.qdrant.get(JOBS_COLLECTION, job_id)
         if not job_payload:
@@ -572,7 +572,7 @@ class RecommendationService:
             )
 
         scoring_service = ScoringService(
-            gemini=self.gemini,
+            llm=self.llm,
             qdrant=self.qdrant,
             cache=self.cache,
         )
@@ -595,7 +595,7 @@ class RecommendationService:
 
         import concurrent.futures
         from concurrent.futures import wait
-        from app.clients.gemini import GeminiUnavailableError
+        from app.clients.llm import LLMUnavailableError
 
         results = []
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=POOL_RANK_CONCURRENCY)
@@ -636,7 +636,7 @@ class RecommendationService:
                     "candidate_id": candidate_id,
                     "fit_score": fit_result["overall_score_percentage"],
                 })
-            except GeminiUnavailableError:
+            except LLMUnavailableError:
                 for f in not_done:
                     f.cancel()
                 executor.shutdown(wait=False)

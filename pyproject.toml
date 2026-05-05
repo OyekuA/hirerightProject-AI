@@ -14,7 +14,7 @@ dependencies = [
     "structlog-sentry",
     "cachetools",
     "slowapi",
-    "google-genai",
+    "litellm",
     "qdrant-client",
     "numpy",
     "pymupdf",

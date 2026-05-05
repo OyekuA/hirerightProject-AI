@@ -2,7 +2,7 @@
 
 import unittest
 from unittest.mock import patch
-from app.clients.gemini import CircuitBreaker
+from app.clients.llm import CircuitBreaker
 
 
 class TestCircuitBreaker(unittest.TestCase):
@@ -32,7 +32,7 @@ class TestCircuitBreaker(unittest.TestCase):
         self.assertTrue(breaker.is_open())
         opened_at = breaker.opened_at
         self.assertIsNotNone(opened_at)
-        with patch("app.clients.gemini.time.monotonic", return_value=opened_at + 61):
+        with patch("app.clients.llm.time.monotonic", return_value=opened_at + 61):
             # Cooldown elapsed, breaker should be HALF_OPEN and allow a probe
             self.assertFalse(breaker.is_open())
             self.assertEqual(breaker.state, CircuitBreaker.HALF_OPEN)
@@ -45,7 +45,7 @@ class TestCircuitBreaker(unittest.TestCase):
         breaker = CircuitBreaker(threshold=3, cooldown_seconds=60.0)
         for _ in range(3):
             breaker.record_failure()
-        with patch("app.clients.gemini.time.monotonic", return_value=breaker.opened_at + 61):
+        with patch("app.clients.llm.time.monotonic", return_value=breaker.opened_at + 61):
             breaker.is_open()
         self.assertEqual(breaker.state, CircuitBreaker.HALF_OPEN)
         breaker._probe_sent = False
@@ -58,7 +58,7 @@ class TestCircuitBreaker(unittest.TestCase):
         breaker = CircuitBreaker(threshold=3, cooldown_seconds=60.0)
         for _ in range(3):
             breaker.record_failure()
-        with patch("app.clients.gemini.time.monotonic", return_value=breaker.opened_at + 61):
+        with patch("app.clients.llm.time.monotonic", return_value=breaker.opened_at + 61):
             breaker.is_open()
         self.assertEqual(breaker.state, CircuitBreaker.HALF_OPEN)
         breaker.record_success()
@@ -76,13 +76,13 @@ class TestCircuitBreaker(unittest.TestCase):
         original_opened_at = breaker.opened_at
         self.assertIsNotNone(original_opened_at)
 
-        with patch("app.clients.gemini.time.monotonic", return_value=original_opened_at + 61):
+        with patch("app.clients.llm.time.monotonic", return_value=original_opened_at + 61):
             breaker.is_open()
 
         self.assertEqual(breaker.state, CircuitBreaker.HALF_OPEN)
         self.assertIsNone(breaker.opened_at)
 
-        with patch("app.clients.gemini.time.monotonic", return_value=original_opened_at + 62):
+        with patch("app.clients.llm.time.monotonic", return_value=original_opened_at + 62):
             breaker.record_failure()
 
         self.assertEqual(breaker.state, CircuitBreaker.OPEN)
@@ -118,7 +118,7 @@ class TestCircuitBreaker(unittest.TestCase):
         breaker = CircuitBreaker(threshold=3, cooldown_seconds=60.0)
         for _ in range(3):
             breaker.record_failure()
-        with patch("app.clients.gemini.time.monotonic", return_value=breaker.opened_at + 61):
+        with patch("app.clients.llm.time.monotonic", return_value=breaker.opened_at + 61):
             breaker.is_open()
         self.assertEqual(breaker.state, CircuitBreaker.HALF_OPEN)
         breaker.record_failure()
@@ -132,9 +132,9 @@ class TestCircuitBreaker(unittest.TestCase):
         for _ in range(3):
             breaker.record_failure()
         original_opened_at = breaker.opened_at
-        with patch("app.clients.gemini.time.monotonic", return_value=original_opened_at + 61):
+        with patch("app.clients.llm.time.monotonic", return_value=original_opened_at + 61):
             breaker.is_open()
-        with patch("app.clients.gemini.time.monotonic", return_value=original_opened_at + 62):
+        with patch("app.clients.llm.time.monotonic", return_value=original_opened_at + 62):
             breaker.record_failure()
         self.assertEqual(breaker.state, CircuitBreaker.OPEN)
         self.assertAlmostEqual(breaker.opened_at, original_opened_at + 62, delta=0.1)

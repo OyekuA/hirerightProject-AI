@@ -28,28 +28,51 @@ class QdrantClient:
         )
         self._log = logging.getLogger(__name__)
 
+    def _recreate_collection(self, collection_name: str, expected_dim: int) -> None:
+        """Drop and recreate a collection with the correct vector dimension."""
+        self._log.warning(
+            "Dropping collection '%s' due to dimension mismatch and recreating",
+            collection_name,
+        )
+        self._client.delete_collection(collection_name=collection_name)
+        self._client.create_collection(
+            collection_name=collection_name,
+            vectors_config=VectorParams(size=expected_dim, distance=Distance.COSINE),
+        )
+        self._log.info("Recreated collection '%s' with dim=%d", collection_name, expected_dim)
+
     def ensure_collections(self) -> None:
-        """Create candidates and jobs collections if they do not exist."""
+        """Create candidates and jobs collections if they do not exist.
+
+        If a collection exists but its vector dimension does not match
+        ``EMBEDDING_DIMENSIONS`` from settings, it is **automatically dropped
+        and recreated** with the correct dimension. This allows switching
+        embedding models (e.g. Gemini → OpenAI) without manual intervention.
+        """
+        settings = get_settings()
         collections = self._client.get_collections().collections
         existing = {c.name for c in collections}
 
-        if CANDIDATES_COLLECTION not in existing:
-            self._client.create_collection(
-                collection_name=CANDIDATES_COLLECTION,
-                vectors_config=VectorParams(size=768, distance=Distance.COSINE),
-            )
-            self._log.info("Created collection '%s'", CANDIDATES_COLLECTION)
-        else:
-            self._log.debug("Collection '%s' already exists", CANDIDATES_COLLECTION)
+        expected_dim = settings.EMBEDDING_DIMENSIONS
 
-        if JOBS_COLLECTION not in existing:
-            self._client.create_collection(
-                collection_name=JOBS_COLLECTION,
-                vectors_config=VectorParams(size=768, distance=Distance.COSINE),
-            )
-            self._log.info("Created collection '%s'", JOBS_COLLECTION)
-        else:
-            self._log.debug("Collection '%s' already exists", JOBS_COLLECTION)
+        for collection_name in (CANDIDATES_COLLECTION, JOBS_COLLECTION):
+            if collection_name not in existing:
+                self._client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=VectorParams(size=expected_dim, distance=Distance.COSINE),
+                )
+                self._log.info("Created collection '%s' with dim=%d", collection_name, expected_dim)
+            else:
+                collection_info = self._client.get_collection(collection_name)
+                existing_dim = collection_info.config.params.vectors.size
+                if existing_dim != expected_dim:
+                    self._log.warning(
+                        "Collection '%s' has dim=%d but config expects dim=%d — will recreate",
+                        collection_name, existing_dim, expected_dim,
+                    )
+                    self._recreate_collection(collection_name, expected_dim)
+                else:
+                    self._log.debug("Collection '%s' already exists with dim=%d", collection_name, existing_dim)
 
         self._ensure_payload_indexes(CANDIDATES_COLLECTION)
         self._ensure_payload_indexes(JOBS_COLLECTION)
@@ -101,7 +124,7 @@ class QdrantClient:
         Args:
             collection: Name of the collection (candidates or jobs)
             point_id: Unique integer identifier for the point
-            vector: 768‑dimensional embedding vector
+            vector: embedding vector (dimension set by EMBEDDING_DIMENSIONS config)
             payload: Dictionary of fields matching the collection's schema
         """
         point = models.PointStruct(id=point_id, vector=vector, payload=payload)
@@ -156,7 +179,7 @@ class QdrantClient:
 
         Args:
             collection: Name of the collection
-            query_vector: 768‑dimensional query embedding
+            query_vector: query embedding vector (dimension set by EMBEDDING_DIMENSIONS config)
             limit: Maximum number of results to return
             query_filter: Optional filter to restrict the search
 

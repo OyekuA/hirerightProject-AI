@@ -8,7 +8,7 @@ class CareerPathItem(BaseModel):
     """A single suggested career path."""
     role: str
     match_percentage: int = Field(..., ge=0, le=100)
-    core_skills: List[str] = Field(..., min_length=3, max_length=5)
+    core_skills: List[str] = Field(default_factory=list, min_length=0, max_length=5)
     reasoning: str
 
 

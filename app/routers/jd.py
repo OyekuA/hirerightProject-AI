@@ -4,8 +4,8 @@ from typing import Optional, List
 import structlog
 import asyncio
 
-from app.clients.dependencies import get_gemini_client, get_rate_limiter, get_qdrant_client
-from app.clients.gemini import GeminiClient, GeminiUnavailableError
+from app.clients.dependencies import get_llm_client, get_rate_limiter, get_qdrant_client
+from app.clients.llm import LLMClient, LLMUnavailableError
 from app.clients.qdrant import QdrantClient
 from app.services.jd_service import JDService
 from app.routers._rate_limit_keys import job_id_key
@@ -35,12 +35,12 @@ from app.schemas.jd import (
 async def generate_jd(
     request: Request,
     req: GenerateJDRequest,
-    gemini: GeminiClient = Depends(get_gemini_client),
+    llm: LLMClient = Depends(get_llm_client),
     qdrant: QdrantClient = Depends(get_qdrant_client),
 ):
     """Generate or refine a job description."""
     structlog.contextvars.bind_contextvars(entity_id="unknown")
-    service = JDService(gemini=gemini, qdrant=qdrant)
+    service = JDService(llm=llm, qdrant=qdrant)
     try:
         jd_text = await asyncio.to_thread(
             service.generate_jd,
@@ -48,7 +48,7 @@ async def generate_jd(
             existing_draft=req.existing_draft,
             job_id=req.job_id,
         )
-    except GeminiUnavailableError:
+    except LLMUnavailableError:
         raise HTTPException(
             status_code=503,
             detail="JD generation service temporarily unavailable",
@@ -71,14 +71,14 @@ async def generate_jd(
 async def analyze_jd(
     request: Request,
     req: AnalyzeJDRequest,
-    gemini: GeminiClient = Depends(get_gemini_client),
+    llm: LLMClient = Depends(get_llm_client),
 ):
     """Analyze a job description and return critique points."""
     structlog.contextvars.bind_contextvars(entity_id="unknown")
-    service = JDService(gemini=gemini)
+    service = JDService(llm=llm)
     try:
         critiques = await asyncio.to_thread(service.analyze_jd, jd_text=req.jd_text)
-    except GeminiUnavailableError:
+    except LLMUnavailableError:
         raise HTTPException(
             status_code=503,
             detail="JD analysis service temporarily unavailable",

@@ -31,6 +31,7 @@ class IngestionRecord:
     callback_url: str
     error_summary: Optional[str] = None
     callback_delivery_failed: bool = False
+    payload: Optional[dict] = None
     created_at: str = ""
     updated_at: str = ""
 
@@ -39,6 +40,7 @@ class IngestionRecord:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "IngestionRecord":
+        data.setdefault("payload", None)
         return cls(**data)
 
 
@@ -59,6 +61,7 @@ class IngestionStatusStore:
         entity_type: EntityType,
         entity_id: int,
         callback_url: str,
+        payload: Optional[dict] = None,
     ) -> IngestionRecord:
         """Create a new pending record and persist it."""
         event_id = str(uuid.uuid4())
@@ -72,6 +75,7 @@ class IngestionStatusStore:
             callback_url=callback_url,
             error_summary=None,
             callback_delivery_failed=False,
+            payload=payload,
             created_at=now,
             updated_at=now,
         )

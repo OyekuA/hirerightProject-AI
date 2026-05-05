@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 from app.services.career_service import CareerPathService
-from app.clients.gemini import GeminiUnavailableError
+from app.clients.llm import LLMUnavailableError
 from app.clients.dependencies import CANDIDATES_COLLECTION
 
 VALID_ITEM = {
@@ -30,7 +30,7 @@ class TestCareerPathService(unittest.TestCase):
         self.gemini_mock = MagicMock()
         self.qdrant_mock = MagicMock()
         self.service = CareerPathService(
-            gemini=self.gemini_mock,
+            llm=self.gemini_mock,
             qdrant=self.qdrant_mock,
         )
         self.truncate_patcher = patch(
@@ -67,17 +67,17 @@ class TestCareerPathService(unittest.TestCase):
         self.assertIn("not found", str(cm.exception).lower())
         self.gemini_mock.generate.assert_not_called()
 
-    def test_gemini_non_json_raises_error(self):
-        """If Gemini returns non‑JSON, raise GeminiUnavailableError."""
+    def test_llm_non_json_raises_error(self):
+        """If LLM returns non‑JSON, raise LLMUnavailableError."""
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
         self.gemini_mock.generate.return_value = "not json"
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.analyze_career_paths(candidate_id=42)
         self.assertIn("malformed", str(cm.exception).lower())
         self.gemini_mock.generate.assert_called_once()
 
     def test_core_skills_not_a_list_raises_error(self):
-        """Item with core_skills as a string raises GeminiUnavailableError."""
+        """Item with core_skills as a string raises LLMUnavailableError."""
         mutated = VALID_ITEM.copy()
         mutated["core_skills"] = "Python"
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
@@ -85,12 +85,12 @@ class TestCareerPathService(unittest.TestCase):
             "profile_summary": VALID_PROFILE_SUMMARY,
             "paths": [mutated, VALID_ITEM, VALID_ITEM]
         })
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.analyze_career_paths(candidate_id=42)
         self.gemini_mock.generate.assert_called_once()
 
     def test_core_skills_empty_list_raises_error(self):
-        """Item with empty core_skills list raises GeminiUnavailableError."""
+        """Item with empty core_skills list raises LLMUnavailableError."""
         mutated = VALID_ITEM.copy()
         mutated["core_skills"] = []
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
@@ -98,12 +98,12 @@ class TestCareerPathService(unittest.TestCase):
             "profile_summary": VALID_PROFILE_SUMMARY,
             "paths": [mutated, VALID_ITEM, VALID_ITEM]
         })
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.analyze_career_paths(candidate_id=42)
         self.gemini_mock.generate.assert_called_once()
 
     def test_core_skills_non_string_item_raises_error(self):
-        """Item with non‑string skill raises GeminiUnavailableError."""
+        """Item with non‑string skill raises LLMUnavailableError."""
         mutated = VALID_ITEM.copy()
         mutated["core_skills"] = ["Python", 123, "SQL"]
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
@@ -111,12 +111,12 @@ class TestCareerPathService(unittest.TestCase):
             "profile_summary": VALID_PROFILE_SUMMARY,
             "paths": [mutated, VALID_ITEM, VALID_ITEM]
         })
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.analyze_career_paths(candidate_id=42)
         self.gemini_mock.generate.assert_called_once()
 
     def test_core_skills_too_few_raises_error(self):
-        """Item with fewer than three skills raises GeminiUnavailableError."""
+        """Item with fewer than three skills raises LLMUnavailableError."""
         mutated = VALID_ITEM.copy()
         mutated["core_skills"] = ["Python", "SQL"]
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
@@ -124,12 +124,12 @@ class TestCareerPathService(unittest.TestCase):
             "profile_summary": VALID_PROFILE_SUMMARY,
             "paths": [mutated, VALID_ITEM, VALID_ITEM]
         })
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.analyze_career_paths(candidate_id=42)
         self.gemini_mock.generate.assert_called_once()
 
     def test_core_skills_too_many_raises_error(self):
-        """Item with more than five skills raises GeminiUnavailableError."""
+        """Item with more than five skills raises LLMUnavailableError."""
         mutated = VALID_ITEM.copy()
         mutated["core_skills"] = ["a", "b", "c", "d", "e", "f"]
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
@@ -137,35 +137,35 @@ class TestCareerPathService(unittest.TestCase):
             "profile_summary": VALID_PROFILE_SUMMARY,
             "paths": [mutated, VALID_ITEM, VALID_ITEM]
         })
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.analyze_career_paths(candidate_id=42)
         self.gemini_mock.generate.assert_called_once()
 
     def test_profile_summary_missing_raises_error(self):
-        """Missing top-level profile_summary key raises GeminiUnavailableError."""
+        """Missing top-level profile_summary key raises LLMUnavailableError."""
         response = {
             "paths": [VALID_ITEM, VALID_ITEM, VALID_ITEM]
         }
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
         self.gemini_mock.generate.return_value = json.dumps(response)
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.analyze_career_paths(candidate_id=42)
         self.gemini_mock.generate.assert_called_once()
 
     def test_profile_summary_empty_raises_error(self):
-        """Empty top-level profile_summary string raises GeminiUnavailableError."""
+        """Empty top-level profile_summary string raises LLMUnavailableError."""
         response = {
             "profile_summary": "",
             "paths": [VALID_ITEM, VALID_ITEM, VALID_ITEM]
         }
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
         self.gemini_mock.generate.return_value = json.dumps(response)
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.analyze_career_paths(candidate_id=42)
         self.gemini_mock.generate.assert_called_once()
 
     def test_reasoning_missing_raises_error(self):
-        """Item missing reasoning key raises GeminiUnavailableError."""
+        """Item missing reasoning key raises LLMUnavailableError."""
         mutated = VALID_ITEM.copy()
         del mutated["reasoning"]
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
@@ -173,12 +173,12 @@ class TestCareerPathService(unittest.TestCase):
             "profile_summary": VALID_PROFILE_SUMMARY,
             "paths": [mutated, VALID_ITEM, VALID_ITEM]
         })
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.analyze_career_paths(candidate_id=42)
         self.gemini_mock.generate.assert_called_once()
 
     def test_reasoning_empty_raises_error(self):
-        """Item with empty reasoning string raises GeminiUnavailableError."""
+        """Item with empty reasoning string raises LLMUnavailableError."""
         mutated = VALID_ITEM.copy()
         mutated["reasoning"] = ""
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
@@ -186,7 +186,7 @@ class TestCareerPathService(unittest.TestCase):
             "profile_summary": VALID_PROFILE_SUMMARY,
             "paths": [mutated, VALID_ITEM, VALID_ITEM]
         })
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.analyze_career_paths(candidate_id=42)
         self.gemini_mock.generate.assert_called_once()
 

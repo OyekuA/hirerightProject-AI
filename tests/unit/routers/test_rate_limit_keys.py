@@ -3,7 +3,7 @@
 import hashlib
 import json
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from fastapi import Request
 
@@ -71,124 +71,196 @@ class TestFingerprint(unittest.TestCase):
         self.assertEqual(fp1, fp2)
 
 
-class TestCandidateIdKey(unittest.IsolatedAsyncioTestCase):
-    """Test candidate_id_key async function."""
+class TestCandidateIdKey(unittest.TestCase):
+    """Test candidate_id_key synchronous function."""
 
-    async def test_candidate_id_present(self):
+    def test_candidate_id_present(self):
         """Key format: candidate:{fingerprint_with_entity_id}."""
-        request = AsyncMock(spec=Request)
+        request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
-        request.json = AsyncMock(return_value={"candidate_id": 123})
-        key = await candidate_id_key(request)
+        request._body = json.dumps({"candidate_id": 123}).encode()
+        key = candidate_id_key(request)
         expected_fp = hashlib.sha256(b"secret" + b"123").hexdigest()
         self.assertEqual(key, f"candidate:{expected_fp}")
 
-    async def test_candidate_id_missing(self):
+    def test_candidate_id_missing(self):
         """Missing candidate_id yields unknown:{fingerprint}."""
-        request = AsyncMock(spec=Request)
+        request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
-        request.json = AsyncMock(return_value={})
-        key = await candidate_id_key(request)
+        request._body = json.dumps({}).encode()
+        key = candidate_id_key(request)
         expected_fp = hashlib.sha256(b"secret").hexdigest()
         self.assertEqual(key, f"unknown:{expected_fp}")
 
-    async def test_candidate_id_non_dict_body(self):
+    def test_candidate_id_non_dict_body(self):
         """Non‑dict JSON body falls back to unknown."""
-        request = AsyncMock(spec=Request)
+        request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
-        request.json = AsyncMock(return_value=[1, 2, 3])
-        key = await candidate_id_key(request)
+        request._body = json.dumps([1, 2, 3]).encode()
+        key = candidate_id_key(request)
         expected_fp = hashlib.sha256(b"secret").hexdigest()
         self.assertEqual(key, f"unknown:{expected_fp}")
 
-    async def test_json_decode_error(self):
+    def test_candidate_id_json_decode_error(self):
         """Malformed JSON raises exception, caught and returns unknown."""
-        request = AsyncMock(spec=Request)
+        request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
-        request.json = AsyncMock(side_effect=json.JSONDecodeError("Expecting value", "", 0))
-        key = await candidate_id_key(request)
+        request._body = b"not valid json"
+        key = candidate_id_key(request)
+        expected_fp = hashlib.sha256(b"secret").hexdigest()
+        self.assertEqual(key, f"unknown:{expected_fp}")
+
+    def test_candidate_id_body_missing(self):
+        """Missing _body attribute (AttributeError) falls back to unknown."""
+        request = MagicMock(spec=Request)
+        request.headers = {"X-API-Key": "secret"}
+        del request._body
+        key = candidate_id_key(request)
+        expected_fp = hashlib.sha256(b"secret").hexdigest()
+        self.assertEqual(key, f"unknown:{expected_fp}")
+
+    def test_candidate_id_body_empty(self):
+        """Empty _body bytes falls back to unknown."""
+        request = MagicMock(spec=Request)
+        request.headers = {"X-API-Key": "secret"}
+        request._body = b""
+        key = candidate_id_key(request)
         expected_fp = hashlib.sha256(b"secret").hexdigest()
         self.assertEqual(key, f"unknown:{expected_fp}")
 
 
-class TestJobIdKey(unittest.IsolatedAsyncioTestCase):
-    """Test job_id_key async function."""
+class TestJobIdKey(unittest.TestCase):
+    """Test job_id_key synchronous function."""
 
-    async def test_job_id_present(self):
+    def test_job_id_present(self):
         """Key format: job:{fingerprint_with_entity_id}."""
-        request = AsyncMock(spec=Request)
+        request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
-        request.json = AsyncMock(return_value={"job_id": 456})
-        key = await job_id_key(request)
+        request._body = json.dumps({"job_id": 456}).encode()
+        key = job_id_key(request)
         expected_fp = hashlib.sha256(b"secret" + b"456").hexdigest()
         self.assertEqual(key, f"job:{expected_fp}")
 
-    async def test_job_id_missing(self):
+    def test_job_id_missing(self):
         """Missing job_id yields unknown:{fingerprint}."""
-        request = AsyncMock(spec=Request)
+        request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
-        request.json = AsyncMock(return_value={})
-        key = await job_id_key(request)
+        request._body = json.dumps({}).encode()
+        key = job_id_key(request)
         expected_fp = hashlib.sha256(b"secret").hexdigest()
         self.assertEqual(key, f"unknown:{expected_fp}")
 
-    async def test_job_id_without_api_key(self):
+    def test_job_id_without_api_key(self):
         """No API key falls back to IP fingerprint."""
-        request = AsyncMock(spec=Request)
+        request = MagicMock(spec=Request)
         request.headers = {}
-        request.json = AsyncMock(return_value={"job_id": 789})
+        request._body = json.dumps({"job_id": 789}).encode()
         with patch("app.routers._rate_limit_keys.get_remote_address") as mock_get:
             mock_get.return_value = "10.0.0.1"
-            key = await job_id_key(request)
+            key = job_id_key(request)
         expected_fp = hashlib.sha256(b"10.0.0.1" + b"789").hexdigest()
         self.assertEqual(key, f"job:{expected_fp}")
 
-
-class TestTargetIdKey(unittest.IsolatedAsyncioTestCase):
-    """Test target_id_key async function."""
-
-    async def test_target_id_present(self):
-        request = AsyncMock(spec=Request)
+    def test_job_id_body_missing(self):
+        """Missing _body attribute falls back to unknown."""
+        request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
-        request.json = AsyncMock(return_value={"target_id": "target_99"})
-        key = await target_id_key(request)
+        del request._body
+        key = job_id_key(request)
+        expected_fp = hashlib.sha256(b"secret").hexdigest()
+        self.assertEqual(key, f"unknown:{expected_fp}")
+
+    def test_job_id_body_empty(self):
+        """Empty _body bytes falls back to unknown."""
+        request = MagicMock(spec=Request)
+        request.headers = {"X-API-Key": "secret"}
+        request._body = b""
+        key = job_id_key(request)
+        expected_fp = hashlib.sha256(b"secret").hexdigest()
+        self.assertEqual(key, f"unknown:{expected_fp}")
+
+
+class TestTargetIdKey(unittest.TestCase):
+    """Test target_id_key synchronous function."""
+
+    def test_target_id_present(self):
+        request = MagicMock(spec=Request)
+        request.headers = {"X-API-Key": "secret"}
+        request._body = json.dumps({"target_id": "target_99"}).encode()
+        key = target_id_key(request)
         expected_fp = hashlib.sha256(b"secret" + b"target_99").hexdigest()
         self.assertEqual(key, f"target:{expected_fp}")
 
-
-class TestCandidateOrJobIdKey(unittest.IsolatedAsyncioTestCase):
-    """Test candidate_or_job_id_key async function."""
-
-    async def test_candidate_context_present(self):
-        request = AsyncMock(spec=Request)
+    def test_target_id_body_missing(self):
+        """Missing _body attribute falls back to unknown."""
+        request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
-        request.json = AsyncMock(
-            return_value={
+        del request._body
+        key = target_id_key(request)
+        expected_fp = hashlib.sha256(b"secret").hexdigest()
+        self.assertEqual(key, f"unknown:{expected_fp}")
+
+    def test_target_id_body_empty(self):
+        """Empty _body bytes falls back to unknown."""
+        request = MagicMock(spec=Request)
+        request.headers = {"X-API-Key": "secret"}
+        request._body = b""
+        key = target_id_key(request)
+        expected_fp = hashlib.sha256(b"secret").hexdigest()
+        self.assertEqual(key, f"unknown:{expected_fp}")
+
+
+class TestCandidateOrJobIdKey(unittest.TestCase):
+    """Test candidate_or_job_id_key synchronous function."""
+
+    def test_candidate_context_present(self):
+        request = MagicMock(spec=Request)
+        request.headers = {"X-API-Key": "secret"}
+        request._body = json.dumps(
+            {
                 "candidate_context": {"candidate_id": 111},
                 "job_context": {"job_id": 222},
             }
-        )
-        key = await candidate_or_job_id_key(request)
+        ).encode()
+        key = candidate_or_job_id_key(request)
         expected_fp = hashlib.sha256(b"secret" + b"111").hexdigest()
         self.assertEqual(key, f"candidate:{expected_fp}")
 
-    async def test_job_context_present(self):
-        request = AsyncMock(spec=Request)
+    def test_job_context_present(self):
+        request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
-        request.json = AsyncMock(
-            return_value={
+        request._body = json.dumps(
+            {
                 "job_context": {"job_id": 333},
             }
-        )
-        key = await candidate_or_job_id_key(request)
+        ).encode()
+        key = candidate_or_job_id_key(request)
         expected_fp = hashlib.sha256(b"secret" + b"333").hexdigest()
         self.assertEqual(key, f"job:{expected_fp}")
 
-    async def test_neither_context_present(self):
-        request = AsyncMock(spec=Request)
+    def test_neither_context_present(self):
+        request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
-        request.json = AsyncMock(return_value={})
-        key = await candidate_or_job_id_key(request)
+        request._body = json.dumps({}).encode()
+        key = candidate_or_job_id_key(request)
+        expected_fp = hashlib.sha256(b"secret").hexdigest()
+        self.assertEqual(key, f"unknown:{expected_fp}")
+
+    def test_body_missing(self):
+        """Missing _body attribute falls back to unknown."""
+        request = MagicMock(spec=Request)
+        request.headers = {"X-API-Key": "secret"}
+        del request._body
+        key = candidate_or_job_id_key(request)
+        expected_fp = hashlib.sha256(b"secret").hexdigest()
+        self.assertEqual(key, f"unknown:{expected_fp}")
+
+    def test_body_empty(self):
+        """Empty _body bytes falls back to unknown."""
+        request = MagicMock(spec=Request)
+        request.headers = {"X-API-Key": "secret"}
+        request._body = b""
+        key = candidate_or_job_id_key(request)
         expected_fp = hashlib.sha256(b"secret").hexdigest()
         self.assertEqual(key, f"unknown:{expected_fp}")
 

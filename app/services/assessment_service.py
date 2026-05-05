@@ -1,6 +1,6 @@
 """Assessment service for generating interview questions and grading candidate answers.
 
-This module provides the AssessmentService class that orchestrates Gemini calls
+This module provides the AssessmentService class that orchestrates LLM calls
 and Qdrant lookups to produce scenario‑based questions and evaluate answers.
 """
 
@@ -10,9 +10,9 @@ import structlog
 from typing import Optional, Union, Literal, List, Dict, Any
 
 from app.clients.dependencies import CANDIDATES_COLLECTION, JOBS_COLLECTION
-from app.clients.gemini import GeminiClient, GeminiUnavailableError
+from app.clients.llm import LLMClient, LLMUnavailableError
 from app.clients.qdrant import QdrantClient
-from app.utils import parse_gemini_json
+from app.utils import parse_llm_json
 from app.prompts import GENERATE_QUESTIONS_PROMPT_TEMPLATE, GRADE_ANSWERS_PROMPT_TEMPLATE
 from ..schemas.assessment import MultipleChoiceQuestion
 
@@ -23,16 +23,16 @@ AUTHENTICITY_PENALTY = 25
 
 
 class AssessmentService:
-    """Service that encapsulates Gemini‑based assessment generation and grading."""
+    """Service that encapsulates LLM‑based assessment generation and grading."""
 
-    def __init__(self, gemini: GeminiClient, qdrant: Optional[QdrantClient] = None):
+    def __init__(self, llm: LLMClient, qdrant: Optional[QdrantClient] = None):
         """Initialize the assessment service.
 
         Args:
-            gemini: A configured GeminiClient instance.
+            llm: A configured LLMClient instance.
             qdrant: A QdrantClient instance (optional, required only for generate_questions).
         """
-        self.gemini = gemini
+        self.llm = llm
         self.qdrant = qdrant
 
     def generate_questions(
@@ -130,10 +130,10 @@ The job context is not specified (generic role)."""
         if question_type == "single":
             instruction = f"""
 Generate exactly {clamped_n} scenario‑based interview questions that:
-1. Are tailored to the candidate’s specific past experience and skills (if provided).
+1. Are tailored to the candidate's specific past experience and skills (if provided).
 2. Pose concrete, realistic work situations they might encounter in the {target_role} role.
 3. Require the candidate to explain how they would apply their past experience to solve the scenario.
-4. Forbid generic definition questions (e.g., “What is X?”) or trivia.
+4. Forbid generic definition questions (e.g., "What is X?") or trivia.
 
 Return a JSON array of strings, where each string is one question, and nothing else.
 
@@ -145,7 +145,7 @@ Example format:
         else:
             instruction = f"""
 Generate exactly {clamped_n} multiple-choice interview questions that:
-1. Are tailored to the candidate’s specific past experience and skills.
+1. Are tailored to the candidate's specific past experience and skills.
 2. Pose highly complex, tricky, realistic work situations for a {target_role}.
 3. The distractors (wrong options) MUST be common industry misconceptions or plausible mistakes.
 4. CRITICAL FORMATTING: The options must ONLY contain the proposed action or solution.
@@ -166,33 +166,33 @@ Do NOT prepend A, B, C, D to the answers.
             candidate_block=candidate_block,
             instruction=instruction
         )
-        generated = self.gemini.generate(prompt)
+        generated = self.llm.generate(prompt)
         try:
-            parsed = parse_gemini_json(generated)
+            parsed = parse_llm_json(generated)
             if not isinstance(parsed, list):
-                raise ValueError("Gemini response is not a list")
+                raise ValueError("LLM response is not a list")
             questions = parsed
             if len(questions) > clamped_n:
                 logger.warning(
-                    "Gemini returned more questions than requested, truncating",
+                    "LLM returned more questions than requested, truncating",
                     requested=clamped_n,
                     received=len(questions),
                 )
                 questions = questions[:clamped_n]
             elif len(questions) < clamped_n:
                 logger.error(
-                    "Gemini returned fewer questions than requested",
+                    "LLM returned fewer questions than requested",
                     requested=clamped_n,
                     received=len(questions),
                 )
-                raise GeminiUnavailableError(
-                    f"Gemini returned only {len(questions)} questions, expected {clamped_n}"
+                raise LLMUnavailableError(
+                    f"LLM returned only {len(questions)} questions, expected {clamped_n}"
                 )
 
             if question_type == "single":
                 for q in questions:
                     if not isinstance(q, str):
-                        raise ValueError("Gemini response contains non‑string items in single‑question mode")
+                        raise ValueError("LLM response contains non‑string items in single‑question mode")
             else:
                 formatted_questions = []
                 for i, q in enumerate(questions):
@@ -227,8 +227,8 @@ Do NOT prepend A, B, C, D to the answers.
                 questions = formatted_questions
             return questions
         except (json.JSONDecodeError, ValueError) as e:
-            logger.error("Failed to parse Gemini response as JSON", error=str(e))
-            raise GeminiUnavailableError(f"Gemini returned malformed response: {e}")
+            logger.error("Failed to parse LLM response as JSON", error=str(e))
+            raise LLMUnavailableError(f"LLM returned malformed response: {e}")
 
     @staticmethod
     def _is_multiple_choice(q: Union[str, dict, MultipleChoiceQuestion]) -> bool:
@@ -423,17 +423,17 @@ All questions are open‑ended. Evaluate based on technical depth, clarity, and 
             grading_rules_block=grading_rules_block,
             qa_pairs=qa_pairs_block
         )
-        generated = self.gemini.generate(prompt)
+        generated = self.llm.generate(prompt)
 
         try:
-            result = parse_gemini_json(generated)
+            result = parse_llm_json(generated)
         except json.JSONDecodeError as e:
-            logger.error("Gemini returned non‑JSON response", error=str(e))
-            raise GeminiUnavailableError(f"Malformed JSON from Gemini: {e}")
+            logger.error("LLM returned non‑JSON response", error=str(e))
+            raise LLMUnavailableError(f"Malformed JSON from LLM: {e}")
 
         required_keys = {"overall_score", "skill_breakdown", "authenticity_flag"}
         if not all(k in result for k in required_keys):
-            raise ValueError("Gemini response missing required keys")
+            raise ValueError("LLM response missing required keys")
 
         overall = int(result["overall_score"])
         if not (0 <= overall <= 100):

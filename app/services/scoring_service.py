@@ -1,6 +1,6 @@
 """Scoring service for calculating fit scores between candidates and jobs.
 
-This module provides the ScoringService class that orchestrates Gemini calls,
+This module provides the ScoringService class that orchestrates LLM calls,
 Qdrant lookups, and caching to produce a detailed fit score.
 """
 
@@ -8,34 +8,34 @@ import json
 import structlog
 
 from app.clients.dependencies import CANDIDATES_COLLECTION, JOBS_COLLECTION
-from app.clients.gemini import GeminiClient, GeminiUnavailableError
+from app.clients.llm import LLMClient, LLMUnavailableError
 from app.clients.qdrant import QdrantClient
 from app.clients.cache import CacheBackend
 from app.config import get_settings
 from app.utils.ingestion import truncate_to_prompt_cap
-from app.utils import parse_gemini_json
+from app.utils import parse_llm_json
 from app.prompts import SCORING_FIT_PROMPT_TEMPLATE
 
 logger = structlog.get_logger()
 
 
 class ScoringService:
-    """Service that encapsulates Gemini‑based fit‑score calculation."""
+    """Service that encapsulates LLM‑based fit‑score calculation."""
 
     def __init__(
         self,
-        gemini: GeminiClient,
+        llm: LLMClient,
         qdrant: QdrantClient,
         cache: CacheBackend,
     ):
         """Initialize the scoring service.
 
         Args:
-            gemini: A configured GeminiClient instance.
+            llm: A configured LLMClient instance.
             qdrant: A QdrantClient instance.
             cache: A CacheBackend instance.
         """
-        self.gemini = gemini
+        self.llm = llm
         self.qdrant = qdrant
         self.cache = cache
 
@@ -64,7 +64,7 @@ class ScoringService:
 
         Raises:
             ValueError: If the candidate or job is not found in the vector store.
-            GeminiUnavailableError: If the Gemini circuit breaker is open or the call fails,
+            LLMUnavailableError: If the LLM circuit breaker is open or the call fails,
                 or if the response is malformed.
         """
         cache_key = f"{candidate_id}:{candidate_version}:{job_id}:{job_version}"
@@ -158,39 +158,39 @@ class ScoringService:
         )
 
         prompt = truncate_to_prompt_cap(prompt)
-        generated = self.gemini.generate(prompt)
+        generated = self.llm.generate(prompt)
 
         try:
-            result = parse_gemini_json(generated)
+            result = parse_llm_json(generated)
         except json.JSONDecodeError as e:
             logger.error(
-                "Gemini returned non‑JSON response",
+                "LLM returned non‑JSON response",
                 error=str(e),
                 raw=generated[:500],
             )
-            raise GeminiUnavailableError(
-                f"Gemini returned malformed fit-score JSON: {e}"
+            raise LLMUnavailableError(
+                f"LLM returned malformed fit-score JSON: {e}"
             )
 
         if not isinstance(result, dict):
             logger.error(
-                "Gemini returned a non‑dict JSON payload",
+                "LLM returned a non‑dict JSON payload",
                 payload_type=type(result).__name__,
                 raw=generated[:500],
             )
-            raise GeminiUnavailableError(
-                "Gemini returned malformed fit‑score JSON: expected a dict"
+            raise LLMUnavailableError(
+                "LLM returned malformed fit‑score JSON: expected a dict"
             )
 
         required_top = {"overall_score_percentage", "category_breakdown", "skill_gap_analysis"}
         if not all(k in result for k in required_top):
             logger.error(
-                "Gemini response missing required top‑level keys",
+                "LLM response missing required top‑level keys",
                 response_keys=list(result.keys()),
                 required_keys=list(required_top),
             )
-            raise GeminiUnavailableError(
-                "Gemini response missing required top‑level keys"
+            raise LLMUnavailableError(
+                "LLM response missing required top‑level keys"
             )
 
         category_keys = {"role_match", "experience", "location", "employment_type"}
@@ -199,11 +199,11 @@ class ScoringService:
             k in cat_breakdown for k in category_keys
         ):
             logger.error(
-                "Gemini category_breakdown missing or malformed",
+                "LLM category_breakdown missing or malformed",
                 category_breakdown=cat_breakdown,
             )
-            raise GeminiUnavailableError(
-                "Gemini category_breakdown missing required sub‑keys"
+            raise LLMUnavailableError(
+                "LLM category_breakdown missing required sub‑keys"
             )
 
         for key in category_keys:
@@ -213,7 +213,7 @@ class ScoringService:
                     f"Category {key} is missing 'status' or 'short_reason'",
                     sub=sub,
                 )
-                raise GeminiUnavailableError(
+                raise LLMUnavailableError(
                     f"Category {key} is missing required fields"
                 )
             if sub["status"] not in ("pass", "warning", "fail"):
@@ -221,26 +221,26 @@ class ScoringService:
                     f"Unexpected status value in category {key}",
                     status=sub["status"],
                 )
-                raise GeminiUnavailableError(
-                    f"Gemini returned invalid status '{sub['status']}' in category {key}"
+                raise LLMUnavailableError(
+                    f"LLM returned invalid status '{sub['status']}' in category {key}"
                 )
 
         try:
             overall = int(result["overall_score_percentage"])
         except (TypeError, ValueError):
             logger.error(
-                "Gemini returned non-integer overall_score_percentage",
+                "LLM returned non-integer overall_score_percentage",
                 value=result["overall_score_percentage"],
             )
-            raise GeminiUnavailableError(
+            raise LLMUnavailableError(
                 "overall_score_percentage must be an integer between 0 and 100"
             )
         if not (0 <= overall <= 100):
             logger.error(
-                "Gemini returned out-of-range overall_score_percentage",
+                "LLM returned out-of-range overall_score_percentage",
                 value=overall,
             )
-            raise GeminiUnavailableError(
+            raise LLMUnavailableError(
                 "overall_score_percentage must be an integer between 0 and 100"
             )
         result["overall_score_percentage"] = overall

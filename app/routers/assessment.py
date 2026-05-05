@@ -2,8 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 import json
 import structlog
 import asyncio
-from app.clients.dependencies import get_qdrant_client, get_gemini_client
-from app.clients.gemini import GeminiClient, GeminiUnavailableError
+from app.clients.dependencies import get_qdrant_client, get_llm_client
+from app.clients.llm import LLMClient, LLMUnavailableError
 from app.clients.qdrant import QdrantClient
 from app.services.assessment_service import AssessmentService
 from app.routers._rate_limit_keys import candidate_or_job_id_key
@@ -33,14 +33,14 @@ async def generate_assessment(
     request: Request,
     req: GenerateAssessmentRequest,
     qdrant: QdrantClient = Depends(get_qdrant_client),
-    gemini: GeminiClient = Depends(get_gemini_client),
+    llm: LLMClient = Depends(get_llm_client),
 ):
     """Generate scenario‑based interview questions for a candidate."""
     candidate_id = req.candidate_context.candidate_id if req.candidate_context else None
     target_role = req.candidate_context.target_role if req.candidate_context else None
     job_id = req.job_context.job_id if req.job_context else None
     structlog.contextvars.bind_contextvars(entity_id=candidate_id)
-    service = AssessmentService(gemini=gemini, qdrant=qdrant)
+    service = AssessmentService(llm=llm, qdrant=qdrant)
     try:
         questions = await asyncio.to_thread(
             service.generate_questions,
@@ -52,7 +52,7 @@ async def generate_assessment(
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except GeminiUnavailableError:
+    except LLMUnavailableError:
         raise HTTPException(
             status_code=503,
             detail="Assessment generation service temporarily unavailable",
@@ -65,12 +65,12 @@ async def generate_assessment(
 async def grade_assessment(
     request: Request,
     req: GradeAssessmentRequest,
-    gemini: GeminiClient = Depends(get_gemini_client),
+    llm: LLMClient = Depends(get_llm_client),
 ):
     """Grade candidate answers and produce a score, feedback, and authenticity flag.
     Questions can be plain strings or multiple‑choice objects (as returned by /assessment/generate)."""
     structlog.contextvars.bind_contextvars(entity_id="unknown")
-    service = AssessmentService(gemini=gemini, qdrant=None)
+    service = AssessmentService(llm=llm, qdrant=None)
     try:
         result = await asyncio.to_thread(
             service.grade_answers,
@@ -83,7 +83,7 @@ async def grade_assessment(
             status_code=422,
             detail=str(e),
         )
-    except GeminiUnavailableError:
+    except LLMUnavailableError:
         raise HTTPException(
             status_code=503,
             detail="Grading service temporarily unavailable",

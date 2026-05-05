@@ -4,7 +4,7 @@ import time
 from unittest.mock import MagicMock, patch, call
 
 from app.services.recommendation_service import RecommendationService
-from app.clients.gemini import GeminiUnavailableError
+from app.clients.llm import LLMUnavailableError
 
 
 class TestRecommendationServiceTruncation(unittest.TestCase):
@@ -16,7 +16,7 @@ class TestRecommendationServiceTruncation(unittest.TestCase):
         self.mock_qdrant = MagicMock()
         self.mock_cache = MagicMock()
         self.service = RecommendationService(
-            gemini=self.mock_gemini,
+            llm=self.mock_gemini,
             qdrant=self.mock_qdrant,
             cache=self.mock_cache,
         )
@@ -129,7 +129,7 @@ class TestRecommendationServiceCacheKey(unittest.TestCase):
         self.mock_qdrant = MagicMock()
         self.mock_cache = MagicMock()
         self.service = RecommendationService(
-            gemini=self.mock_gemini,
+            llm=self.mock_gemini,
             qdrant=self.mock_qdrant,
             cache=self.mock_cache,
         )
@@ -249,7 +249,7 @@ class TestColdStart(unittest.TestCase):
         self.mock_qdrant = MagicMock()
         self.mock_cache = MagicMock()
         self.service = RecommendationService(
-            gemini=self.mock_gemini,
+            llm=self.mock_gemini,
             qdrant=self.mock_qdrant,
             cache=self.mock_cache,
         )
@@ -474,7 +474,7 @@ class TestAdaptiveWeights(unittest.TestCase):
         self.mock_qdrant = MagicMock()
         self.mock_cache = MagicMock()
         self.service = RecommendationService(
-            gemini=self.mock_gemini,
+            llm=self.mock_gemini,
             qdrant=self.mock_qdrant,
             cache=self.mock_cache,
         )
@@ -613,7 +613,7 @@ class TestPeerCentroid(unittest.TestCase):
         self.mock_qdrant = MagicMock()
         self.mock_cache = MagicMock()
         self.service = RecommendationService(
-            gemini=self.mock_gemini,
+            llm=self.mock_gemini,
             qdrant=self.mock_qdrant,
             cache=self.mock_cache,
         )
@@ -673,7 +673,7 @@ class TestReRanker(unittest.TestCase):
         self.mock_qdrant = MagicMock()
         self.mock_cache = MagicMock()
         self.service = RecommendationService(
-            gemini=self.mock_gemini,
+            llm=self.mock_gemini,
             qdrant=self.mock_qdrant,
             cache=self.mock_cache,
         )
@@ -760,7 +760,7 @@ class TestDiversityPass(unittest.TestCase):
         self.mock_qdrant = MagicMock()
         self.mock_cache = MagicMock()
         self.service = RecommendationService(
-            gemini=self.mock_gemini,
+            llm=self.mock_gemini,
             qdrant=self.mock_qdrant,
             cache=self.mock_cache,
         )
@@ -932,7 +932,7 @@ class TestRankPool(unittest.TestCase):
         self.mock_qdrant = MagicMock()
         self.mock_cache = MagicMock()
         self.service = RecommendationService(
-            gemini=self.mock_gemini,
+            llm=self.mock_gemini,
             qdrant=self.mock_qdrant,
             cache=self.mock_cache,
         )
@@ -1011,17 +1011,17 @@ class TestRankPool(unittest.TestCase):
         self.assertIn("stored 5", str(cm.exception))
 
     @patch('app.services.recommendation_service.ScoringService')
-    def test_rank_pool_gemini_unavailable_error_propagates(self, mock_scoring_cls):
-        """GeminiUnavailableError from scoring service propagates."""
+    def test_rank_pool_llm_unavailable_error_propagates(self, mock_scoring_cls):
+        """LLMUnavailableError from scoring service propagates."""
         self.mock_qdrant.get.side_effect = [
             {"job_version": 5},
             {"candidate_version": 1},
         ]
         mock_scoring = MagicMock()
-        mock_scoring.calculate_fit.side_effect = GeminiUnavailableError("circuit open")
+        mock_scoring.calculate_fit.side_effect = LLMUnavailableError("circuit open")
         mock_scoring_cls.return_value = mock_scoring
 
-        with self.assertRaises(GeminiUnavailableError):
+        with self.assertRaises(LLMUnavailableError):
             self.service.rank_pool(
                 job_id=999,
                 job_version=5,
@@ -1164,7 +1164,7 @@ class TestRecommendationServiceVersionValidation(unittest.TestCase):
         self.mock_qdrant = MagicMock()
         self.mock_cache = MagicMock()
         self.service = RecommendationService(
-            gemini=self.mock_gemini,
+            llm=self.mock_gemini,
             qdrant=self.mock_qdrant,
             cache=self.mock_cache,
         )

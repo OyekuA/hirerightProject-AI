@@ -94,7 +94,7 @@ CANDIDATES = [
 JOBS = [
     {
         "job_id": 2001,
-        "jd_text": ( # Note: In swagger you'd pass jd_text(in a single double quote): "We are looking for a Senior Backend Engineer to join our fintech team in Lagos. You will design and implement scalable microservices, optimize database performance, and mentor junior engineers. Requires 5+ years of experience with Python, FastAPI, and cloud platforms. " 
+        "jd_text": ( # Note: In swagger you'd pass jd_text(in a single double quote): "We are looking for a Senior Backend Engineer to join our fintech team in Lagos. You will design and implement scalable microservices, optimize database performance, and mentor junior engineers. Requires 5+ years of experience with Python, FastAPI, and cloud platforms." 
             "We are looking for a Senior Backend Engineer to join our fintech team in Lagos. "
             "You will design and implement scalable microservices, optimize database performance, "
             "and mentor junior engineers. Requires 5+ years of experience with Python, FastAPI, and cloud platforms."

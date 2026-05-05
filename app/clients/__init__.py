@@ -2,7 +2,7 @@
 
 __all__ = [
     "qdrant",
-    "gemini",
+    "llm",
     "cache",
     "rate_limiter",
     "dependencies",

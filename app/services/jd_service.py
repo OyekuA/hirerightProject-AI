@@ -1,6 +1,6 @@
 """Job Description service for generating and analyzing job descriptions.
 
-This module provides the JDService class that orchestrates Gemini calls
+This module provides the JDService class that orchestrates LLM calls
 to generate job descriptions from prompts and to critique existing JDs.
 """
 
@@ -8,11 +8,11 @@ import json
 import structlog
 from typing import Optional
 
-from app.clients.gemini import GeminiClient, GeminiUnavailableError
+from app.clients.llm import LLMClient, LLMUnavailableError
 from app.clients.qdrant import QdrantClient
 from app.clients.dependencies import JOBS_COLLECTION
 from app.config import get_settings
-from app.utils import parse_gemini_json
+from app.utils import parse_llm_json
 from app.utils.ingestion import truncate_to_prompt_cap
 from app.prompts import JD_ANALYSIS_PROMPT_TEMPLATE, JD_GENERATION_PROMPT_TEMPLATE, JD_REFINEMENT_PROMPT_TEMPLATE
 
@@ -20,16 +20,16 @@ logger = structlog.get_logger()
 
 
 class JDService:
-    """Service that encapsulates Gemini‑based JD generation and analysis."""
+    """Service that encapsulates LLM‑based JD generation and analysis."""
 
-    def __init__(self, gemini: GeminiClient, qdrant: Optional[QdrantClient] = None):
+    def __init__(self, llm: LLMClient, qdrant: Optional[QdrantClient] = None):
         """Initialize the JD service.
 
         Args:
-            gemini: A configured GeminiClient instance.
+            llm: A configured LLMClient instance.
             qdrant: Optional Qdrant client for job context lookup.
         """
-        self.gemini = gemini
+        self.llm = llm
         self.qdrant = qdrant
 
     def generate_jd(
@@ -50,7 +50,7 @@ class JDService:
             The generated or refined JD as a plain text string.
 
         Raises:
-            GeminiUnavailableError: If the Gemini circuit breaker is open or the call fails.
+            LLMUnavailableError: If the LLM circuit breaker is open or the call fails.
             ValueError: If a job_id is provided but the job is not found in Qdrant.
         """
         logger.info(
@@ -142,10 +142,10 @@ class JDService:
             )
 
         try:
-            jd_text = self.gemini.generate(prompt_text)
+            jd_text = self.llm.generate(prompt_text)
         except Exception as e:
-            logger.error("Gemini call failed during JD generation", error=str(e))
-            raise GeminiUnavailableError(f"JD generation failed: {e}")
+            logger.error("LLM call failed during JD generation", error=str(e))
+            raise LLMUnavailableError(f"JD generation failed: {e}")
 
         logger.info(
             "JD generated successfully",
@@ -163,7 +163,7 @@ class JDService:
             A list of strings, each being a concrete critique suggestion.
 
         Raises:
-            GeminiUnavailableError: If the Gemini circuit breaker is open or the call fails,
+            LLMUnavailableError: If the LLM circuit breaker is open or the call fails,
                 or if the response is malformed.
         """
         logger.info(
@@ -175,25 +175,25 @@ class JDService:
 
         prompt = JD_ANALYSIS_PROMPT_TEMPLATE.format(jd_text=jd_text)
 
-        generated = self.gemini.generate(prompt)
+        generated = self.llm.generate(prompt)
 
         try:
-            critiques = parse_gemini_json(generated)
+            critiques = parse_llm_json(generated)
         except json.JSONDecodeError as e:
             logger.error(
-                "Gemini returned non‑JSON response",
+                "LLM returned non‑JSON response",
                 error=str(e),
             )
-            raise GeminiUnavailableError(
-                f"Gemini returned malformed critique JSON: {e}"
+            raise LLMUnavailableError(
+                f"LLM returned malformed critique JSON: {e}"
             )
 
         if not isinstance(critiques, list):
             logger.error(
-                "Gemini response is not a list",
+                "LLM response is not a list",
                 response_type=type(critiques),
             )
-            raise GeminiUnavailableError("Gemini response is not a list")
+            raise LLMUnavailableError("LLM response is not a list")
 
         for i, item in enumerate(critiques):
             if not isinstance(item, str):
@@ -201,7 +201,7 @@ class JDService:
                     f"Item {i} is not a string",
                     item=item,
                 )
-                raise GeminiUnavailableError(f"Item {i} is not a string")
+                raise LLMUnavailableError(f"Item {i} is not a string")
 
         logger.info(
             "JD analysis completed",

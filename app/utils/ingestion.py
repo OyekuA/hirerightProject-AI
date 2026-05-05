@@ -169,7 +169,7 @@ def truncate_to_prompt_cap(text: str) -> str:
     exception and without logging. Shorter texts are returned unchanged.
 
     Args:
-        text: The input text that may be passed to Gemini.
+        text: The input text that may be passed to an LLM.
 
     Returns:
         The same text if within the limit, otherwise a truncated version

@@ -3,7 +3,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 from app.services.jd_service import JDService
-from app.clients.gemini import GeminiUnavailableError
+from app.clients.llm import LLMUnavailableError
 from app.clients.qdrant import QdrantClient, JOBS_COLLECTION
 
 
@@ -13,7 +13,7 @@ class TestJDService(unittest.TestCase):
     def setUp(self):
         """Create mocked dependencies for each test."""
         self.gemini_mock = MagicMock()
-        self.service = JDService(gemini=self.gemini_mock)
+        self.service = JDService(llm=self.gemini_mock)
         self.truncate_patcher = patch(
             "app.services.jd_service.truncate_to_prompt_cap",
             side_effect=lambda x: x,
@@ -24,7 +24,7 @@ class TestJDService(unittest.TestCase):
         self.truncate_patcher.stop()
 
     def test_generate_jd_fresh_returns_string(self):
-        """generate_jd with no existing draft should return the Gemini output."""
+        """generate_jd with no existing draft should return the LLM output."""
         self.gemini_mock.generate.return_value = "Job Title: Senior Engineer\nResponsibilities: ..."
         result = self.service.generate_jd(
             prompt="We need a senior backend engineer with Python and Kubernetes experience.",
@@ -65,10 +65,10 @@ class TestJDService(unittest.TestCase):
         self.assertIn("**bold**", prompt)
         self.assertIn("##", prompt)
 
-    def test_generate_jd_gemini_exception_raises_error(self):
-        """If Gemini raises an exception, generate_jd should raise GeminiUnavailableError."""
+    def test_generate_jd_llm_exception_raises_error(self):
+        """If LLM raises an exception, generate_jd should raise LLMUnavailableError."""
         self.gemini_mock.generate.side_effect = Exception("network error")
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.generate_jd(
                 prompt="Some prompt",
                 existing_draft=None,
@@ -77,7 +77,7 @@ class TestJDService(unittest.TestCase):
         self.gemini_mock.generate.assert_called_once()
 
     def test_analyze_jd_happy_path(self):
-        """analyze_jd should return a list of strings parsed from Gemini's JSON array."""
+        """analyze_jd should return a list of strings parsed from LLM's JSON array."""
         self.gemini_mock.generate.return_value = '["Point 1", "Point 2"]'
         result = self.service.analyze_jd(
             jd_text="Job description text",
@@ -86,9 +86,9 @@ class TestJDService(unittest.TestCase):
         self.gemini_mock.generate.assert_called_once()
 
     def test_analyze_jd_non_json_raises_error(self):
-        """If Gemini returns non‑JSON, analyze_jd should raise GeminiUnavailableError."""
+        """If LLM returns non‑JSON, analyze_jd should raise LLMUnavailableError."""
         self.gemini_mock.generate.return_value = "not json"
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.analyze_jd(
                 jd_text="Job description text",
             )
@@ -96,18 +96,18 @@ class TestJDService(unittest.TestCase):
         self.gemini_mock.generate.assert_called_once()
 
     def test_analyze_jd_non_list_raises_error(self):
-        """If Gemini returns a JSON object instead of a list, raise GeminiUnavailableError."""
+        """If LLM returns a JSON object instead of a list, raise LLMUnavailableError."""
         self.gemini_mock.generate.return_value = '{"key": "value"}'
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.analyze_jd(
                 jd_text="Job description text",
             )
         self.gemini_mock.generate.assert_called_once()
 
     def test_analyze_jd_non_string_item_raises_error(self):
-        """If Gemini returns a JSON array containing a non‑string, raise GeminiUnavailableError."""
+        """If LLM returns a JSON array containing a non‑string, raise LLMUnavailableError."""
         self.gemini_mock.generate.return_value = '["valid", 42]'
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.analyze_jd(
                 jd_text="Job description text",
             )
@@ -125,7 +125,7 @@ class TestJDService(unittest.TestCase):
             "about": "Nice",
         }
         qdrant_mock.get.return_value = payload
-        service = JDService(gemini=self.gemini_mock, qdrant=qdrant_mock)
+        service = JDService(llm=self.gemini_mock, qdrant=qdrant_mock)
         self.gemini_mock.generate.return_value = "Generated JD"
 
         result = service.generate_jd(
@@ -145,7 +145,7 @@ class TestJDService(unittest.TestCase):
 
     def test_generate_jd_with_job_id_no_qdrant_raises(self):
         """generate_jd with job_id but no Qdrant client should raise ValueError."""
-        service = JDService(gemini=self.gemini_mock, qdrant=None)
+        service = JDService(llm=self.gemini_mock, qdrant=None)
         with self.assertRaises(ValueError) as cm:
             service.generate_jd(
                 prompt="Create a JD",
@@ -158,7 +158,7 @@ class TestJDService(unittest.TestCase):
         """generate_jd with job_id but job not found in Qdrant should raise ValueError."""
         qdrant_mock = MagicMock()
         qdrant_mock.get.return_value = None
-        service = JDService(gemini=self.gemini_mock, qdrant=qdrant_mock)
+        service = JDService(llm=self.gemini_mock, qdrant=qdrant_mock)
         with self.assertRaises(ValueError) as cm:
             service.generate_jd(
                 prompt="Create a JD",
@@ -179,7 +179,7 @@ class TestJDService(unittest.TestCase):
             "about": "[About the Company]",
         }
         qdrant_mock.get.return_value = payload
-        service = JDService(gemini=self.gemini_mock, qdrant=qdrant_mock)
+        service = JDService(llm=self.gemini_mock, qdrant=qdrant_mock)
         self.gemini_mock.generate.return_value = "Generated JD"
         result = service.generate_jd(
             prompt="We need a [Company Name] engineer",
@@ -204,7 +204,7 @@ class TestJDService(unittest.TestCase):
             "about": "We are a tech company.",
         }
         qdrant_mock.get.return_value = payload
-        service = JDService(gemini=self.gemini_mock, qdrant=qdrant_mock)
+        service = JDService(llm=self.gemini_mock, qdrant=qdrant_mock)
         self.gemini_mock.generate.return_value = "Generated JD"
         result = service.generate_jd(
             prompt="About: [About]",
@@ -230,7 +230,7 @@ class TestJDService(unittest.TestCase):
             "about": "Tech",
         }
         qdrant_mock.get.return_value = payload
-        service = JDService(gemini=self.gemini_mock, qdrant=qdrant_mock)
+        service = JDService(llm=self.gemini_mock, qdrant=qdrant_mock)
         self.gemini_mock.generate.return_value = "Generated JD"
         result = service.generate_jd(
             prompt="Company: [Company Name], About: [About]",
@@ -257,7 +257,7 @@ class TestJDService(unittest.TestCase):
             "about": "Nice",
         }
         qdrant_mock.get.return_value = payload
-        service = JDService(gemini=self.gemini_mock, qdrant=qdrant_mock)
+        service = JDService(llm=self.gemini_mock, qdrant=qdrant_mock)
         self.gemini_mock.generate.return_value = "Generated JD"
         result = service.generate_jd(
             prompt="Create a JD for [Company Name] about [About the Company]",

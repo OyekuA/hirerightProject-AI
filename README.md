@@ -11,8 +11,8 @@ The HireRight AI Microservice adds semantic candidate‑to‑job matching, expla
 | Python 3.12 | Runtime |
 | FastAPI | Web framework |
 | Qdrant | Vector database |
-| Gemini 2.5 Flash Lite | LLM (generation) |
-| gemini‑embedding‑001 | Embeddings |
+| OpenAI gpt-4o-mini | LLM (generation) |
+| OpenAI text-embedding-3-small | Embeddings |
 | uv | Package manager |
 | Docker Compose | Container orchestration |
 | structlog + Sentry | Structured logging + error telemetry |
@@ -24,9 +24,8 @@ The HireRight AI Microservice adds semantic candidate‑to‑job matching, expla
 - `uv` installed — provide both install methods:
     - `pip install uv`
     - `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- Google AI Studio API key (used for both Gemini generation and embedding calls)
+- LLM API key (set in .env)
 - Sentry DSN (optional — for error tracking)
-- Google Cloud
 
 ## TLS / HTTPS on IONOS VPS
 
@@ -38,7 +37,7 @@ Place your certificate (`fullchain.pem`) and private key (`privkey.pem`) in `ngi
 1. Clone the repo
 2. cp .env.example .env
 3. Fill in required values in .env:
-     API_KEY, GEMINI_API_KEY, CALLBACK_HMAC_SECRET, INGEST_STATUS_STORE_PATH
+      API_KEY, LLM_API_KEY, CALLBACK_HMAC_SECRET, INGEST_STATUS_STORE_PATH
 4. docker compose up --build
 5. Verify: curl http://localhost/health
    Expected: {"status": "ok"}
@@ -51,7 +50,7 @@ Full table sourced from `.env.example`:
 | Variable | Required/Optional | Default | Description |
 |---|---|---|---|
 | `API_KEY` | Required | `change-me-in-production` | Shared secret for `X‑API‑Key` auth between PHP and FastAPI |
-| `GEMINI_API_KEY` | Required | _(none)_ | Google AI API key for Gemini LLM and embedding calls |
+| `LLM_API_KEY` | Required | _(none)_ | LLM API key — read directly by litellm for `openai/…` models |
 | `QDRANT_HOST` | Optional | `qdrant` | Qdrant container hostname (Docker Compose service name) |
 | `QDRANT_PORT` | Optional | `6333` | Qdrant port |
 | `SENTRY_DSN` | Optional | _(empty)_ | Sentry project DSN for error tracking |
@@ -68,6 +67,7 @@ Full table sourced from `.env.example`:
 | `CALLBACK_MAX_ATTEMPTS` | Optional | `3` | Maximum retry attempts for callback delivery |
 | `CALLBACK_RETRY_BASE_SECONDS` | Optional | `2` | Base delay (seconds) for exponential backoff of callback retries |
 | `LOG_LEVEL` | Optional | `ERROR` | Log level — use `ERROR` for production, `DEBUG` for local dev |
+| `EMBEDDING_DIMENSIONS` | Optional | `768` | Output dimension of the embedding model — must match `EMBEDDING_MODEL`; update and recreate Qdrant collections when switching models |
 
 ## API Reference
 
@@ -211,7 +211,7 @@ Full table sourced from `.env.example`:
 - **curl:** `curl -X POST http://localhost/api/ai/analyze-career-paths -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"candidate_id": 123}'`
 
 ### `POST /api/ai/generate‑jd`
-- **Purpose:** Generate or refine a job description using Gemini.
+- **Purpose:** Generate or refine a job description using the configured LLM.
 - **Request:**
 
 | Field | Type | Required | Description |
@@ -294,8 +294,8 @@ GET /api/ai/ingestion‑status?event_id=<event_id>
 # Unit tests (CI — no live services required)
 uv run pytest tests/unit/ -v
 
-# Integration / E2E tests (manual — requires live stack: Qdrant + Gemini API)
+# Integration / E2E tests (manual — requires live stack: Qdrant + LLM API)
 uv run pytest tests/integration/ -v -s
 ```
 
-Unit tests mock all external dependencies (Qdrant, Gemini) and run in CI on every push via `.github/workflows/test.yml`. Integration tests require the full Docker Compose stack and a valid `GEMINI_API_KEY`.
+Unit tests mock all external dependencies (Qdrant, OpenAI) and run in CI on every push via `.github/workflows/test.yml`. Integration tests require the full Docker Compose stack and a valid `OPENAI_API_KEY`.

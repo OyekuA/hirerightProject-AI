@@ -11,7 +11,7 @@ from app.logging_config import configure_logging
 
 from app.config import get_settings
 from app.middleware.correlation import CorrelationIdMiddleware
-from app.clients.gemini import GeminiUnavailableError
+from app.clients.llm import LLMUnavailableError
 from app.auth import verify_api_key
 from app.routers import (
     ingestion,
@@ -21,7 +21,15 @@ from app.routers import (
     career,
     jd,
 )
-from app.clients.dependencies import get_qdrant_client, get_gemini_client, get_rate_limiter, get_ingestion_store, get_callback_client
+from app.clients.dependencies import (
+    get_qdrant_client,
+    get_llm_client,
+    get_rate_limiter,
+    get_ingestion_store,
+    get_callback_client,
+    get_ingest_queue,
+)
+from app.services.ingestion_service import run_candidate_ingestion, run_job_ingestion
 
 
 logger = structlog.get_logger()
@@ -84,8 +92,8 @@ async def lifespan(app: FastAPI):
     qdrant_client.ensure_collections()
     logger.info("Qdrant collections ready")
 
-    gemini_client = get_gemini_client()
-    logger.info("Gemini client ready")
+    llm_client = get_llm_client()
+    logger.info("LLM client ready")
 
     store = get_ingestion_store()
     callback_client = get_callback_client()
@@ -149,7 +157,107 @@ async def lifespan(app: FastAPI):
     else:
         logger.debug("No incomplete ingestion records found")
 
+    # ── Queue worker ──────────────────────────────────────────────
+    ingest_queue = get_ingest_queue()
+
+    async def process_queue_entry(
+        entry,
+        ingest_queue,
+        qdrant_client,
+        llm_client,
+        store,
+        callback_client,
+        settings,
+    ):
+        try:
+            payload = entry.payload
+            if entry.entity_type == "candidate":
+                await run_candidate_ingestion(
+                    candidate_id=entry.entity_id,
+                    cv_url=payload["cv_url"],
+                    profile_data=payload["profile_data"],
+                    callback_url=entry.callback_url,
+                    event_id=entry.event_id,
+                    qdrant=qdrant_client,
+                    llm=llm_client,
+                    store=store,
+                    callback_client=callback_client,
+                    ingest_queue=None,
+                    suppress_callback=True,
+                )
+            elif entry.entity_type == "job":
+                await run_job_ingestion(
+                    job_id=entry.entity_id,
+                    jd_text=payload["jd_text"],
+                    metadata=payload["metadata"],
+                    callback_url=entry.callback_url,
+                    event_id=entry.event_id,
+                    qdrant=qdrant_client,
+                    llm=llm_client,
+                    store=store,
+                    callback_client=callback_client,
+                    ingest_queue=None,
+                    suppress_callback=True,
+                )
+
+            record = store.get_by_event_id(entry.event_id)
+            if record is not None and record.status == "success":
+                ingest_queue.remove(entry.event_id)
+                # Send success callback now that the queue replay succeeded
+                await callback_client.send(
+                    callback_url=entry.callback_url,
+                    event_id=entry.event_id,
+                    entity_type=entry.entity_type,
+                    entity_id=entry.entity_id,
+                    status="success",
+                    error=None,
+                )
+                logger.info("Queue entry processed successfully", event_id=entry.event_id)
+            else:
+                requeued = ingest_queue.requeue(
+                    entry,
+                    settings.INGEST_QUEUE_MAX_RETRIES,
+                    settings.INGEST_QUEUE_BACKOFF_BASE_SECONDS,
+                )
+                if not requeued:
+                    # Entry was moved to dead letter — send final failure callback
+                    await callback_client.send(
+                        callback_url=entry.callback_url,
+                        event_id=entry.event_id,
+                        entity_type=entry.entity_type,
+                        entity_id=entry.entity_id,
+                        status="failed",
+                        error="max_queue_retries_exceeded",
+                    )
+        except Exception as e:
+            logger.error("Queue entry processing error", event_id=entry.event_id, error=str(e))
+
+    async def queue_worker(ingest_queue, qdrant_client, llm_client, store, callback_client, settings):
+        while True:
+            await asyncio.sleep(settings.INGEST_QUEUE_POLL_INTERVAL_SECONDS)
+            try:
+                entries = ingest_queue.get_due_entries()
+                for entry in entries:
+                    asyncio.create_task(
+                        process_queue_entry(
+                            entry, ingest_queue, qdrant_client, llm_client, store, callback_client, settings
+                        )
+                    )
+            except Exception as e:
+                logger.error("Queue worker poll error", error=str(e))
+
+    _worker_task = asyncio.create_task(
+        queue_worker(ingest_queue, qdrant_client, llm_client, store, callback_client, settings)
+    )
+    logger.info("Ingest queue worker started", poll_interval=settings.INGEST_QUEUE_POLL_INTERVAL_SECONDS)
+
     yield
+
+    _worker_task.cancel()
+    try:
+        await _worker_task
+    except asyncio.CancelledError:
+        logger.info("Ingest queue worker stopped")
 
     if lock_acquired:
         try:
@@ -198,8 +306,8 @@ def create_app() -> FastAPI:
         """Health check endpoint (unauthenticated)."""
         return {"status": "ok"}
 
-    @app.exception_handler(GeminiUnavailableError)
-    async def gemini_unavailable_handler(request: Request, exc: GeminiUnavailableError):
+    @app.exception_handler(LLMUnavailableError)
+    async def llm_unavailable_handler(request: Request, exc: LLMUnavailableError):
         logger.error("AI service unavailable", exc_info=exc)
         return JSONResponse(
             status_code=503,

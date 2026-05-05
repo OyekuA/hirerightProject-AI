@@ -1,15 +1,13 @@
-"""Google Gemini API client with circuit‑breaker protection."""
+"""LLM API client with circuit‑breaker protection."""
 
 import time
 from typing import Optional
-from google import genai
-from google.genai import types
+import litellm
 import structlog
 
-from app.config import get_settings
 
-class GeminiUnavailableError(Exception):
-    """Raised when a Gemini call cannot be performed because a circuit breaker is open."""
+class LLMUnavailableError(Exception):
+    """Raised when an LLM call cannot be performed because a circuit breaker is open."""
 
 
 class CircuitBreaker:
@@ -129,35 +127,43 @@ class CircuitBreaker:
         self._probe_sent = False
 
 
-class GeminiClient:
-    """Google Gemini API client with separate circuit breakers for generation and embedding."""
+class LLMClient:
+    """LLM API client with separate circuit breakers for generation and embedding."""
 
     def __init__(
         self,
-        api_key: str,
+        model: str,
+        embedding_model: str,
+        embedding_dimensions: int,
         generation_cooldown: float,
         embedding_cooldown: float,
         generation_timeout: int = 30,
         embedding_timeout: int = 30,
         max_retries: int = 2,
         retry_backoff_base: float = 1.0,
+        api_key: Optional[str] = None,
     ):
-        """Initialize the Gemini client and its circuit breakers.
+        """Initialize the LLM client and its circuit breakers.
 
         Args:
-            api_key: Google AI Studio API key
+            model: litellm model string for text generation (e.g. "openai/gpt-4o-mini")
+            embedding_model: litellm model string for embeddings (e.g. "openai/text-embedding-3-small")
+            embedding_dimensions: Desired output dimension for embeddings. Passed as
+                ``dimensions`` to litellm so that all providers output uniform-sized
+                vectors (e.g. 768), preventing Qdrant collection dimension mismatches
+                when switching models.
             generation_cooldown: Seconds the generation breaker stays open
             embedding_cooldown: Seconds the embedding breaker stays open
             generation_timeout: Timeout in seconds for generation requests
             embedding_timeout: Timeout in seconds for embedding requests
             max_retries: Maximum retries for transient failures before recording breaker failure
             retry_backoff_base: Base backoff seconds for exponential retry
+            api_key: Optional API key forwarded to litellm as ``litellm.api_key``.
+                Takes precedence over provider-specific environment variables.
         """
-        http_options = types.HttpOptions(
-            timeout=max(generation_timeout, embedding_timeout) * 1000
-        )
-
-        self._client = genai.Client(api_key=api_key, http_options=http_options)
+        self._model = model
+        self._embedding_model = embedding_model
+        self._embedding_dimensions = embedding_dimensions
         self._generation_breaker = CircuitBreaker(
             cooldown_seconds=generation_cooldown
         )
@@ -170,8 +176,11 @@ class GeminiClient:
         self._retry_backoff_base = retry_backoff_base
         self._log = structlog.get_logger()
 
+        if api_key is not None:
+            litellm.api_key = api_key
+
     def generate(self, prompt: str) -> str:
-        """Generate text from a prompt using Gemini‑2.5‑flash‑lite.
+        """Generate text from a prompt using the configured LLM model.
 
         Args:
             prompt: Input text to send to the model.
@@ -180,22 +189,24 @@ class GeminiClient:
             The generated text.
 
         Raises:
-            GeminiUnavailableError: If the generation circuit breaker is open
+            LLMUnavailableError: If the generation circuit breaker is open
                 or the API call fails after tripping the breaker.
         """
         if self._generation_breaker.is_open():
             self._log_token_usage(len(prompt), 0, "generation", outcome="breaker_open")
-            raise GeminiUnavailableError("Generation circuit breaker is open")
+            raise LLMUnavailableError("Generation circuit breaker is open")
 
-        import time
         last_exc = None
         for attempt in range(self._max_retries + 1):
             try:
-                response = self._client.models.generate_content(
-                    model="gemini-2.5-flash-lite",
-                    contents=prompt,
+                response = litellm.completion(
+                    model=self._model,
+                    messages=[{"role": "user", "content": prompt}],
+                    timeout=self._generation_timeout,
                 )
-                text = response.text
+                text = response.choices[0].message.content
+                if not text or not text.strip():
+                    raise ValueError("LLM returned an empty response")
                 self._generation_breaker.record_success()
                 self._log_token_usage(len(prompt), len(text), "generation", outcome="success")
                 return text
@@ -207,37 +218,41 @@ class GeminiClient:
                 else:
                     self._generation_breaker.record_failure()
                     self._log_token_usage(len(prompt), 0, "generation", outcome="failure")
-                    raise GeminiUnavailableError(
-                        f"Gemini generation failed after {self._max_retries + 1} attempts: {exc}"
+                    raise LLMUnavailableError(
+                        f"LLM generation failed after {self._max_retries + 1} attempts: {exc}"
                     ) from exc
 
     def embed(self, text: str) -> list[float]:
-        """Embed a piece of text using the gemini‑embedding‑001 model.
+        """Embed a piece of text using the configured embedding model.
 
         Args:
             text: Input text to embed.
 
         Returns:
-            A 768‑dimensional embedding vector.
+            An embedding vector. Dimension depends on the chosen embedding model
+            (e.g. 1536 for openai/text-embedding-3-small; dimension depends on EMBEDDING_MODEL).
 
         Raises:
-            GeminiUnavailableError: If the embedding circuit breaker is open
+            LLMUnavailableError: If the embedding circuit breaker is open
                 or the API call fails after tripping the breaker.
         """
         if self._embedding_breaker.is_open():
             self._log_token_usage(len(text), 0, "embedding", outcome="breaker_open")
-            raise GeminiUnavailableError("Embedding circuit breaker is open")
+            raise LLMUnavailableError("Embedding circuit breaker is open")
 
-        import time
         last_exc = None
         for attempt in range(self._max_retries + 1):
             try:
-                result = self._client.models.embed_content(
-                    model="gemini-embedding-001",
-                    contents=text,
-                    config=types.EmbedContentConfig(output_dimensionality=768),
+                result = litellm.embedding(
+                    model=self._embedding_model,
+                    input=[text],
+                    dimensions=self._embedding_dimensions,
+                    timeout=self._embedding_timeout,
                 )
-                vector = result.embeddings[0].values
+                entry = result.data[0]
+                vector = entry["embedding"] if isinstance(entry, dict) else entry.embedding
+                if not vector:
+                    raise ValueError("LLM returned an empty embedding")
                 self._embedding_breaker.record_success()
                 self._log_token_usage(len(text), 0, "embedding", outcome="success")
                 return vector
@@ -249,14 +264,14 @@ class GeminiClient:
                 else:
                     self._embedding_breaker.record_failure()
                     self._log_token_usage(len(text), 0, "embedding", outcome="failure")
-                    raise GeminiUnavailableError(
-                        f"Gemini embedding failed after {self._max_retries + 1} attempts: {exc}"
+                    raise LLMUnavailableError(
+                        f"LLM embedding failed after {self._max_retries + 1} attempts: {exc}"
                     ) from exc
 
     def _log_token_usage(
         self, input_chars: int, output_chars: int, operation: str, outcome: str = "success"
     ) -> None:
-        """Log approximate token usage for a Gemini call.
+        """Log approximate token usage for an LLM call.
 
         The approximation uses 4 characters ≈ 1 token.
 
@@ -269,7 +284,7 @@ class GeminiClient:
         input_tokens = input_chars // 4
         output_tokens = output_chars // 4 if output_chars else 0
         self._log.info(
-            "Gemini token usage",
+            "LLM token usage",
             operation=operation,
             input_tokens_approx=input_tokens,
             output_tokens_approx=output_tokens,

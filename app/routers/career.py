@@ -3,8 +3,8 @@ from pydantic import ValidationError
 import structlog
 import asyncio
 
-from app.clients.dependencies import get_qdrant_client, get_gemini_client, get_rate_limiter
-from app.clients.gemini import GeminiClient, GeminiUnavailableError
+from app.clients.dependencies import get_qdrant_client, get_llm_client, get_rate_limiter
+from app.clients.llm import LLMClient, LLMUnavailableError
 from app.clients.qdrant import QdrantClient
 from app.services.career_service import CareerPathService
 from app.routers._rate_limit_keys import candidate_id_key
@@ -31,11 +31,11 @@ async def analyze_career_paths(
     request: Request,
     req: AnalyzeCareerPathsRequest,
     qdrant: QdrantClient = Depends(get_qdrant_client),
-    gemini: GeminiClient = Depends(get_gemini_client),
+    llm: LLMClient = Depends(get_llm_client),
 ):
     """Suggest three career paths based on the candidate's profile."""
     structlog.contextvars.bind_contextvars(entity_id=req.candidate_id)
-    service = CareerPathService(gemini=gemini, qdrant=qdrant)
+    service = CareerPathService(llm=llm, qdrant=qdrant)
     try:
         result = await asyncio.to_thread(service.analyze_career_paths, candidate_id=req.candidate_id)
         paths = []
@@ -43,10 +43,10 @@ async def analyze_career_paths(
             try:
                 paths.append(CareerPathItem(**item))
             except ValidationError as e:
-                raise GeminiUnavailableError(f"Malformed Gemini output: {e}")
+                raise LLMUnavailableError(f"Malformed LLM output: {e}")
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except GeminiUnavailableError:
+    except LLMUnavailableError:
         raise HTTPException(
             status_code=503,
             detail="Career path service temporarily unavailable",

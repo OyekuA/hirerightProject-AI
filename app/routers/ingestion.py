@@ -7,18 +7,20 @@ from app.utils.ingestion import validate_ingest_url
 from app.services.ingestion_service import run_candidate_ingestion, run_job_ingestion
 from app.services.ingestion_store import IngestionStatusStore
 from app.services.callback_client import CallbackClient
+from app.services.ingest_queue import IngestQueue
 from app.clients.dependencies import (
     get_qdrant_client,
-    get_gemini_client,
+    get_llm_client,
     get_callback_client,
     get_ingestion_store,
+    get_ingest_queue,
     get_rate_limiter,
     get_cache_backend,
     CANDIDATES_COLLECTION,
     JOBS_COLLECTION,
 )
 from app.clients.qdrant import QdrantClient
-from app.clients.gemini import GeminiClient
+from app.clients.llm import LLMClient
 from app.clients.cache import CacheBackend
 from app.routers._rate_limit_keys import candidate_id_key, job_id_key
 
@@ -43,9 +45,10 @@ async def ingest_candidate(
     req: IngestCandidateRequest,
     background_tasks: BackgroundTasks,
     qdrant: QdrantClient = Depends(get_qdrant_client),
-    gemini: GeminiClient = Depends(get_gemini_client),
+    llm: LLMClient = Depends(get_llm_client),
     store: IngestionStatusStore = Depends(get_ingestion_store),
     callback_client: CallbackClient = Depends(get_callback_client),
+    ingest_queue: IngestQueue = Depends(get_ingest_queue),
 ):
     structlog.contextvars.bind_contextvars(entity_id=req.candidate_id)
     try:
@@ -58,6 +61,10 @@ async def ingest_candidate(
         entity_type="candidate",
         entity_id=req.candidate_id,
         callback_url=str(req.callback_url),
+        payload={
+            "cv_url": str(req.cv_url),
+            "profile_data": req.profile_data.model_dump(),
+        },
     )
 
     background_tasks.add_task(
@@ -68,9 +75,10 @@ async def ingest_candidate(
         callback_url=str(req.callback_url),
         event_id=record.event_id,
         qdrant=qdrant,
-        gemini=gemini,
+        llm=llm,
         store=store,
         callback_client=callback_client,
+        ingest_queue=ingest_queue,
     )
 
     return JSONResponse(
@@ -87,9 +95,10 @@ async def ingest_job(
     req: IngestJobRequest,
     background_tasks: BackgroundTasks,
     qdrant: QdrantClient = Depends(get_qdrant_client),
-    gemini: GeminiClient = Depends(get_gemini_client),
+    llm: LLMClient = Depends(get_llm_client),
     store: IngestionStatusStore = Depends(get_ingestion_store),
     callback_client: CallbackClient = Depends(get_callback_client),
+    ingest_queue: IngestQueue = Depends(get_ingest_queue),
 ):
     structlog.contextvars.bind_contextvars(entity_id=req.job_id)
     try:
@@ -101,6 +110,10 @@ async def ingest_job(
         entity_type="job",
         entity_id=req.job_id,
         callback_url=str(req.callback_url),
+        payload={
+            "jd_text": req.jd_text,
+            "metadata": req.metadata.model_dump(),
+        },
     )
 
     background_tasks.add_task(
@@ -111,9 +124,10 @@ async def ingest_job(
         callback_url=str(req.callback_url),
         event_id=record.event_id,
         qdrant=qdrant,
-        gemini=gemini,
+        llm=llm,
         store=store,
         callback_client=callback_client,
+        ingest_queue=ingest_queue,
     )
 
     return JSONResponse(

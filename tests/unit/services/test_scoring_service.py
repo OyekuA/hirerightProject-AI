@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 from app.services.scoring_service import ScoringService
-from app.clients.gemini import GeminiUnavailableError
+from app.clients.llm import LLMUnavailableError
 
 VALID_RESULT = {
     "overall_score_percentage": 75,
@@ -27,7 +27,7 @@ class TestScoringService(unittest.TestCase):
         self.qdrant_mock = MagicMock()
         self.cache_mock = MagicMock()
         self.service = ScoringService(
-            gemini=self.gemini_mock,
+            llm=self.gemini_mock,
             qdrant=self.qdrant_mock,
             cache=self.cache_mock,
         )
@@ -46,8 +46,8 @@ class TestScoringService(unittest.TestCase):
         self.settings_patcher.stop()
         self.truncate_patcher.stop()
 
-    def test_cache_hit_skips_gemini(self):
-        """When cache contains a valid result, Gemini should not be called."""
+    def test_cache_hit_skips_llm(self):
+        """When cache contains a valid result, LLM should not be called."""
         self.cache_mock.get.return_value = VALID_RESULT
         self.qdrant_mock.get.side_effect = [
             {"candidate_version": 2},
@@ -65,8 +65,8 @@ class TestScoringService(unittest.TestCase):
         self.cache_mock.get.assert_called_once_with("1:2:3:4")
         self.assertEqual(self.qdrant_mock.get.call_count, 2)
 
-    def test_cache_miss_calls_gemini(self):
-        """Cache miss should trigger a Gemini call and store the result."""
+    def test_cache_miss_calls_llm(self):
+        """Cache miss should trigger an LLM call and store the result."""
         self.cache_mock.get.return_value = None
         self.qdrant_mock.get.side_effect = [
             {"candidate_version": 2, "name": "Alice"},
@@ -85,7 +85,7 @@ class TestScoringService(unittest.TestCase):
         self.cache_mock.set.assert_called_once_with("1:2:3:4", VALID_RESULT, ttl=86400)
 
     def test_force_refresh_bypasses_cache(self):
-        """force_refresh=True should ignore cache and call Gemini."""
+        """force_refresh=True should ignore cache and call LLM."""
         self.cache_mock.get.return_value = VALID_RESULT
         self.qdrant_mock.get.side_effect = [
             {"candidate_version": 2, "name": "Alice"},
@@ -137,15 +137,15 @@ class TestScoringService(unittest.TestCase):
         self.assertIn("Job not found", str(cm.exception))
         self.gemini_mock.generate.assert_not_called()
 
-    def test_malformed_gemini_json_raises_error(self):
-        """If Gemini returns non‑JSON, raise GeminiUnavailableError."""
+    def test_malformed_llm_json_raises_error(self):
+        """If LLM returns non‑JSON, raise LLMUnavailableError."""
         self.cache_mock.get.return_value = None
         self.qdrant_mock.get.side_effect = [
             {"candidate_version": 2, "name": "Alice"},
             {"job_version": 4, "title": "Software Engineer"},
         ]
         self.gemini_mock.generate.return_value = "not json"
-        with self.assertRaises(GeminiUnavailableError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.calculate_fit(
                 candidate_id=1,
                 candidate_version=2,
@@ -156,15 +156,15 @@ class TestScoringService(unittest.TestCase):
         self.assertIn("malformed", str(cm.exception).lower())
         self.gemini_mock.generate.assert_called_once()
 
-    def test_gemini_response_missing_required_keys_raises_error(self):
-        """Valid JSON missing required keys raises GeminiUnavailableError."""
+    def test_llm_response_missing_required_keys_raises_error(self):
+        """Valid JSON missing required keys raises LLMUnavailableError."""
         self.cache_mock.get.return_value = None
         self.qdrant_mock.get.side_effect = [
             {"candidate_version": 2, "name": "Alice"},
             {"job_version": 4, "title": "Software Engineer"},
         ]
         self.gemini_mock.generate.return_value = json.dumps({"skill_gap_analysis": "some gap"})
-        with self.assertRaises(GeminiUnavailableError):
+        with self.assertRaises(LLMUnavailableError):
             self.service.calculate_fit(
                 candidate_id=1,
                 candidate_version=2,
@@ -175,7 +175,7 @@ class TestScoringService(unittest.TestCase):
         self.gemini_mock.generate.assert_called_once()
 
     def test_overall_score_percentage_out_of_range_raises_error(self):
-        """overall_score_percentage out of range raises GeminiUnavailableError."""
+        """overall_score_percentage out of range raises LLMUnavailableError."""
         self.cache_mock.get.return_value = None
         self.qdrant_mock.get.side_effect = [
             {"candidate_version": 2, "name": "Alice"},
@@ -184,7 +184,7 @@ class TestScoringService(unittest.TestCase):
         response = VALID_RESULT.copy()
         response["overall_score_percentage"] = 150
         self.gemini_mock.generate.return_value = json.dumps(response)
-        with self.assertRaises(GeminiUnavailableError):
+        with self.assertRaises(LLMUnavailableError):
             self.service.calculate_fit(
                 candidate_id=1,
                 candidate_version=2,
@@ -195,7 +195,7 @@ class TestScoringService(unittest.TestCase):
         self.gemini_mock.generate.assert_called_once()
 
     def test_overall_score_percentage_non_integer_raises_error(self):
-        """Non-integer overall_score_percentage raises GeminiUnavailableError."""
+        """Non-integer overall_score_percentage raises LLMUnavailableError."""
         self.cache_mock.get.return_value = None
         self.qdrant_mock.get.side_effect = [
             {"candidate_version": 2, "name": "Alice"},
@@ -204,7 +204,7 @@ class TestScoringService(unittest.TestCase):
         response = VALID_RESULT.copy()
         response["overall_score_percentage"] = "seventy-five"
         self.gemini_mock.generate.return_value = json.dumps(response)
-        with self.assertRaises(GeminiUnavailableError):
+        with self.assertRaises(LLMUnavailableError):
             self.service.calculate_fit(
                 candidate_id=1,
                 candidate_version=2,

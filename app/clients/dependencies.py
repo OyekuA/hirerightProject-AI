@@ -1,29 +1,32 @@
 """Singleton accessors for infrastructure clients.
 
 This module provides FastAPI‑compatible dependency functions that return
-shared instances of QdrantClient, GeminiClient, CacheBackend, and RateLimiterBackend.
+shared instances of QdrantClient, LLMClient, CacheBackend, and RateLimiterBackend.
 Each singleton is lazily initialized on first call using configuration from
 `get_settings()`.
 """
 
+from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends
 
 from app.config import get_settings
 from app.clients.qdrant import QdrantClient, CANDIDATES_COLLECTION, JOBS_COLLECTION
-from app.clients.gemini import GeminiClient
+from app.clients.llm import LLMClient
 from app.clients.cache import CacheBackend, TTLCacheBackend
 from app.clients.rate_limiter import RateLimiterBackend, SlowAPIRateLimiterBackend
 from app.services.callback_client import CallbackClient
 from app.services.ingestion_store import IngestionStatusStore
+from app.services.ingest_queue import IngestQueue
 
 _qdrant_instance: Optional[QdrantClient] = None
-_gemini_instance: Optional[GeminiClient] = None
+_llm_instance: Optional[LLMClient] = None
 _cache_instance: Optional[CacheBackend] = None
 _rate_limiter_instance: Optional[RateLimiterBackend] = None
 _callback_client_instance: Optional[CallbackClient] = None
 _ingestion_store_instance: Optional[IngestionStatusStore] = None
+_ingest_queue_instance: Optional[IngestQueue] = None
 
 
 def get_qdrant_client() -> QdrantClient:
@@ -38,21 +41,24 @@ def get_qdrant_client() -> QdrantClient:
     return _qdrant_instance
 
 
-def get_gemini_client() -> GeminiClient:
-    """Return a singleton GeminiClient configured from environment variables."""
-    global _gemini_instance
-    if _gemini_instance is None:
+def get_llm_client() -> LLMClient:
+    """Return a singleton LLMClient configured from environment variables."""
+    global _llm_instance
+    if _llm_instance is None:
         settings = get_settings()
-        _gemini_instance = GeminiClient(
-            api_key=settings.GEMINI_API_KEY,
+        _llm_instance = LLMClient(
+            model=settings.LLM_MODEL,
+            embedding_model=settings.EMBEDDING_MODEL,
+            embedding_dimensions=settings.EMBEDDING_DIMENSIONS,
             generation_cooldown=settings.GENERATION_BREAKER_COOLDOWN_SECONDS,
             embedding_cooldown=settings.EMBEDDING_BREAKER_COOLDOWN_SECONDS,
-            generation_timeout=settings.GEMINI_GENERATION_TIMEOUT_SECONDS,
-            embedding_timeout=settings.GEMINI_EMBEDDING_TIMEOUT_SECONDS,
-            max_retries=settings.GEMINI_MAX_RETRIES,
-            retry_backoff_base=settings.GEMINI_RETRY_BACKOFF_BASE_SECONDS,
+            generation_timeout=settings.LLM_GENERATION_TIMEOUT_SECONDS,
+            embedding_timeout=settings.LLM_EMBEDDING_TIMEOUT_SECONDS,
+            max_retries=settings.LLM_MAX_RETRIES,
+            retry_backoff_base=settings.LLM_RETRY_BACKOFF_BASE_SECONDS,
+            api_key=settings.LLM_API_KEY,
         )
-    return _gemini_instance
+    return _llm_instance
 
 
 def get_cache_backend() -> CacheBackend:
@@ -103,13 +109,27 @@ def get_ingestion_store() -> IngestionStatusStore:
     return _ingestion_store_instance
 
 
+def get_ingest_queue() -> IngestQueue:
+    """Return a singleton IngestQueue configured from environment variables."""
+    global _ingest_queue_instance
+    if _ingest_queue_instance is None:
+        settings = get_settings()
+        base = Path(settings.INGEST_STATUS_STORE_PATH)
+        _ingest_queue_instance = IngestQueue(
+            queue_path=str(base / "failed_queue"),
+            dead_letter_path=str(base / "dead_letter"),
+        )
+    return _ingest_queue_instance
+
+
 __all__ = [
     "get_qdrant_client",
-    "get_gemini_client",
+    "get_llm_client",
     "get_cache_backend",
     "get_rate_limiter",
     "get_callback_client",
     "get_ingestion_store",
+    "get_ingest_queue",
     "CANDIDATES_COLLECTION",
     "JOBS_COLLECTION",
 ]

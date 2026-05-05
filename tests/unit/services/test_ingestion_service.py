@@ -49,7 +49,7 @@ class TestIngestionServicePayloads(unittest.IsolatedAsyncioTestCase):
                 callback_url="https://example.com/callback",
                 event_id="evt_123",
                 qdrant=mock_qdrant,
-                gemini=mock_gemini,
+                llm=mock_gemini,
                 store=mock_store,
                 callback_client=mock_callback,
             )
@@ -100,7 +100,7 @@ class TestIngestionServicePayloads(unittest.IsolatedAsyncioTestCase):
                 callback_url="https://example.com/callback",
                 event_id="evt_456",
                 qdrant=mock_qdrant,
-                gemini=mock_gemini,
+                llm=mock_gemini,
                 store=mock_store,
                 callback_client=mock_callback,
             )
@@ -155,7 +155,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                 callback_url="https://example.com/callback",
                 event_id="evt_123",
                 qdrant=mock_qdrant,
-                gemini=mock_gemini,
+                llm=mock_gemini,
                 store=mock_store,
                 callback_client=mock_callback,
             )
@@ -219,7 +219,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                 callback_url="https://example.com/callback",
                 event_id="evt_123",
                 qdrant=mock_qdrant,
-                gemini=mock_gemini,
+                llm=mock_gemini,
                 store=mock_store,
                 callback_client=mock_callback,
             )
@@ -277,7 +277,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                 callback_url="https://example.com/callback",
                 event_id="evt_123",
                 qdrant=mock_qdrant,
-                gemini=mock_gemini,
+                llm=mock_gemini,
                 store=mock_store,
                 callback_client=mock_callback,
             )
@@ -327,7 +327,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                 callback_url="https://example.com/callback",
                 event_id="evt_456",
                 qdrant=mock_qdrant,
-                gemini=mock_gemini,
+                llm=mock_gemini,
                 store=mock_store,
                 callback_client=mock_callback,
             )
@@ -392,7 +392,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                 callback_url="https://example.com/callback",
                 event_id="evt_456",
                 qdrant=mock_qdrant,
-                gemini=mock_gemini,
+                llm=mock_gemini,
                 store=mock_store,
                 callback_client=mock_callback,
             )
@@ -451,7 +451,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                 callback_url="https://example.com/callback",
                 event_id="evt_456",
                 qdrant=mock_qdrant,
-                gemini=mock_gemini,
+                llm=mock_gemini,
                 store=mock_store,
                 callback_client=mock_callback,
             )
@@ -515,7 +515,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                 callback_url="https://example.com/callback",
                 event_id="evt_123",
                 qdrant=mock_qdrant,
-                gemini=mock_gemini,
+                llm=mock_gemini,
                 store=mock_store,
                 callback_client=mock_callback,
             )
@@ -576,7 +576,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                 callback_url="https://example.com/callback",
                 event_id="evt_456",
                 qdrant=mock_qdrant,
-                gemini=mock_gemini,
+                llm=mock_gemini,
                 store=mock_store,
                 callback_client=mock_callback,
             )
@@ -629,7 +629,7 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
                 callback_url="https://example.com/callback",
                 event_id="evt_123",
                 qdrant=mock_qdrant,
-                gemini=mock_gemini,
+                llm=mock_gemini,
                 store=mock_store,
                 callback_client=mock_callback,
             )
@@ -683,7 +683,7 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
                 callback_url="https://example.com/callback",
                 event_id="evt_456",
                 qdrant=mock_qdrant,
-                gemini=mock_gemini,
+                llm=mock_gemini,
                 store=mock_store,
                 callback_client=mock_callback,
             )
@@ -739,7 +739,7 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
                 callback_url="https://example.com/callback",
                 event_id="evt_123",
                 qdrant=mock_qdrant,
-                gemini=mock_gemini,
+                llm=mock_gemini,
                 store=mock_store,
                 callback_client=mock_callback,
             )
@@ -787,7 +787,7 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
                 callback_url="https://example.com/callback",
                 event_id="evt_456",
                 qdrant=mock_qdrant,
-                gemini=mock_gemini,
+                llm=mock_gemini,
                 store=mock_store,
                 callback_client=mock_callback,
             )
@@ -798,6 +798,219 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["required_skills"], [])
         # raw_jd_summary should be string (default empty)
         self.assertIsInstance(payload["raw_jd_summary"], str)
+
+class TestIngestionCallbackSuppression(unittest.IsolatedAsyncioTestCase):
+    """Verify that intermediate failure callbacks are suppressed during queue-managed retry flows."""
+
+    async def test_candidate_suppress_callback_skips_callback_on_failure(self):
+        """When suppress_callback=True and ingestion fails, callback_client.send should not be called."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=None)
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(side_effect=Exception("LLM error"))
+        mock_gemini.embed = MagicMock(side_effect=Exception("Embed error"))
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = AsyncMock()
+
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate, \
+             patch("asyncio.sleep") as mock_sleep:
+            mock_fetch.side_effect = Exception("Fetch error")
+            mock_truncate.side_effect = lambda x: x
+
+            await run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={
+                    "name": "John", "location": "Remote",
+                    "experience_level": "Senior", "industry": "Tech",
+                    "employment_type": "Full-time", "candidate_version": 1,
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_suppress",
+                qdrant=mock_qdrant,
+                llm=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+                suppress_callback=True,
+            )
+
+        # Callback should NOT have been sent when suppress_callback=True
+        mock_callback.send.assert_not_called()
+
+    async def test_candidate_suppress_callback_suppresses_all_callbacks(self):
+        """When suppress_callback=True, no callback is sent even on success — the caller handles it."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=None)
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "name": "John Doe", "location": "Remote",
+            "experience_level": "Senior", "industry": "Tech",
+            "employment_type": "Full-time", "skills": ["Python"],
+            "past_roles": ["Engineer"],
+            "raw_profile_summary": "Experienced engineer."
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = AsyncMock(return_value=True)
+
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_fetch.return_value = "CV text"
+            mock_truncate.side_effect = lambda x: x
+
+            await run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={
+                    "name": "John", "location": "Remote",
+                    "experience_level": "Senior", "industry": "Tech",
+                    "employment_type": "Full-time", "candidate_version": 1,
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_suppress_ok",
+                qdrant=mock_qdrant,
+                llm=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+                suppress_callback=True,
+            )
+
+        # No callback should be sent — the caller (process_queue_entry) handles it
+        mock_callback.send.assert_not_called()
+
+    async def test_candidate_enqueue_suppresses_failure_callback(self):
+        """When ingest_queue is provided and all retries fail, callback is suppressed because the record is enqueued."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=None)
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(side_effect=Exception("LLM error"))
+        mock_gemini.embed = MagicMock(side_effect=Exception("Embed error"))
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_store.get_by_event_id = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = AsyncMock()
+        mock_queue = MagicMock()
+        mock_queue.enqueue = MagicMock()
+
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate, \
+             patch("asyncio.sleep") as mock_sleep, \
+             patch("app.services.ingestion_service.get_settings") as mock_get_settings:
+            mock_fetch.side_effect = Exception("Fetch error")
+            mock_truncate.side_effect = lambda x: x
+            mock_settings = MagicMock()
+            mock_settings.INGEST_QUEUE_BACKOFF_BASE_SECONDS = 60
+            mock_get_settings.return_value = mock_settings
+
+            await run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={
+                    "name": "John", "location": "Remote",
+                    "experience_level": "Senior", "industry": "Tech",
+                    "employment_type": "Full-time", "candidate_version": 1,
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_enqueue",
+                qdrant=mock_qdrant,
+                llm=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+                ingest_queue=mock_queue,
+            )
+
+        # Record should have been enqueued
+        mock_queue.enqueue.assert_called_once()
+        # Callback should NOT have been sent (suppressed by enqueue path)
+        mock_callback.send.assert_not_called()
+
+    async def test_job_suppress_callback_skips_callback_on_failure(self):
+        """When suppress_callback=True and job ingestion fails, callback_client.send should not be called."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=None)
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(side_effect=Exception("LLM error"))
+        mock_gemini.embed = MagicMock(side_effect=Exception("Embed error"))
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = AsyncMock()
+
+        with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate, \
+             patch("asyncio.sleep") as mock_sleep:
+            mock_truncate.side_effect = lambda x: x
+
+            await run_job_ingestion(
+                job_id=456,
+                jd_text="Job description text",
+                metadata={
+                    "title": "Engineer", "location": "Remote",
+                    "experience_level": "Mid", "industry": "Tech",
+                    "employment_type": "Full-time", "job_version": 1,
+                    "company_name": "ACME", "about": "Nice",
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_job_suppress",
+                qdrant=mock_qdrant,
+                llm=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+                suppress_callback=True,
+            )
+
+        mock_callback.send.assert_not_called()
+
+    async def test_job_enqueue_suppresses_failure_callback(self):
+        """When ingest_queue is provided and all retries fail, job callback is suppressed."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=None)
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(side_effect=Exception("LLM error"))
+        mock_gemini.embed = MagicMock(side_effect=Exception("Embed error"))
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_store.get_by_event_id = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = AsyncMock()
+        mock_queue = MagicMock()
+        mock_queue.enqueue = MagicMock()
+
+        with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate, \
+             patch("asyncio.sleep") as mock_sleep, \
+             patch("app.services.ingestion_service.get_settings") as mock_get_settings:
+            mock_truncate.side_effect = lambda x: x
+            mock_settings = MagicMock()
+            mock_settings.INGEST_QUEUE_BACKOFF_BASE_SECONDS = 60
+            mock_get_settings.return_value = mock_settings
+
+            await run_job_ingestion(
+                job_id=456,
+                jd_text="Job description text",
+                metadata={
+                    "title": "Engineer", "location": "Remote",
+                    "experience_level": "Mid", "industry": "Tech",
+                    "employment_type": "Full-time", "job_version": 1,
+                    "company_name": "ACME", "about": "Nice",
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_job_enqueue",
+                qdrant=mock_qdrant,
+                llm=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+                ingest_queue=mock_queue,
+            )
+
+        mock_queue.enqueue.assert_called_once()
+        mock_callback.send.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
