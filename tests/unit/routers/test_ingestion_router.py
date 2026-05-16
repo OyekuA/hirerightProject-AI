@@ -1,15 +1,23 @@
-"""Unit tests for ingestion router background-task wiring.
+"""Unit tests for ingestion router background-task wiring and ``/cv-parse`` endpoint.
 
 Verifies that ``background_tasks.add_task()`` is called with the correct
 keyword argument (``llm=llm``) matching the refactored service signatures,
 so that a ``gemini``→``llm`` rename regression is caught if the parameter
 name changes again.
+
+Also covers the ``/cv-parse`` endpoint contract: HTTPS-only validation,
+fetch/parse failure mapping, malformed/schema-invalid LLM JSON fallback,
+and ``LLMUnavailableError`` propagation as 503.
 """
 
+import json
 from unittest.mock import MagicMock, patch
 from unittest import IsolatedAsyncioTestCase
 
-from fastapi import BackgroundTasks, Request
+from fastapi import BackgroundTasks, FastAPI, Request
+from fastapi.testclient import TestClient
+
+from app.clients.llm import LLMUnavailableError
 
 
 class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
@@ -368,3 +376,225 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
                 },
             },
         )
+
+
+# ── /cv-parse endpoint tests ──────────────────────────────────────────
+
+
+def _build_test_app(llm_client_override=None) -> FastAPI:
+    """Build a minimal FastAPI app with the ingestion router and exception handlers.
+
+    Overrides the ``llm`` dependency so tests can control LLM behaviour
+    without hitting a real model.
+    """
+    from app.clients.dependencies import get_llm_client
+    from app.routers.ingestion import router as ingestion_router
+
+    app = FastAPI()
+    app.include_router(ingestion_router, prefix="/api/ai")
+
+    from slowapi import Limiter
+    from slowapi.util import get_remote_address
+    limiter = Limiter(key_func=get_remote_address)
+    app.state.limiter = limiter
+
+    @app.exception_handler(LLMUnavailableError)
+    async def llm_unavailable_handler(request: Request, exc: LLMUnavailableError):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "AI service temporarily unavailable"},
+        )
+
+    if llm_client_override is not None:
+        app.dependency_overrides[get_llm_client] = lambda: llm_client_override
+
+    return app
+
+
+class TestCvParseEndpoint(IsolatedAsyncioTestCase):
+    """Contract tests for ``POST /api/ai/cv-parse``."""
+
+    # ── happy path ────────────────────────────────────────────────────
+
+    @patch("app.routers.ingestion.validate_ingest_url")
+    @patch("app.routers.ingestion.fetch_and_parse_cv")
+    @patch("app.routers.ingestion.truncate_to_prompt_cap")
+    @patch("app.routers.ingestion.CV_AUTOFILL_PROMPT_TEMPLATE")
+    async def test_happy_path_returns_valid_response(
+        self,
+        mock_template: MagicMock,
+        mock_truncate: MagicMock,
+        mock_fetch: MagicMock,
+        mock_validate: MagicMock,
+    ):
+        """Valid URL + successful LLM response returns a populated CVAutofillResponse."""
+        mock_fetch.return_value = "John Doe CV text …"
+        mock_truncate.return_value = "John Doe CV text …"
+        mock_template.format.return_value = "prompt"
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps({
+            "name": "John Doe",
+            "bio": "Experienced engineer",
+            "experience": [{"title": "Engineer", "company": "Acme", "duration": "2y", "description": "Built stuff"}],
+            "education": [{"degree": "BSc", "institution": "MIT", "year": "2020"}],
+            "certifications": ["AWS Certified"],
+        })
+
+        app = _build_test_app(llm_client_override=mock_llm)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/ai/cv-parse",
+            json={"cv_url": "https://example.com/cv.pdf"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["name"] == "John Doe"
+        assert data["bio"] == "Experienced engineer"
+        assert len(data["experience"]) == 1
+        assert data["experience"][0]["title"] == "Engineer"
+        assert len(data["education"]) == 1
+        assert data["education"][0]["degree"] == "BSc"
+        assert data["certifications"] == ["AWS Certified"]
+
+    # ── invalid / non-HTTPS URL ───────────────────────────────────────
+
+    @patch("app.routers.ingestion.validate_ingest_url")
+    async def test_rejects_non_https_url(self, mock_validate: MagicMock):
+        """Non-HTTPS URL is rejected with 422 (Pydantic ``HttpUrl`` validator catches it first)."""
+        mock_llm = MagicMock()
+        app = _build_test_app(llm_client_override=mock_llm)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/ai/cv-parse",
+            json={"cv_url": "http://example.com/cv.pdf"},
+        )
+        assert resp.status_code == 422, resp.text
+        # Pydantic's HttpUrl validator rejects non-HTTPS before validate_ingest_url runs
+        assert "URL scheme must be HTTPS" in resp.text
+
+    # ── fetch / parse failure → 422 ───────────────────────────────────
+
+    @patch("app.routers.ingestion.validate_ingest_url")
+    @patch("app.routers.ingestion.fetch_and_parse_cv")
+    async def test_fetch_parse_failure_returns_422(
+        self,
+        mock_fetch: MagicMock,
+        mock_validate: MagicMock,
+    ):
+        """``ValueError`` / ``RuntimeError`` from ``fetch_and_parse_cv`` maps to 422."""
+        mock_fetch.side_effect = ValueError("CV exceeds size limit")
+
+        mock_llm = MagicMock()
+        app = _build_test_app(llm_client_override=mock_llm)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/ai/cv-parse",
+            json={"cv_url": "https://example.com/cv.pdf"},
+        )
+        assert resp.status_code == 422, resp.text
+        assert "CV exceeds size limit" in resp.text
+
+
+    @patch("app.routers.ingestion.validate_ingest_url")
+    @patch("app.routers.ingestion.fetch_and_parse_cv")
+    @patch("app.routers.ingestion.truncate_to_prompt_cap")
+    @patch("app.routers.ingestion.CV_AUTOFILL_PROMPT_TEMPLATE")
+    async def test_malformed_llm_json_returns_empty_response(
+        self,
+        mock_template: MagicMock,
+        mock_truncate: MagicMock,
+        mock_fetch: MagicMock,
+        mock_validate: MagicMock,
+    ):
+        mock_fetch.return_value = "CV text"
+        mock_truncate.return_value = "CV text"
+        mock_template.format.return_value = "prompt"
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = "not valid json at all"
+
+        app = _build_test_app(llm_client_override=mock_llm)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/ai/cv-parse",
+            json={"cv_url": "https://example.com/cv.pdf"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        # All fields should be empty / None
+        assert data["name"] is None
+        assert data["bio"] is None
+        assert data["experience"] == []
+        assert data["education"] == []
+        assert data["certifications"] == []
+
+
+    @patch("app.routers.ingestion.validate_ingest_url")
+    @patch("app.routers.ingestion.fetch_and_parse_cv")
+    @patch("app.routers.ingestion.truncate_to_prompt_cap")
+    @patch("app.routers.ingestion.CV_AUTOFILL_PROMPT_TEMPLATE")
+    async def test_schema_validation_fallback_returns_empty_response(
+        self,
+        mock_template: MagicMock,
+        mock_truncate: MagicMock,
+        mock_fetch: MagicMock,
+        mock_validate: MagicMock,
+    ):
+        mock_fetch.return_value = "CV text"
+        mock_truncate.return_value = "CV text"
+        mock_template.format.return_value = "prompt"
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps({"unexpected_field": "value"})
+
+        app = _build_test_app(llm_client_override=mock_llm)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/ai/cv-parse",
+            json={"cv_url": "https://example.com/cv.pdf"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["name"] is None
+        assert data["bio"] is None
+        assert data["experience"] == []
+        assert data["education"] == []
+        assert data["certifications"] == []
+
+    # ── LLMUnavailableError → 503 ─────────────────────────────────────
+
+    @patch("app.routers.ingestion.validate_ingest_url")
+    @patch("app.routers.ingestion.fetch_and_parse_cv")
+    @patch("app.routers.ingestion.truncate_to_prompt_cap")
+    @patch("app.routers.ingestion.CV_AUTOFILL_PROMPT_TEMPLATE")
+    async def test_llm_unavailable_returns_503(
+        self,
+        mock_template: MagicMock,
+        mock_truncate: MagicMock,
+        mock_fetch: MagicMock,
+        mock_validate: MagicMock,
+    ):
+        """``LLMUnavailableError`` from ``llm.generate`` propagates as 503."""
+        mock_fetch.return_value = "CV text"
+        mock_truncate.return_value = "CV text"
+        mock_template.format.return_value = "prompt"
+
+        mock_llm = MagicMock()
+        mock_llm.generate.side_effect = LLMUnavailableError("Circuit breaker is open")
+
+        app = _build_test_app(llm_client_override=mock_llm)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/ai/cv-parse",
+            json={"cv_url": "https://example.com/cv.pdf"},
+        )
+        assert resp.status_code == 503, resp.text
+        assert "AI service temporarily unavailable" in resp.text

@@ -1,9 +1,15 @@
+import asyncio
+import hashlib
+import json
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from typing import Optional
 import structlog
+from pydantic import ValidationError
 
-from app.utils.ingestion import validate_ingest_url
+from app.utils.ingestion import validate_ingest_url, fetch_and_parse_cv, truncate_to_prompt_cap
+from app.utils import parse_llm_json
+from app.prompts import CV_AUTOFILL_PROMPT_TEMPLATE
 from app.services.ingestion_service import run_candidate_ingestion, run_job_ingestion
 from app.services.ingestion_store import IngestionStatusStore
 from app.services.callback_client import CallbackClient
@@ -35,6 +41,8 @@ from app.schemas.ingestion import (
     IngestCandidateRequest,
     IngestJobRequest,
     IngestionStatusResponse,
+    CVAutofillRequest,
+    CVAutofillResponse,
 )
 
 @router.post("/ingest-candidate")
@@ -195,3 +203,51 @@ async def get_ingestion_status(
             status_code=422,
             detail="Either event_id or both entity_type and entity_id must be provided",
         )
+
+
+@router.post("/cv-parse", response_model=CVAutofillResponse)
+@limiter.limit("200/day")
+async def parse_cv(
+    request: Request,
+    req: CVAutofillRequest,
+    llm: LLMClient = Depends(get_llm_client),
+):
+    structlog.contextvars.bind_contextvars(entity_id="cv-parse")
+    try:
+        validate_ingest_url(str(req.cv_url))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    try:
+        cv_text = await asyncio.to_thread(fetch_and_parse_cv, str(req.cv_url))
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    cv_text = truncate_to_prompt_cap(cv_text)
+    prompt = CV_AUTOFILL_PROMPT_TEMPLATE.format(cv_text=cv_text)
+    generated = await asyncio.to_thread(llm.generate, prompt)
+
+    try:
+        extracted = parse_llm_json(generated)
+    except json.JSONDecodeError:
+        logger = structlog.get_logger()
+        payload_hash = hashlib.sha256(generated.encode()).hexdigest()[:8]
+        logger.warning(
+            "Failed to parse LLM JSON for CV autofill",
+            length=len(generated),
+            hash=payload_hash,
+        )
+        return CVAutofillResponse()
+
+    try:
+        return CVAutofillResponse.model_validate(extracted)
+    except ValidationError:
+        logger = structlog.get_logger()
+        extracted_str = json.dumps(extracted) if isinstance(extracted, (dict, list)) else str(extracted)
+        payload_hash = hashlib.sha256(extracted_str.encode()).hexdigest()[:8]
+        logger.warning(
+            "Failed to validate CV autofill response",
+            length=len(extracted_str),
+            hash=payload_hash,
+        )
+        return CVAutofillResponse()

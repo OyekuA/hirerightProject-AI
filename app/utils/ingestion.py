@@ -150,6 +150,9 @@ def fetch_and_parse_cv(cv_url: str) -> str:
             doc = fitz.open(stream=content, filetype="pdf")
             text = "\n".join(page.get_text() for page in doc)
             doc.close()
+            if not text.strip():
+                logger.warning("CV appears to be image-based or scanned with no extractable text layer", url="[REDACTED]")
+                raise RuntimeError("CV appears to be image-based or scanned with no extractable text layer. Please upload a text-based PDF.")
         except Exception as e:
             logger.error("PDF parsing failed", url="[REDACTED]", error=str(e))
             raise RuntimeError(f"PDF parsing failed: {e}") from e

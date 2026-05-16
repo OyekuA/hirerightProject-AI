@@ -44,7 +44,7 @@ System Hard Flag: {hard_flag}
 
 ### C. Authenticity Detection
 1. **System Speed Check**: If `hard_flag` is TRUE → `is_suspicious: true` with the reason: "Completion time of {time_taken_seconds}s ({wps} words/sec) is impossible for human typing."
-2. **AI‑patterned phrasing**: Look for numbered lists of exactly 3‑5 points, “I would…”, “Additionally,”, “In conclusion,”, and overly balanced hedging.
+2. **AI‑patterned phrasing**: Look for numbered lists of exactly 3‑5 points, "I would…", "Additionally,", "In conclusion,", and overly balanced hedging.
 3. **Structural uniformity**: If all answers follow identical paragraph/list templates, flag it.
 
 If any indicator is present (including hard flag), set `is_suspicious: true` and **reduce `overall_score` by 20–30 points** (after computing the raw score from MC + subjective).
@@ -55,7 +55,7 @@ If any indicator is present (including hard flag), set `is_suspicious: true` and
 - Derive exactly 3‑5 skill categories from the **themes of the questions**.
 - For each category:
   - `score`: average of the question scores (MC or subjective) that belong to that category, expressed as 0‑100.
-  - `feedback`: 1‑2 sentences in **second‑person** (“You show…”, “You tend to…”).
+  - `feedback`: 1‑2 sentences in **second‑person** ("You show…", "You tend to…").
 - **Special rule for MC**: If overall MC score = 100%, each category that consists **only** of MC questions gets 100. If overall MC score < 100%, category scores are the percentage of correct MC answers within that category.
 
 ---
@@ -316,6 +316,35 @@ Job description:
 
 Metadata:
 {metadata_json}
+
+Return only the JSON object, no other text.
+"""
+
+CV_AUTOFILL_PROMPT_TEMPLATE = """
+You are a CV parser for candidate onboarding autofill. Extract the following fields from the CV text below.
+
+Return a valid JSON object with exactly these five top-level keys:
+- "name": string (the candidate's full name)
+- "bio": string (a 2–3 sentence first-person professional summary based on the CV content)
+- "experience": array of objects, each with keys "title", "company", "duration", "description"
+- "education": array of objects, each with keys "degree", "institution", "year"
+- "certifications": array of strings
+
+Example structure:
+{{
+  "name": "Jane Doe",
+  "bio": "I am a senior software engineer with 8+ years of experience building scalable backend systems. I specialise in Python, FastAPI, and cloud-native architectures.",
+  "experience": [
+    {{"title": "Senior Software Engineer", "company": "Acme Corp", "duration": "2020–Present", "description": "Led the design and implementation of a microservices platform."}}
+  ],
+  "education": [
+    {{"degree": "BSc Computer Science", "institution": "University of Tech", "year": "2015"}}
+  ],
+  "certifications": ["AWS Solutions Architect", "Certified Kubernetes Administrator"]
+}}
+
+CV text:
+{cv_text}
 
 Return only the JSON object, no other text.
 """

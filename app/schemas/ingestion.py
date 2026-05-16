@@ -83,3 +83,35 @@ class IngestionStatusResponse(BaseModel):
     callback_delivery_failed: bool = False
     created_at: str
     updated_at: str
+
+
+class CVAutofillRequest(BaseModel):
+    cv_url: HttpUrl
+
+    @field_validator("cv_url")
+    @classmethod
+    def ensure_https(cls, v: HttpUrl) -> HttpUrl:
+        if v.scheme != "https":
+            raise ValueError("URL scheme must be HTTPS")
+        return v
+
+
+class ExperienceEntry(BaseModel):
+    title: Optional[str] = None
+    company: Optional[str] = None
+    duration: Optional[str] = None
+    description: Optional[str] = None
+
+
+class EducationEntry(BaseModel):
+    degree: Optional[str] = None
+    institution: Optional[str] = None
+    year: Optional[str] = None
+
+
+class CVAutofillResponse(BaseModel):
+    name: Optional[str] = None
+    bio: Optional[str] = None
+    experience: List[ExperienceEntry] = []
+    education: List[EducationEntry] = []
+    certifications: List[str] = []
