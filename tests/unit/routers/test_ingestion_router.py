@@ -428,7 +428,8 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         mock_fetch: MagicMock,
         mock_validate: MagicMock,
     ):
-        """Valid URL + successful LLM response returns a populated CVAutofillResponse."""
+        """Valid URL + successful LLM response returns a populated CVAutofillResponse
+        with all eleven fields."""
         mock_fetch.return_value = "John Doe CV text …"
         mock_truncate.return_value = "John Doe CV text …"
         mock_template.format.return_value = "prompt"
@@ -437,9 +438,18 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         mock_llm.generate.return_value = json.dumps({
             "name": "John Doe",
             "bio": "Experienced engineer",
+            "email": "john.doe@example.com",
+            "phone": "+1-555-0123",
+            "title": "Senior Software Engineer",
+            "address": "San Francisco, CA",
+            "website": "https://johndoe.dev",
             "experience": [{"title": "Engineer", "company": "Acme", "duration": "2y", "description": "Built stuff"}],
             "education": [{"degree": "BSc", "institution": "MIT", "year": "2020"}],
             "certifications": ["AWS Certified"],
+            "social_links": [
+                {"platform": "linkedin", "url": "https://linkedin.com/in/johndoe"},
+                {"platform": "github", "url": "https://github.com/johndoe"},
+            ],
         })
 
         app = _build_test_app(llm_client_override=mock_llm)
@@ -451,6 +461,7 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         )
         assert resp.status_code == 200, resp.text
         data = resp.json()
+        # Original five fields
         assert data["name"] == "John Doe"
         assert data["bio"] == "Experienced engineer"
         assert len(data["experience"]) == 1
@@ -458,6 +469,17 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         assert len(data["education"]) == 1
         assert data["education"][0]["degree"] == "BSc"
         assert data["certifications"] == ["AWS Certified"]
+        # New onboarding fields
+        assert data["email"] == "john.doe@example.com"
+        assert data["phone"] == "+1-555-0123"
+        assert data["title"] == "Senior Software Engineer"
+        assert data["address"] == "San Francisco, CA"
+        assert data["website"] == "https://johndoe.dev"
+        assert len(data["social_links"]) == 2
+        assert data["social_links"][0]["platform"] == "linkedin"
+        assert data["social_links"][0]["url"] == "https://linkedin.com/in/johndoe"
+        assert data["social_links"][1]["platform"] == "github"
+        assert data["social_links"][1]["url"] == "https://github.com/johndoe"
 
     # ── invalid / non-HTTPS URL ───────────────────────────────────────
 
@@ -530,9 +552,15 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         # All fields should be empty / None
         assert data["name"] is None
         assert data["bio"] is None
+        assert data["email"] is None
+        assert data["phone"] is None
+        assert data["title"] is None
+        assert data["address"] is None
+        assert data["website"] is None
         assert data["experience"] == []
         assert data["education"] == []
         assert data["certifications"] == []
+        assert data["social_links"] == []
 
 
     @patch("app.routers.ingestion.validate_ingest_url")
@@ -564,9 +592,72 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         data = resp.json()
         assert data["name"] is None
         assert data["bio"] is None
+        assert data["email"] is None
+        assert data["phone"] is None
+        assert data["title"] is None
+        assert data["address"] is None
+        assert data["website"] is None
         assert data["experience"] == []
         assert data["education"] == []
         assert data["certifications"] == []
+        assert data["social_links"] == []
+
+    # ── malformed social_links resilience ──────────────────────────────
+
+    @patch("app.routers.ingestion.validate_ingest_url")
+    @patch("app.routers.ingestion.fetch_and_parse_cv")
+    @patch("app.routers.ingestion.truncate_to_prompt_cap")
+    @patch("app.routers.ingestion.CV_AUTOFILL_PROMPT_TEMPLATE")
+    async def test_malformed_social_links_preserves_valid_fields(
+        self,
+        mock_template: MagicMock,
+        mock_truncate: MagicMock,
+        mock_fetch: MagicMock,
+        mock_validate: MagicMock,
+    ):
+        """When ``social_links`` is malformed (bare URL list), the endpoint
+        still returns the other valid fields instead of an empty response."""
+        mock_fetch.return_value = "CV text"
+        mock_truncate.return_value = "CV text"
+        mock_template.format.return_value = "prompt"
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps({
+            "name": "Jane Smith",
+            "bio": "A seasoned developer",
+            "email": "jane@example.com",
+            "phone": "+1-555-9999",
+            "title": "Full Stack Developer",
+            "address": "New York, NY",
+            "website": "https://janesmith.dev",
+            "experience": [{"title": "Dev", "company": "Corp", "duration": "3y", "description": "Built things"}],
+            "education": [{"degree": "MSc", "institution": "Stanford", "year": "2018"}],
+            "certifications": ["Google Cloud Certified"],
+            # social_links is a bare list of URL strings, not objects
+            "social_links": ["https://linkedin.com/in/janesmith", "https://github.com/janesmith"],
+        })
+
+        app = _build_test_app(llm_client_override=mock_llm)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/ai/cv-parse",
+            json={"cv_url": "https://example.com/cv.pdf"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        # Valid fields must be preserved
+        assert data["name"] == "Jane Smith"
+        assert data["bio"] == "A seasoned developer"
+        assert data["email"] == "jane@example.com"
+        assert data["phone"] == "+1-555-9999"
+        assert data["title"] == "Full Stack Developer"
+        assert data["address"] == "New York, NY"
+        assert data["website"] == "https://janesmith.dev"
+        assert len(data["experience"]) == 1
+        assert data["education"][0]["degree"] == "MSc"
+        assert data["certifications"] == ["Google Cloud Certified"]
+        assert data["social_links"] == []
 
     # ── LLMUnavailableError → 503 ─────────────────────────────────────
 

@@ -109,9 +109,20 @@ class EducationEntry(BaseModel):
     year: Optional[str] = None
 
 
+class SocialLink(BaseModel):
+    platform: Optional[str] = None
+    url: Optional[str] = None
+
+
 class CVAutofillResponse(BaseModel):
     name: Optional[str] = None
     bio: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    title: Optional[str] = None
+    address: Optional[str] = None
+    website: Optional[str] = None
     experience: List[ExperienceEntry] = []
     education: List[EducationEntry] = []
     certifications: List[str] = []
+    social_links: List[SocialLink] = []

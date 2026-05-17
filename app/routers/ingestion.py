@@ -239,6 +239,29 @@ async def parse_cv(
         )
         return CVAutofillResponse()
 
+    if isinstance(extracted, dict) and "social_links" in extracted:
+        raw_links = extracted["social_links"]
+        if isinstance(raw_links, list):
+            cleaned: list[dict] = []
+            for item in raw_links:
+                if isinstance(item, dict):
+                    cleaned.append(item)
+                else:
+                    logger = structlog.get_logger()
+                    logger.warning(
+                        "Discarded non-dict social_links entry",
+                        entry=item,
+                    )
+            extracted["social_links"] = cleaned
+        else:
+            # Bare URL list, string, or other non-list shape -> reset to empty
+            logger = structlog.get_logger()
+            logger.warning(
+                "Discarded non-list social_links value",
+                value=raw_links,
+            )
+            extracted["social_links"] = []
+
     try:
         return CVAutofillResponse.model_validate(extracted)
     except ValidationError:

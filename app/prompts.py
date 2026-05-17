@@ -323,24 +323,39 @@ Return only the JSON object, no other text.
 CV_AUTOFILL_PROMPT_TEMPLATE = """
 You are a CV parser for candidate onboarding autofill. Extract the following fields from the CV text below.
 
-Return a valid JSON object with exactly these five top-level keys:
+Return a valid JSON object with exactly these eleven top-level keys:
 - "name": string (the candidate's full name)
 - "bio": string (a 2–3 sentence first-person professional summary based on the CV content)
+- "email": string (candidate's email address)
+- "phone": string (candidate's phone number)
+- "title": string (professional headline or current job title)
+- "address": string (city or location)
+- "website": string (personal website URL)
 - "experience": array of objects, each with keys "title", "company", "duration", "description"
 - "education": array of objects, each with keys "degree", "institution", "year"
 - "certifications": array of strings
+- "social_links": array of objects, each with keys "platform" and "url" (e.g. linkedin, github)
 
 Example structure:
 {{
   "name": "Jane Doe",
   "bio": "I am a senior software engineer with 8+ years of experience building scalable backend systems. I specialise in Python, FastAPI, and cloud-native architectures.",
+  "email": "jane.doe@example.com",
+  "phone": "+1-555-0123",
+  "title": "Senior Software Engineer",
+  "address": "San Francisco, CA",
+  "website": "https://janedoe.dev",
   "experience": [
     {{"title": "Senior Software Engineer", "company": "Acme Corp", "duration": "2020–Present", "description": "Led the design and implementation of a microservices platform."}}
   ],
   "education": [
     {{"degree": "BSc Computer Science", "institution": "University of Tech", "year": "2015"}}
   ],
-  "certifications": ["AWS Solutions Architect", "Certified Kubernetes Administrator"]
+  "certifications": ["AWS Solutions Architect", "Certified Kubernetes Administrator"],
+  "social_links": [
+    {{"platform": "linkedin", "url": "https://linkedin.com/in/janedoe"}},
+    {{"platform": "github",   "url": "https://github.com/janedoe"}}
+  ]
 }}
 
 CV text:
