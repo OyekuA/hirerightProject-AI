@@ -336,6 +336,8 @@ Return a valid JSON object with exactly these eleven top-level keys:
 - "certifications": array of strings
 - "social_links": array of objects, each with keys "platform" and "url" (e.g. linkedin, github)
 
+If a field cannot be found in the CV, set its value to null (for strings) or [] (for arrays). Never use placeholder strings like "[Email Address]" or "[LinkedIn Profile]".
+
 Example structure:
 {{
   "name": "Jane Doe",
