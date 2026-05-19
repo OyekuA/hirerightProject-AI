@@ -27,6 +27,7 @@ from app.schemas.scoring import (
 
 @router.post("/calculate-fit", response_model=CalculateFitResponse)
 @limiter.limit("500/hour")
+@limiter.limit("20/minute")
 @limiter.limit("50/hour", key_func=candidate_id_key)
 async def calculate_fit(
     request: Request,

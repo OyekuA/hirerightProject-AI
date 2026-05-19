@@ -28,6 +28,7 @@ from app.schemas.assessment import (
 
 @router.post("/assessment/generate", response_model=GenerateAssessmentResponse)
 @limiter.limit("200/day")
+@limiter.limit("10/minute")
 @limiter.limit("10/day", key_func=candidate_or_job_id_key)
 async def generate_assessment(
     request: Request,
@@ -61,7 +62,9 @@ async def generate_assessment(
 
 
 @router.post("/assessment/grade", response_model=GradeAssessmentResponse)
-@limiter.limit("200/day")
+@limiter.limit("500/day")
+@limiter.limit("20/minute")
+@limiter.limit("50/day", key_func=candidate_or_job_id_key)
 async def grade_assessment(
     request: Request,
     req: GradeAssessmentRequest,

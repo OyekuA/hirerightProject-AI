@@ -26,6 +26,7 @@ from app.schemas.career import (
 
 @router.post("/analyze-career-paths", response_model=AnalyzeCareerPathsResponse)
 @limiter.limit("200/day")
+@limiter.limit("5/minute")
 @limiter.limit("10/day", key_func=candidate_id_key)
 async def analyze_career_paths(
     request: Request,

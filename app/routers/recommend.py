@@ -31,6 +31,7 @@ from app.schemas.recommendation import (
 
 @router.post("/recommend", response_model=RecommendResponse)
 @limiter.limit("200/day")
+@limiter.limit("10/minute")
 @limiter.limit("20/hour", key_func=target_id_key)
 async def recommend(
     request: Request,
@@ -66,6 +67,7 @@ async def recommend(
 
 @router.post("/recommend/pool", response_model=PoolRankResponse)
 @limiter.limit("100/hour")
+@limiter.limit("10/minute")
 async def pool_rank(
     request: Request,
     req: PoolRankRequest,
