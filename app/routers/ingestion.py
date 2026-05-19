@@ -212,7 +212,7 @@ async def get_ingestion_status(
 
 @router.post("/cv-parse", response_model=CVAutofillResponse)
 @limiter.limit("200/day")
-@limiter.limit("5/minute")
+@limiter.limit("10/minute")
 async def parse_cv(
     request: Request,
     req: CVAutofillRequest,
