@@ -10,13 +10,121 @@ The HireRight AI Microservice adds semantic candidate‑to‑job matching, expla
 |---|---|
 | Python 3.12 | Runtime |
 | FastAPI | Web framework |
-| Qdrant | Vector database |
+| Qdrant | Vector database (separate collections for candidates & jobs) |
 | OpenAI gpt-4o-mini | LLM (generation) |
 | OpenAI text-embedding-3-small | Embeddings |
 | uv | Package manager |
 | Docker Compose | Container orchestration |
 | structlog + Sentry | Structured logging + error telemetry |
+| slowapi | Rate limiting (in‑memory sliding window) |
 
+## Project Structure
+
+```
+.
+├── app/
+│   ├── main.py                     # FastAPI app factory, lifespan, background workers
+│   ├── config.py                   # Pydantic Settings (env‑var loading)
+│   ├── auth.py                     # API‑key verification dependency
+│   ├── constants.py                # Collection names, prompt constants
+│   ├── logging_config.py           # structlog configuration
+│   ├── prompts.py                  # LLM prompt templates
+│   ├── clients/
+│   │   ├── __init__.py
+│   │   ├── cache.py                # Abstract cache + TTLCacheBackend
+│   │   ├── dependencies.py         # Singleton accessors for all clients
+│   │   ├── llm.py                  # LLM client + CircuitBreaker (generation & embedding)
+│   │   ├── qdrant.py               # Qdrant vector DB wrapper
+│   │   └── rate_limiter.py         # Rate‑limiter abstraction + SlowAPIRateLimiterBackend
+│   ├── middleware/
+│   │   ├── __init__.py
+│   │   └── correlation.py          # Correlation‑ID middleware (UUID per request)
+│   ├── routers/
+│   │   ├── __init__.py
+│   │   ├── _rate_limit_keys.py     # Shared key‑extractor functions for per‑entity limits
+│   │   ├── assessment.py           # POST /assessment/generate, /assessment/grade
+│   │   ├── career.py               # POST /analyze-career-paths
+│   │   ├── ingestion.py            # POST /ingest-candidate, /ingest-job, /cv-parse, DELETEs, GET /ingestion-status
+│   │   ├── jd.py                   # POST /generate-jd, /analyze-jd
+│   │   ├── recommend.py            # POST /recommend, /recommend/pool
+│   │   └── scoring.py              # POST /calculate-fit
+│   ├── schemas/
+│   │   ├── assessment.py           # Pydantic models for assessment endpoints
+│   │   ├── career.py               # Pydantic models for career‑path endpoints
+│   │   ├── ingestion.py            # Pydantic models for ingestion endpoints
+│   │   ├── jd.py                   # Pydantic models for JD endpoints
+│   │   ├── recommendation.py       # Pydantic models for recommend endpoints
+│   │   └── scoring.py              # Pydantic models for scoring endpoints
+│   ├── services/
+│   │   ├── __init__.py
+│   │   ├── assessment_service.py   # Interview question generation & answer grading
+│   │   ├── callback_client.py      # HMAC‑SHA256 signed callback delivery with retries
+│   │   ├── career_service.py       # Career path analysis
+│   │   ├── ingest_queue.py         # File‑based persistent retry queue + dead‑letter monitoring
+│   │   ├── ingestion_service.py    # Candidate & job ingestion logic
+│   │   ├── ingestion_store.py      # Durable ingestion‑status file store
+│   │   ├── jd_service.py           # JD generation & analysis
+│   │   ├── recommendation_service.py # Hybrid recommendation engine
+│   │   └── scoring_service.py      # LLM‑based fit‑score calculation
+│   └── utils/
+│       ├── __init__.py
+│       └── ingestion.py            # CV fetch & parse helpers
+├── nginx/
+│   └── nginx.conf                  # Reverse‑proxy config (TLS‑ready)
+├── tests/
+│   ├── conftest.py                 # Shared fixtures (mock settings, Qdrant patches)
+│   ├── integration/
+│   │   └── test_e2e_workflow.py    # End‑to‑end integration tests
+│   └── unit/
+│       ├── test_config.py
+│       ├── test_utils.py
+│       ├── clients/
+│       │   ├── test_cache.py
+│       │   ├── test_circuit_breaker.py
+│       │   └── test_llm_client.py
+│       ├── routers/
+│       │   ├── test_ingestion_router.py
+│       │   ├── test_rate_limit_keys.py
+│       │   └── test_rate_limits.py
+│       └── services/
+│           ├── test_assessment_service.py
+│           ├── test_callback_client.py
+│           ├── test_career_service.py
+│           ├── test_ingest_queue.py
+│           ├── test_ingestion_fetch.py
+│           ├── test_ingestion_service.py
+│           ├── test_ingestion_store.py
+│           ├── test_jd_service.py
+│           ├── test_recommendation_service.py
+│           └── test_scoring_service.py
+├── .dockerignore
+├── .env.example
+├── .gitignore
+├── docker-compose.yml
+├── Dockerfile
+├── pyproject.toml
+├── README.md
+└── uv.lock
+```
+
+## Architecture Overview
+
+```
+┌──────────────┐     HTTP (X‑API‑Key)     ┌──────────────────────┐
+│   PHP BE     │ ──────────────────────────▶   FastAPI Service    │
+│  (Backend)   │ ◀──────────────────────────   (this project)     │
+└──────────────┘    Signed Callback (HMAC)  └──────┬───────────────┘
+                                                   │
+                                    ┌──────────────┼──────────────┐
+                                    ▼              ▼              ▼
+                              ┌──────────┐  ┌──────────┐  ┌──────────────┐
+                              │  Qdrant  │  │  LLM API │  │  File Store  │
+                              │ (Vector) │  │ (OpenAI) │  │ (ingest_status
+                              └──────────┘  └──────────┘  │  + queue)    │
+                                                          └──────────────┘
+```
+
+The PHP backend is the **primary rate limiter** and orchestrator. This AI service applies **defense‑in‑depth** rate limits on LLM‑cost endpoints only. Non‑LLM endpoints (DELETE, GET /ingestion-status) have no rate limits.
 
 ## Prerequisites
 
@@ -27,9 +135,9 @@ The HireRight AI Microservice adds semantic candidate‑to‑job matching, expla
 - LLM API key (set in .env)
 - Sentry DSN (optional — for error tracking)
 
-## TLS / HTTPS on IONOS VPS
+## TLS / HTTPS on Hostinger VPS
 
-Place your certificate (`fullchain.pem`) and private key (`privkey.pem`) in `nginx/certs/` on the host. Uncomment the `443 ssl` server block in `nginx/nginx.conf` and add the cert volume mount in `docker-compose.yml` under the `nginx` service. Then run `docker compose up -d --no-build nginx` to reload.
+Place your certificate (`fullchain.pem`) and private key (`privkey.pem`) in `nginx/certs/` on the host. Uncomment the `443 ssl` server block in [`nginx/nginx.conf`](nginx/nginx.conf) and add the cert volume mount in [`docker-compose.yml`](docker-compose.yml) under the `nginx` service. Then run `docker compose up -d --no-build nginx` to reload.
 
 ## Getting Started (Step‑by‑Step)
 
@@ -43,31 +151,177 @@ Place your certificate (`fullchain.pem`) and private key (`privkey.pem`) in `ngi
    Expected: {"status": "ok"}
 ```
 
+### Local Development Without Docker
+
+```bash
+# 1. Create a virtual environment
+uv venv
+source .venv/bin/activate   # Linux/Mac
+.venv\Scripts\activate      # Windows
+
+# 2. Install dependencies (including dev extras)
+uv sync --extra dev
+
+# 3. Start Qdrant separately (e.g., via Docker)
+docker run -d -p 6333:6333 qdrant/qdrant:v1.17.0
+
+# 4. Run the FastAPI dev server
+uv run uvicorn app.main:create_app --factory --reload --port 8000
+```
+
 ## Environment Variables Reference Table
 
-Full table sourced from `.env.example`:
+Full table sourced from [`.env.example`](.env.example):
 
 | Variable | Required/Optional | Default | Description |
 |---|---|---|---|
 | `API_KEY` | Required | `change-me-in-production` | Shared secret for `X‑API‑Key` auth between PHP and FastAPI |
 | `LLM_API_KEY` | Required | _(none)_ | LLM API key — read directly by litellm for `openai/…` models |
+| `LLM_MODEL` | Optional | `openai/gpt-4o-mini` | LLM model identifier for generation |
+| `EMBEDDING_MODEL` | Optional | `openai/text-embedding-3-small` | Embedding model identifier |
+| `EMBEDDING_DIMENSIONS` | Optional | `1536` | Output dimension of the embedding model — must match `EMBEDDING_MODEL`; update and recreate Qdrant collections when switching models |
 | `QDRANT_HOST` | Optional | `qdrant` | Qdrant container hostname (Docker Compose service name) |
 | `QDRANT_PORT` | Optional | `6333` | Qdrant port |
 | `SENTRY_DSN` | Optional | _(empty)_ | Sentry project DSN for error tracking |
 | `CACHE_TTL_SECONDS` | Optional | `86400` | In‑memory fit score cache TTL in seconds (24 hours) |
-| `GENERATION_BREAKER_COOLDOWN_SECONDS` | Optional | `60` | Cooldown in seconds after generation circuit breaker trips |
-| `EMBEDDING_BREAKER_COOLDOWN_SECONDS` | Optional | `60` | Cooldown in seconds after embedding circuit breaker trips |
+| `GENERATION_BREAKER_COOLDOWN_SECONDS` | **Required** | _(none)_ | Cooldown in seconds after generation circuit breaker trips |
+| `EMBEDDING_BREAKER_COOLDOWN_SECONDS` | **Required** | _(none)_ | Cooldown in seconds after embedding circuit breaker trips |
+| `LLM_GENERATION_TIMEOUT_SECONDS` | Optional | `30` | Timeout in seconds for LLM generation requests |
+| `LLM_EMBEDDING_TIMEOUT_SECONDS` | Optional | `30` | Timeout in seconds for LLM embedding requests |
+| `LLM_MAX_RETRIES` | Optional | `2` | Maximum retries for transient failures before recording a circuit breaker failure |
+| `LLM_RETRY_BACKOFF_BASE_SECONDS` | Optional | `1.0` | Base backoff seconds for retry exponential backoff |
 | `MAX_PROMPT_CHARS` | Optional | `50000` | Maximum prompt characters — inputs are truncated at this limit |
 | `INGEST_STATUS_STORE_PATH` | Required | `/data/ingest_status` | Path where ingestion status files are permanently stored (mounted named volume) |
 | `CALLBACK_HMAC_SECRET` | Required | `change-me-in-production` | Shared secret used to sign callback payloads |
 | `CALLBACK_SIGNATURE_TTL_SECONDS` | Optional | `300` | Max allowed callback timestamp age for replay protection (seconds) |
-| `MAX_INGEST_FILE_MB` | Optional | `10` | Maximum file size (MB) allowed for CV/JD ingestion |
-| `INGEST_FETCH_TIMEOUT_SECONDS` | Optional | `20` | Timeout in seconds when fetching external URLs during ingestion |
-| `ENFORCE_SINGLE_REPLICA` | Optional | `False` | If `True`, warns on startup when multiple replicas are detected |
+| `CALLBACK_TIMEOUT_SECONDS` | Optional | `10` | Timeout in seconds for each callback HTTP request |
 | `CALLBACK_MAX_ATTEMPTS` | Optional | `3` | Maximum retry attempts for callback delivery |
 | `CALLBACK_RETRY_BASE_SECONDS` | Optional | `2` | Base delay (seconds) for exponential backoff of callback retries |
+| `MAX_INGEST_FILE_MB` | Optional | `10` | Maximum file size (MB) allowed for CV/JD ingestion |
+| `INGEST_FETCH_TIMEOUT_SECONDS` | Optional | `20` | Timeout in seconds when fetching external URLs during ingestion |
+| `INGEST_QUEUE_MAX_RETRIES` | Optional | `5` | Maximum queue‑level retries before an entry moves to dead letter |
+| `INGEST_QUEUE_BACKOFF_BASE_SECONDS` | Optional | `60` | Base backoff in seconds between queue retries (doubles each attempt: 60→120→240→480→960) |
+| `INGEST_QUEUE_POLL_INTERVAL_SECONDS` | Optional | `30` | How often (seconds) the background queue worker polls for due entries |
+| `ENFORCE_SINGLE_REPLICA` | Optional | `False` | If `True`, warns on startup when multiple replicas are detected |
 | `LOG_LEVEL` | Optional | `ERROR` | Log level — use `ERROR` for production, `DEBUG` for local dev |
-| `EMBEDDING_DIMENSIONS` | Optional | `768` | Output dimension of the embedding model — must match `EMBEDDING_MODEL`; update and recreate Qdrant collections when switching models |
+
+## Rate Limits
+
+Rate limits are enforced **per API key** (SHA‑256 fingerprinted). Endpoints that call the LLM have rate limits; endpoints that don't (DELETE, GET /ingestion-status) are **unlimited**.
+
+| Endpoint | Daily Cap | Burst (per minute) | Per‑Entity Cap | Notes |
+|---|---|---|---|---|
+| `POST /ingest-candidate` | 500/day | 10/minute | 20/day per candidate | LLM‑cost (embedding) |
+| `POST /ingest-job` | 200/day | 10/minute | 20/day per job | LLM‑cost (embedding) |
+| `POST /cv-parse` | 500/day | 20/minute | — | LLM‑cost (generation) |
+| `DELETE /candidates/{id}` | — | — | — | **No rate limit** (no LLM call) |
+| `DELETE /jobs/{id}` | — | — | — | **No rate limit** (no LLM call) |
+| `GET /ingestion-status` | — | — | — | **No rate limit** (no LLM call) |
+| `POST /assessment/generate` | 500/day | 10/minute | 50/day per entity | LLM‑cost (generation) |
+| `POST /assessment/grade` | 1000/day | 30/minute | 100/day per entity | LLM‑cost (generation) |
+| `POST /calculate-fit` | 1000/hour | 30/minute | 100/hour per candidate | LLM‑cost (generation) |
+| `POST /recommend` | 500/day | 20/minute | 50/hour per target | LLM‑cost (generation) |
+| `POST /recommend/pool` | 100/hour | 10/minute | — | LLM‑cost (generation) |
+| `POST /analyze-career-paths` | 500/day | 10/minute | 20/day per candidate | LLM‑cost (generation) |
+| `POST /generate-jd` | 500/day | 10/minute | 50/day per job | LLM‑cost (generation) |
+| `POST /analyze-jd` | 500/day | 10/minute | 50/day per job | LLM‑cost (generation) |
+
+### 429 Response Contract
+
+When a rate limit is exceeded, the service returns:
+
+```json
+{
+  "detail": "Rate limit exceeded",
+  "error_code": "RATE_LIMIT_EXCEEDED",
+  "retry_after_seconds": 42,
+  "correlation_id": "a1b2c3d4-..."
+}
+```
+
+**Headers:**
+
+| Header | Description |
+|---|---|
+| `Retry-After` | Seconds until the rate limit window resets |
+| `X-Correlation-Id` | UUID tracing the request end‑to‑end |
+
+The PHP backend should read `Retry-After` to determine when to retry, and log `X-Correlation-Id` for debugging.
+
+## Ingestion Reliability Architecture
+
+Ingestion failures are handled across **three layers** of retry:
+
+```
+Layer 1: In‑Process Retries (immediate)
+  └─ 3 attempts, exponential backoff: 2s → 4s → 8s
+  └─ Catches transient LLM / Qdrant / network errors
+
+Layer 2: Persistent Queue (deferred)
+  └─ Up to 5 retries, exponential backoff: 60s → 120s → 240s → 480s → 960s
+  └─ Survives service restarts (file‑based)
+  └─ Background worker polls every INGEST_QUEUE_POLL_INTERVAL_SECONDS
+
+Layer 3: Startup Recovery
+  └─ On service start, all incomplete (pending/running) entries are marked as failed
+  └─ Callbacks are sent for each failed entry
+  └─ A recovery budget (5 concurrent callbacks) prevents callback‑server overload
+
+Final: Dead Letter
+  └─ After exhausting all retries, entry moves to dead_letter/ directory
+  └─ Requires manual investigation
+```
+
+### Dead Letter Monitoring
+
+When an ingestion permanently fails (all retries exhausted), the entry is moved to `dead_letter/`. The service monitors this directory:
+
+- **Sentry alert**: A background task polls every 5 minutes. If new dead letters appear, a Sentry event is sent with details (event_id, entity_type, entity_id, error_summary).
+- **Health endpoint**: If dead letters exist, [`GET /health`](app/main.py:372) returns `{"status": "degraded", "dead_letter_count": N}` instead of `{"status": "ok"}`.
+
+**Alert flow:**
+
+1. **Sentry** sends a push notification (email/Slack/PagerDuty) when a dead letter is detected.
+2. **Infrastructure monitoring** (e.g., UptimeRobot, Prometheus) polls `/health` and alerts on non-`ok` status.
+3. **Manual investigation**: Check the dead letter files and use the ingestion-status endpoint to diagnose.
+
+**Dead letter management API (via [`IngestQueue`](app/services/ingest_queue.py)):**
+
+- `dead_letter_count()` — returns the number of dead letter entries
+- `get_dead_letter_entries()` — returns all entries with details
+- `clear_dead_letter(event_id=None)` — removes entries (all or by event_id)
+
+## Circuit Breaker
+
+The [`LLMClient`](app/clients/llm.py) uses a **circuit breaker** pattern with three states:
+
+| State | Behaviour |
+|---|---|
+| **CLOSED** | Normal operation. Requests pass through. |
+| **OPEN** | After 3 consecutive failures. All requests fail fast with `LLMUnavailableError`. |
+| **HALF_OPEN** | After cooldown period (configurable via env vars). Allows a single probe request. |
+
+- Separate circuit breakers for **generation** and **embedding**.
+- A successful probe in HALF_OPEN resets the breaker to CLOSED.
+- A failed probe in HALF_OPEN reopens the breaker and restarts the cooldown.
+
+## Correlation ID Middleware
+
+Every request receives a **UUID correlation ID** via [`CorrelationIdMiddleware`](app/middleware/correlation.py):
+
+- Attached to `request.state.correlation_id` for use in handlers.
+- Returned as the `X-Correlation-Id` response header.
+- Bound to structlog context for structured logging.
+
+## Callback Client
+
+The [`CallbackClient`](app/services/callback_client.py) delivers ingestion‑status callbacks to the PHP backend:
+
+- **HMAC‑SHA256 signing**: Each callback includes `X-HireRight-Signature`, `X-HireRight-Timestamp`, and `X-HireRight-Event-Id` headers.
+- **Retries**: Up to `CALLBACK_MAX_ATTEMPTS` with exponential backoff (`CALLBACK_RETRY_BASE_SECONDS`).
+- **Timeout**: Each HTTP request times out after `CALLBACK_TIMEOUT_SECONDS`.
+- **SSRF safety**: Callback URLs are validated via `validate_ingest_url()` to prevent server‑side request forgery.
+- **Replay protection**: PHP verifies the timestamp is within `CALLBACK_SIGNATURE_TTL_SECONDS` of the current time.
 
 ## API Reference
 
@@ -75,30 +329,42 @@ Full table sourced from `.env.example`:
 - **Purpose:** Asynchronously ingest a candidate CV from a cloud URL into the vector store.
 - **Request:** `candidate_id` (int), `cv_url` (HTTPS URL to PDF), `profile_data` (`name`, `location`, `experience_level`, `industry`, `employment_type`, `candidate_version`), `callback_url` (HTTPS)
 - **Response:** `202 Accepted` — `{"event_id": "<uuid>"}`
+- **Rate limit:** 500/day, 10/minute, 20/day per candidate
 - **curl:** `curl -X POST http://localhost/api/ai/ingest-candidate -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"candidate_id": 123, "cv_url": "https://example.com/cv.pdf", "profile_data": {...}, "callback_url": "https://php-backend.example.com/callback"}'`
 
 ### `POST /api/ai/ingest‑job`
 - **Purpose:** Asynchronously ingest a job description text into the vector store.
 - **Request:** `job_id` (int), `jd_text` (string), `metadata` (`title`, `location`, `experience_level`, `industry`, `employment_type`, `job_version`), `callback_url` (HTTPS)
 - **Response:** `202 Accepted` — `{"event_id": "<uuid>"}`
+- **Rate limit:** 200/day, 10/minute, 20/day per job
 - **curl:** `curl -X POST http://localhost/api/ai/ingest-job -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"job_id": 456, "jd_text": "...", "metadata": {...}, "callback_url": "https://php-backend.example.com/callback"}'`
+
+### `POST /api/ai/cv‑parse`
+- **Purpose:** Synchronously parse a CV PDF from a URL and return structured autofill data (name, email, phone, skills, experience, education, social links). **No vector store write occurs.**
+- **Request:** `cv_url` (HTTPS URL to PDF)
+- **Response:** `200 OK` — `CVAutofillResponse` with extracted fields (empty strings for missing data)
+- **Rate limit:** 500/day, 20/minute
+- **curl:** `curl -X POST http://localhost/api/ai/cv-parse -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"cv_url": "https://example.com/cv.pdf"}'`
 
 ### `DELETE /api/ai/candidates/{candidate_id}`
 - **Purpose:** Remove a candidate's vector from Qdrant.
 - **Request:** Path param `candidate_id` (int)
 - **Response:** `200 OK` — `{"deleted": true}` or `404` if not found
+- **Rate limit:** None (no LLM call)
 - **curl:** `curl -X DELETE http://localhost/api/ai/candidates/123 -H "X-API-Key: $API_KEY"`
 
 ### `DELETE /api/ai/jobs/{job_id}`
 - **Purpose:** Remove a job's vector from Qdrant.
 - **Request:** Path param `job_id` (int)
 - **Response:** `200 OK` — `{"deleted": true}` or `404` if not found
+- **Rate limit:** None (no LLM call)
 - **curl:** `curl -X DELETE http://localhost/api/ai/jobs/456 -H "X-API-Key: $API_KEY"`
 
 ### `GET /api/ai/ingestion‑status`
 - **Purpose:** Pull‑based fallback to check ingestion status when callback was missed.
 - **Query params:** `event_id` OR (`entity_type` + `entity_id`)
 - **Response:** `event_id`, `entity_type`, `entity_id`, `status` (`pending|running|success|failed`), `attempt_count`, `callback_delivery_failed`, `error_summary`, `created_at`, `updated_at`
+- **Rate limit:** None (no LLM call)
 - **curl:** `curl "http://localhost/api/ai/ingestion-status?event_id=abc123" -H "X-API-Key: $API_KEY"`
 
 ### `POST /api/ai/assessment/generate`
@@ -120,6 +386,7 @@ Full table sourced from `.env.example`:
     ]                                             // question_type = "multiple_choice"
   }
   ```
+- **Rate limit:** 500/day, 10/minute, 50/day per entity
 - **curl examples:**
 
   **Candidate‑centric request:**
@@ -163,24 +430,27 @@ Full table sourced from `.env.example`:
     "authenticity_flag": { "is_suspicious": false, "reason": "..." }
   }
   ```
+- **Rate limit:** 1000/day, 30/minute, 100/day per entity
 - **curl:** `curl -X POST http://localhost/api/ai/assessment/grade -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"questions": ["Q1", "Q2"], "answers": ["A1", "A2"], "time_taken_seconds": 120}'`
 
 ### `POST /api/ai/calculate‑fit`
 - **Purpose:** Calculate an explainable fit score between a candidate and a job.
 - **Request:** `candidate_id`, `candidate_version`, `job_id`, `job_version` (all int), `force_refresh` (bool, optional)
 - **Response:** `overall_score_percentage` (0–100), `category_breakdown` (`role_match`, `experience`, `location`, `employment_type` — each with `status` and `short_reason`), `skill_gap_analysis` (string)
-- **Note:** `skill_gap_analysis` and each `short_reason` are written in neutral, pronoun‑free language — no “the candidate”, “you”, or “they”. Language describes the match between the profile and the role factually.
+- **Note:** `skill_gap_analysis` and each `short_reason` are written in neutral, pronoun‑free language — no "the candidate", "you", or "they". Language describes the match between the profile and the role factually.
+- **Rate limit:** 1000/hour, 30/minute, 100/hour per candidate
 - **curl:** `curl -X POST http://localhost/api/ai/calculate-fit -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"candidate_id": 123, "candidate_version": 1, "job_id": 456, "job_version": 1}'`
 
 ### `POST /api/ai/recommend`
 - **Purpose:** Return a ranked list of job or candidate recommendations for a target profile.
 - **Request:** `type` (`"jobs"|"candidates"`), `target_id` (int), `target_version` (int), `behavioral_signals` (object — `recent_searches` (list[str]), `recent_clicks` (list[`{id: int, dwell_time_seconds: int}`]), `recent_saves` (list[int]), `recent_positive_outcomes` (list[int])), `hard_filters` (dict), `force_refresh` (bool), `limit` (int, max 50)
 - **Response:** `{"results": [{"id": int, "similarity_score": float, "llm_score": int|null}, ...]}`
+- **Rate limit:** 500/day, 20/minute, 50/hour per target
 - **curl:** `curl -X POST http://localhost/api/ai/recommend -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"type": "jobs", "target_id": 123, "target_version": 1, "behavioral_signals": {"recent_searches": ["python engineer"], "recent_clicks": [{"id": 456, "dwell_time_seconds": 30}], "recent_saves": [789], "recent_positive_outcomes": []}, "limit": 10}'`
 
 ### `POST /api/ai/recommend/pool`
 - **Purpose:** Rank a pre-filtered candidate pool by fit score (uses `ScoringService.calculate_fit` internally; cache hits are free).
-- **Rate limit:** 100/hour.
+- **Rate limit:** 100/hour, 10/minute.
 - **Request:** `job_id` (int), `job_version` (int), `candidate_ids` (list[int], 1–100 items).
 - **Response:** `{"results": [{"candidate_id": int, "fit_score": int}]}` — sorted descending by `fit_score`.
 - **curl example:**
@@ -208,6 +478,7 @@ Full table sourced from `.env.example`:
     ]
   }
   ```
+- **Rate limit:** 500/day, 10/minute, 20/day per candidate
 - **curl:** `curl -X POST http://localhost/api/ai/analyze-career-paths -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"candidate_id": 123}'`
 
 ### `POST /api/ai/generate‑jd`
@@ -223,6 +494,7 @@ Full table sourced from `.env.example`:
 If `job_id` is supplied but not found in Qdrant, the endpoint returns `404`.
 - **Response:** `{"jd_text": "..."}`
 - **Note:** Output is plain text only — no markdown formatting (`**`, `##`, `*` bullets) is used. All sections are written as prose with plain line breaks.
+- **Rate limit:** 500/day, 10/minute, 50/day per job
 - **curl:**
   ```bash
   curl -X POST http://localhost/api/ai/generate-jd \
@@ -238,11 +510,13 @@ If `job_id` is supplied but not found in Qdrant, the endpoint returns `404`.
 - **Purpose:** Analyse a job description and return actionable critique points.
 - **Request:** `jd_text` (string)
 - **Response:** `{"critiques": ["...", ...]}`
+- **Rate limit:** 500/day, 10/minute, 50/day per job
 - **curl:** `curl -X POST http://localhost/api/ai/analyze-jd -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"jd_text": "..."}'`
 
 ### `GET /health`
 - **Purpose:** Health check — no authentication required.
-- **Response:** `{"status": "ok"}`
+- **Response:** `{"status": "ok", "dead_letter_count": 0}` — normal operation
+- **Response (degraded):** `{"status": "degraded", "dead_letter_count": 3}` — when dead letters exist from permanently failed ingestions
 - **curl:** `curl http://localhost/health`
 
 ## Authentication
@@ -298,4 +572,94 @@ uv run pytest tests/unit/ -v
 uv run pytest tests/integration/ -v -s
 ```
 
-Unit tests mock all external dependencies (Qdrant, OpenAI) and run in CI on every push via `.github/workflows/test.yml`. Integration tests require the full Docker Compose stack and a valid `OPENAI_API_KEY`.
+Unit tests mock all external dependencies (Qdrant, OpenAI) and run in CI on every push via [`.github/workflows/test.yml`](.github/workflows/test.yml). Integration tests require the full Docker Compose stack and a valid `OPENAI_API_KEY`.
+
+### Test Coverage
+
+| Test File | What It Covers |
+|---|---|
+| [`tests/unit/routers/test_rate_limits.py`](tests/unit/routers/test_rate_limits.py) | Burst limit enforcement for all endpoints, 429 response contract |
+| [`tests/unit/routers/test_rate_limit_keys.py`](tests/unit/routers/test_rate_limit_keys.py) | Per‑entity key extraction (candidate_id, job_id, target_id) |
+| [`tests/unit/routers/test_ingestion_router.py`](tests/unit/routers/test_ingestion_router.py) | Ingestion background‑task wiring, `/cv-parse` contract tests |
+| [`tests/unit/services/test_ingest_queue.py`](tests/unit/services/test_ingest_queue.py) | File‑based queue enqueue/dequeue/requeue, claiming, dead‑letter monitoring |
+| [`tests/unit/services/test_ingestion_store.py`](tests/unit/services/test_ingestion_store.py) | Ingestion status CRUD operations |
+| [`tests/unit/services/test_ingestion_service.py`](tests/unit/services/test_ingestion_service.py) | Candidate & job ingestion logic |
+| [`tests/unit/services/test_ingestion_fetch.py`](tests/unit/services/test_ingestion_fetch.py) | CV fetch & parse utilities |
+| [`tests/unit/services/test_callback_client.py`](tests/unit/services/test_callback_client.py) | HMAC signing, retries, SSRF validation |
+| [`tests/unit/services/test_assessment_service.py`](tests/unit/services/test_assessment_service.py) | Question generation & answer grading |
+| [`tests/unit/services/test_career_service.py`](tests/unit/services/test_career_service.py) | Career path analysis |
+| [`tests/unit/services/test_jd_service.py`](tests/unit/services/test_jd_service.py) | JD generation & analysis |
+| [`tests/unit/services/test_recommendation_service.py`](tests/unit/services/test_recommendation_service.py) | Hybrid recommendation engine |
+| [`tests/unit/services/test_scoring_service.py`](tests/unit/services/test_scoring_service.py) | Fit‑score calculation |
+| [`tests/unit/clients/test_circuit_breaker.py`](tests/unit/clients/test_circuit_breaker.py) | Circuit breaker state transitions |
+| [`tests/unit/clients/test_llm_client.py`](tests/unit/clients/test_llm_client.py) | LLM client generation & embedding |
+| [`tests/unit/clients/test_cache.py`](tests/unit/clients/test_cache.py) | TTL cache backend |
+| [`tests/unit/test_config.py`](tests/unit/test_config.py) | Settings loading |
+| [`tests/unit/test_utils.py`](tests/unit/test_utils.py) | Utility functions |
+
+## CI/CD
+
+The project uses GitHub Actions (see [`.github/workflows/test.yml`](.github/workflows/test.yml)):
+
+- **Trigger:** Runs on every push and pull request to the main branch.
+- **Steps:**
+  1. Checkout code
+  2. Install `uv`
+  3. Run `uv sync --extra dev`
+  4. Run `pytest tests/unit/ -v --tb=short -W error::FutureWarning`
+- **No live services required** — all external dependencies are mocked.
+
+## Docker Compose Services
+
+| Service | Image | Ports | Resource Limits | Description |
+|---|---|---|---|---|
+| `fastapi` | Built from [`Dockerfile`](Dockerfile) | `8000:8000` | 1.0 CPU, 1024M RAM | FastAPI application |
+| `qdrant` | `qdrant/qdrant:v1.17.0` | `6333:6333`, `6334:6334` | 0.8 CPU, 1280M RAM | Vector database |
+| `nginx` | `nginx:1.29.7-alpine` | `80:80`, `443:443` | 0.2 CPU, 128M RAM | Reverse proxy (profile: `with-nginx`) |
+
+### Healthcheck
+
+The `fastapi` service has a Docker healthcheck configured:
+```
+test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+interval: 30s
+timeout: 10s
+retries: 3
+```
+
+### Volumes
+
+| Volume | Mount Point | Purpose |
+|---|---|---|
+| `qdrant_data` | `/qdrant/storage` | Persistent Qdrant vector data |
+| `ingest_status_data` | `/data/ingest_status` | Ingestion status files + queue + dead letters |
+
+## Nginx Configuration
+
+The [`nginx/nginx.conf`](nginx/nginx.conf) reverse proxy:
+
+- Proxies all requests to `fastapi:8000`
+- Maximum client body size: 20 MB
+- Proxy read timeout: 120 seconds
+- TLS/SSL ready (uncomment the `443 ssl` server block and mount certs)
+
+## Error Handling
+
+| HTTP Status | When | Handler |
+|---|---|---|
+| `400` | Validation error (Pydantic) | FastAPI default |
+| `401` | Missing or invalid `X-API-Key` | [`verify_api_key`](app/auth.py:14) |
+| `404` | Entity not found in Qdrant | Router-level |
+| `422` | CV fetch/parse failure | Router-level |
+| `429` | Rate limit exceeded | [`_rate_limit_exceeded_handler`](app/main.py:337) |
+| `500` | Unexpected internal error | [`global_exception_handler`](app/main.py:390) |
+| `503` | LLM unavailable (circuit breaker open) | [`llm_unavailable_handler`](app/main.py:382) |
+
+## Logging
+
+Structured logging via `structlog` (configured in [`app/logging_config.py`](app/logging_config.py)):
+
+- **Production:** `LOG_LEVEL=ERROR` — only errors and above
+- **Development:** `LOG_LEVEL=DEBUG` — full request/response tracing
+- **Context:** Correlation ID, event ID, entity type/ID are automatically bound to each log entry
+- **Sentry:** Errors are forwarded to Sentry when `SENTRY_DSN` is configured
