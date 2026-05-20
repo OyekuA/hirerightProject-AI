@@ -30,9 +30,9 @@ from app.schemas.recommendation import (
 # --- Route handler ---
 
 @router.post("/recommend", response_model=RecommendResponse)
-@limiter.limit("200/day")
-@limiter.limit("10/minute")
-@limiter.limit("20/hour", key_func=target_id_key)
+@limiter.limit("500/day")
+@limiter.limit("20/minute")
+@limiter.limit("50/hour", key_func=target_id_key)
 async def recommend(
     request: Request,
     req: RecommendRequest,

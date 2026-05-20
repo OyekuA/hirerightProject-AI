@@ -30,9 +30,9 @@ from app.schemas.jd import (
 # --- Route handlers ---
 
 @router.post("/generate-jd", response_model=GenerateJDResponse)
-@limiter.limit("200/day")
-@limiter.limit("5/minute")
-@limiter.limit("30/day", key_func=job_id_key)
+@limiter.limit("500/day")
+@limiter.limit("10/minute")
+@limiter.limit("50/day", key_func=job_id_key)
 async def generate_jd(
     request: Request,
     req: GenerateJDRequest,
@@ -67,9 +67,9 @@ async def generate_jd(
 
 
 @router.post("/analyze-jd", response_model=AnalyzeJDResponse)
-@limiter.limit("200/day")
-@limiter.limit("5/minute")
-@limiter.limit("30/day", key_func=job_id_key)
+@limiter.limit("500/day")
+@limiter.limit("10/minute")
+@limiter.limit("50/day", key_func=job_id_key)
 async def analyze_jd(
     request: Request,
     req: AnalyzeJDRequest,

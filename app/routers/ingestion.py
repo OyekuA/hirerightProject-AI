@@ -147,8 +147,6 @@ async def ingest_job(
 
 
 @router.delete("/candidates/{candidate_id}")
-@limiter.limit("200/day")
-@limiter.limit("20/minute")
 async def delete_candidate(
     request: Request,
     candidate_id: int,
@@ -165,8 +163,6 @@ async def delete_candidate(
 
 
 @router.delete("/jobs/{job_id}")
-@limiter.limit("200/day")
-@limiter.limit("20/minute")
 async def delete_job(
     request: Request,
     job_id: int,
@@ -183,8 +179,6 @@ async def delete_job(
 
 
 @router.get("/ingestion-status")
-@limiter.limit("1000/day")
-@limiter.limit("60/minute")
 async def get_ingestion_status(
     request: Request,
     event_id: Optional[str] = Query(None, description="Event ID of ingestion record"),
@@ -211,8 +205,8 @@ async def get_ingestion_status(
 
 
 @router.post("/cv-parse", response_model=CVAutofillResponse)
-@limiter.limit("200/day")
-@limiter.limit("10/minute")
+@limiter.limit("500/day")
+@limiter.limit("20/minute")
 async def parse_cv(
     request: Request,
     req: CVAutofillRequest,

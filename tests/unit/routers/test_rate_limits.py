@@ -71,7 +71,7 @@ def _build_test_app(router, llm_client_override=None, dependency_overrides=None)
 
 
 class TestCvParseBurstLimit(IsolatedAsyncioTestCase):
-    """Rate‑limit enforcement for POST /cv-parse (10/minute burst)."""
+    """Rate‑limit enforcement for POST /cv-parse (20/minute burst)."""
 
     def setUp(self):
         _reset_rate_limiter()
@@ -85,12 +85,12 @@ class TestCvParseBurstLimit(IsolatedAsyncioTestCase):
     @patch("app.routers.ingestion.fetch_and_parse_cv")
     @patch("app.routers.ingestion.truncate_to_prompt_cap")
     def test_burst_limit_exceeded(self, mock_truncate, mock_fetch, mock_validate):
-        """POST /cv-parse has a 10/minute burst; the 11th request should 429."""
+        """POST /cv-parse has a 20/minute burst; the 21st request should 429."""
         mock_validate.return_value = None
         mock_fetch.return_value = "parsed cv text"
         mock_truncate.return_value = "truncated cv text"
 
-        for i in range(10):
+        for i in range(20):
             resp = self.client.post(
                 "/api/ai/cv-parse",
                 json={"cv_url": "https://example.com/cv.pdf"},
@@ -100,7 +100,7 @@ class TestCvParseBurstLimit(IsolatedAsyncioTestCase):
                 msg=f"Request {i+1} should be 200, got {resp.status_code}: {resp.text}",
             )
 
-        # The 11th request should be rate‑limited
+        # The 21st request should be rate‑limited
         resp = self.client.post(
             "/api/ai/cv-parse",
             json={"cv_url": "https://example.com/cv.pdf"},
@@ -172,7 +172,7 @@ class TestAssessmentGenerateBurstLimit(IsolatedAsyncioTestCase):
 
 
 class TestAssessmentGradeBurstLimit(IsolatedAsyncioTestCase):
-    """Rate‑limit enforcement for POST /assessment/grade (20/minute burst)."""
+    """Rate‑limit enforcement for POST /assessment/grade (30/minute burst)."""
 
     def setUp(self):
         _reset_rate_limiter()
@@ -192,14 +192,14 @@ class TestAssessmentGradeBurstLimit(IsolatedAsyncioTestCase):
         self.client = TestClient(self.app)
 
     def test_burst_limit_exceeded(self):
-        """POST /assessment/grade has a 20/minute burst; the 21st should 429."""
+        """POST /assessment/grade has a 30/minute burst; the 31st should 429."""
         payload = {
             "questions": ["What is Python?"],
             "answers": ["A programming language"],
             "time_taken_seconds": 120,
         }
 
-        for i in range(20):
+        for i in range(30):
             resp = self.client.post("/api/ai/assessment/grade", json=payload)
             self.assertEqual(
                 resp.status_code, 200,
@@ -212,7 +212,7 @@ class TestAssessmentGradeBurstLimit(IsolatedAsyncioTestCase):
 
 
 class TestScoringBurstLimit(IsolatedAsyncioTestCase):
-    """Rate‑limit enforcement for POST /calculate-fit (20/minute burst)."""
+    """Rate‑limit enforcement for POST /calculate-fit (30/minute burst)."""
 
     def setUp(self):
         _reset_rate_limiter()
@@ -255,7 +255,7 @@ class TestScoringBurstLimit(IsolatedAsyncioTestCase):
         self.client = TestClient(self.app)
 
     def test_burst_limit_exceeded(self):
-        """POST /calculate-fit has a 20/minute burst; the 21st should 429."""
+        """POST /calculate-fit has a 30/minute burst; the 31st should 429."""
         payload = {
             "candidate_id": 1,
             "candidate_version": 1,
@@ -263,7 +263,7 @@ class TestScoringBurstLimit(IsolatedAsyncioTestCase):
             "job_version": 1,
         }
 
-        for i in range(20):
+        for i in range(30):
             resp = self.client.post("/api/ai/calculate-fit", json=payload)
             self.assertEqual(
                 resp.status_code, 200,
@@ -276,7 +276,7 @@ class TestScoringBurstLimit(IsolatedAsyncioTestCase):
 
 
 class TestRecommendBurstLimit(IsolatedAsyncioTestCase):
-    """Rate‑limit enforcement for POST /recommend (10/minute burst)."""
+    """Rate‑limit enforcement for POST /recommend (20/minute burst)."""
 
     def setUp(self):
         _reset_rate_limiter()
@@ -311,7 +311,7 @@ class TestRecommendBurstLimit(IsolatedAsyncioTestCase):
         self.client = TestClient(self.app)
 
     def test_burst_limit_exceeded(self):
-        """POST /recommend has a 10/minute burst; the 11th should 429."""
+        """POST /recommend has a 20/minute burst; the 21st should 429."""
         payload = {
             "type": "jobs",
             "target_id": 1,
@@ -319,7 +319,7 @@ class TestRecommendBurstLimit(IsolatedAsyncioTestCase):
             "behavioral_signals": {"recent_clicks": []},
         }
 
-        for i in range(10):
+        for i in range(20):
             resp = self.client.post("/api/ai/recommend", json=payload)
             self.assertEqual(
                 resp.status_code, 200,
@@ -332,7 +332,7 @@ class TestRecommendBurstLimit(IsolatedAsyncioTestCase):
 
 
 class TestCareerBurstLimit(IsolatedAsyncioTestCase):
-    """Rate‑limit enforcement for POST /analyze-career-paths (5/minute burst)."""
+    """Rate‑limit enforcement for POST /analyze-career-paths (10/minute burst)."""
 
     def setUp(self):
         _reset_rate_limiter()
@@ -379,10 +379,10 @@ class TestCareerBurstLimit(IsolatedAsyncioTestCase):
         self.client = TestClient(self.app)
 
     def test_burst_limit_exceeded(self):
-        """POST /analyze-career-paths has a 5/minute burst; the 6th should 429."""
+        """POST /analyze-career-paths has a 10/minute burst; the 11th should 429."""
         payload = {"candidate_id": 1}
 
-        for i in range(5):
+        for i in range(10):
             resp = self.client.post("/api/ai/analyze-career-paths", json=payload)
             self.assertEqual(
                 resp.status_code, 200,
@@ -395,7 +395,7 @@ class TestCareerBurstLimit(IsolatedAsyncioTestCase):
 
 
 class TestJdGenerateBurstLimit(IsolatedAsyncioTestCase):
-    """Rate‑limit enforcement for POST /generate-jd (5/minute burst)."""
+    """Rate‑limit enforcement for POST /generate-jd (10/minute burst)."""
 
     def setUp(self):
         _reset_rate_limiter()
@@ -415,10 +415,10 @@ class TestJdGenerateBurstLimit(IsolatedAsyncioTestCase):
         self.client = TestClient(self.app)
 
     def test_burst_limit_exceeded(self):
-        """POST /generate-jd has a 5/minute burst; the 6th should 429."""
+        """POST /generate-jd has a 10/minute burst; the 11th should 429."""
         payload = {"prompt": "Write a job description for a software engineer"}
 
-        for i in range(5):
+        for i in range(10):
             resp = self.client.post("/api/ai/generate-jd", json=payload)
             self.assertEqual(
                 resp.status_code, 200,
@@ -431,7 +431,7 @@ class TestJdGenerateBurstLimit(IsolatedAsyncioTestCase):
 
 
 class TestJdAnalyzeBurstLimit(IsolatedAsyncioTestCase):
-    """Rate‑limit enforcement for POST /analyze-jd (5/minute burst)."""
+    """Rate‑limit enforcement for POST /analyze-jd (10/minute burst)."""
 
     def setUp(self):
         _reset_rate_limiter()
@@ -449,10 +449,10 @@ class TestJdAnalyzeBurstLimit(IsolatedAsyncioTestCase):
         self.client = TestClient(self.app)
 
     def test_burst_limit_exceeded(self):
-        """POST /analyze-jd has a 5/minute burst; the 6th should 429."""
+        """POST /analyze-jd has a 10/minute burst; the 11th should 429."""
         payload = {"jd_text": "We are looking for a software engineer..."}
 
-        for i in range(5):
+        for i in range(10):
             resp = self.client.post("/api/ai/analyze-jd", json=payload)
             self.assertEqual(
                 resp.status_code, 200,
@@ -484,8 +484,8 @@ class Test429ResponseContract(IsolatedAsyncioTestCase):
         mock_fetch.return_value = "parsed cv text"
         mock_truncate.return_value = "truncated cv text"
 
-        # Exhaust the 10/minute burst limit
-        for _ in range(10):
+        # Exhaust the 20/minute burst limit
+        for _ in range(20):
             self.client.post(
                 "/api/ai/cv-parse",
                 json={"cv_url": "https://example.com/cv.pdf"},
