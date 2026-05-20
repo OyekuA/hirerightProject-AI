@@ -287,10 +287,30 @@ def create_app() -> FastAPI:
     app.state.limiter = limiter
 
     async def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
-        logger.error("Rate limit exceeded", exc_info=exc)
+        limit = exc.limit
+        retry_after = limit.get_expiry() if hasattr(limit, "get_expiry") else 60
+        correlation_id = getattr(request.state, "correlation_id", None)
+
+        logger.error(
+            "Rate limit exceeded",
+            exc_info=exc,
+            path=request.url.path,
+            limit=str(limit.limit) if hasattr(limit, "limit") else None,
+            correlation_id=correlation_id,
+        )
+
         return JSONResponse(
             status_code=429,
-            content={"detail": "Rate limit exceeded"},
+            content={
+                "detail": "Rate limit exceeded",
+                "error_code": "RATE_LIMIT_EXCEEDED",
+                "retry_after_seconds": retry_after,
+                "correlation_id": correlation_id,
+            },
+            headers={
+                "Retry-After": str(retry_after),
+                "X-Correlation-Id": correlation_id or "",
+            },
         )
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
