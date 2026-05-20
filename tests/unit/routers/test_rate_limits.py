@@ -11,6 +11,11 @@ from fastapi.testclient import TestClient
 from app.clients.llm import LLMUnavailableError
 
 
+def _reset_rate_limiter():
+    from app.clients.dependencies import get_rate_limiter
+    get_rate_limiter().limiter.reset()
+
+
 def _build_test_app(router, llm_client_override=None, dependency_overrides=None) -> FastAPI:
     """Build a minimal FastAPI app with the given router and rate‑limiter.
 
@@ -69,6 +74,7 @@ class TestCvParseBurstLimit(IsolatedAsyncioTestCase):
     """Rate‑limit enforcement for POST /cv-parse (10/minute burst)."""
 
     def setUp(self):
+        _reset_rate_limiter()
         from app.routers.ingestion import router as ingestion_router
         self.mock_llm = MagicMock()
         self.mock_llm.generate.return_value = json.dumps({"name": "Test"})
@@ -118,6 +124,7 @@ class TestAssessmentGenerateBurstLimit(IsolatedAsyncioTestCase):
     """Rate‑limit enforcement for POST /assessment/generate (10/minute burst)."""
 
     def setUp(self):
+        _reset_rate_limiter()
         from app.routers.assessment import router as assessment_router
         from app.clients.dependencies import get_qdrant_client
 
@@ -168,6 +175,7 @@ class TestAssessmentGradeBurstLimit(IsolatedAsyncioTestCase):
     """Rate‑limit enforcement for POST /assessment/grade (20/minute burst)."""
 
     def setUp(self):
+        _reset_rate_limiter()
         from app.routers.assessment import router as assessment_router
 
         self.mock_llm = MagicMock()
@@ -207,6 +215,7 @@ class TestScoringBurstLimit(IsolatedAsyncioTestCase):
     """Rate‑limit enforcement for POST /calculate-fit (20/minute burst)."""
 
     def setUp(self):
+        _reset_rate_limiter()
         from app.routers.scoring import router as scoring_router
         from app.clients.dependencies import get_qdrant_client, get_cache_backend
 
@@ -270,6 +279,7 @@ class TestRecommendBurstLimit(IsolatedAsyncioTestCase):
     """Rate‑limit enforcement for POST /recommend (10/minute burst)."""
 
     def setUp(self):
+        _reset_rate_limiter()
         from app.routers.recommend import router as recommend_router
         from app.clients.dependencies import get_qdrant_client, get_cache_backend
 
@@ -325,6 +335,7 @@ class TestCareerBurstLimit(IsolatedAsyncioTestCase):
     """Rate‑limit enforcement for POST /analyze-career-paths (5/minute burst)."""
 
     def setUp(self):
+        _reset_rate_limiter()
         from app.routers.career import router as career_router
         from app.clients.dependencies import get_qdrant_client
 
@@ -387,6 +398,7 @@ class TestJdGenerateBurstLimit(IsolatedAsyncioTestCase):
     """Rate‑limit enforcement for POST /generate-jd (5/minute burst)."""
 
     def setUp(self):
+        _reset_rate_limiter()
         from app.routers.jd import router as jd_router
         from app.clients.dependencies import get_qdrant_client
 
@@ -422,6 +434,7 @@ class TestJdAnalyzeBurstLimit(IsolatedAsyncioTestCase):
     """Rate‑limit enforcement for POST /analyze-jd (5/minute burst)."""
 
     def setUp(self):
+        _reset_rate_limiter()
         from app.routers.jd import router as jd_router
 
         self.mock_llm = MagicMock()
@@ -455,6 +468,7 @@ class Test429ResponseContract(IsolatedAsyncioTestCase):
     """Verify the 429 response structure matches the B2B contract."""
 
     def setUp(self):
+        _reset_rate_limiter()
         from app.routers.ingestion import router as ingestion_router
         self.mock_llm = MagicMock()
         self.mock_llm.generate.return_value = json.dumps({"name": "Test"})
