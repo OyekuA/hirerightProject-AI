@@ -346,5 +346,92 @@ class TestIngestQueueClaiming(unittest.TestCase):
         self.assertEqual(cycle3[0].event_id, record.event_id)
 
 
+class TestDeadLetterMonitoring(unittest.TestCase):
+    """Verify dead‑letter monitoring methods on IngestQueue."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.queue_path = Path(self.temp_dir) / "failed_queue"
+        self.dead_letter_path = Path(self.temp_dir) / "dead_letter"
+        self.queue = IngestQueue(
+            queue_path=str(self.queue_path),
+            dead_letter_path=str(self.dead_letter_path),
+        )
+
+    def _push_to_dead_letter(self, entity_type: str = "candidate", entity_id: int = 1) -> str:
+        """Helper: enqueue a record, then force it to dead letter."""
+        record = IngestionRecord(
+            event_id=str(uuid.uuid4()),
+            entity_type=entity_type,  # type: ignore
+            entity_id=entity_id,
+            status="failed",
+            attempt_count=4,
+            callback_url="https://example.com/callback",
+            error_summary="SomeError: something went wrong",
+            callback_delivery_failed=False,
+            payload={"cv_url": "https://example.com/cv.pdf", "profile_data": {}},
+            created_at=datetime.now(timezone.utc).isoformat(),
+            updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self.queue.enqueue(record, backoff_base=0)
+        due = self.queue.get_due_entries()
+        entry = due[0]
+        entry.queue_retry_count = 5
+        self.queue.requeue(entry, max_retries=5, backoff_base=60)
+        return record.event_id
+
+    def test_dead_letter_count_returns_zero_when_empty(self):
+        """dead_letter_count() returns 0 when no entries exist."""
+        self.assertEqual(self.queue.dead_letter_count(), 0)
+
+    def test_dead_letter_count_returns_correct_number(self):
+        """dead_letter_count() returns the number of dead letter entries."""
+        self._push_to_dead_letter(entity_id=1)
+        self._push_to_dead_letter(entity_id=2)
+        self.assertEqual(self.queue.dead_letter_count(), 2)
+
+    def test_get_dead_letter_entries_returns_entries(self):
+        """get_dead_letter_entries() returns all dead letter entries with correct fields."""
+        event_id = self._push_to_dead_letter(entity_id=42)
+        entries = self.queue.get_dead_letter_entries()
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual(entry.event_id, event_id)
+        self.assertEqual(entry.entity_type, "candidate")
+        self.assertEqual(entry.entity_id, 42)
+        self.assertEqual(entry.queue_retry_count, 6)  # incremented by requeue
+
+    def test_get_dead_letter_entries_skips_corrupt_files(self):
+        """Corrupt files in dead letter are skipped without raising."""
+        # Write a corrupt file directly
+        corrupt_path = self.dead_letter_path / "corrupt.json"
+        corrupt_path.write_text("{ invalid json", encoding="utf-8")
+        entries = self.queue.get_dead_letter_entries()
+        self.assertEqual(len(entries), 0)
+
+    def test_clear_dead_letter_removes_single_entry(self):
+        """clear_dead_letter(event_id) removes only the specified entry."""
+        id1 = self._push_to_dead_letter(entity_id=1)
+        id2 = self._push_to_dead_letter(entity_id=2)
+        self.assertEqual(self.queue.dead_letter_count(), 2)
+
+        removed = self.queue.clear_dead_letter(event_id=id1)
+        self.assertEqual(removed, 1)
+        self.assertEqual(self.queue.dead_letter_count(), 1)
+        # id2 should still exist
+        self.assertTrue(self.queue._dead_letter_path_for(id2).exists())
+
+    def test_clear_dead_letter_removes_all(self):
+        """clear_dead_letter() with no args removes all entries."""
+        self._push_to_dead_letter(entity_id=1)
+        self._push_to_dead_letter(entity_id=2)
+        self._push_to_dead_letter(entity_id=3)
+        self.assertEqual(self.queue.dead_letter_count(), 3)
+
+        removed = self.queue.clear_dead_letter()
+        self.assertEqual(removed, 3)
+        self.assertEqual(self.queue.dead_letter_count(), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

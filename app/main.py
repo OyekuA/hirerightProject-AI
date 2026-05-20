@@ -30,6 +30,7 @@ from app.clients.dependencies import (
     get_ingest_queue,
 )
 from app.services.ingestion_service import run_candidate_ingestion, run_job_ingestion
+from app.services.ingest_queue import IngestQueue
 
 
 logger = structlog.get_logger()
@@ -251,13 +252,60 @@ async def lifespan(app: FastAPI):
     )
     logger.info("Ingest queue worker started", poll_interval=settings.INGEST_QUEUE_POLL_INTERVAL_SECONDS)
 
+    _last_dead_letter_count = 0
+
+    async def dead_letter_watcher(queue: IngestQueue) -> None:
+        nonlocal _last_dead_letter_count
+        poll_interval = 300
+        while True:
+            await asyncio.sleep(poll_interval)
+            try:
+                count = queue.dead_letter_count()
+                if count > _last_dead_letter_count:
+                    new_entries = count - _last_dead_letter_count
+                    entries = queue.get_dead_letter_entries()
+                    recent = entries[-new_entries:] if new_entries <= len(entries) else entries
+                    for entry in recent:
+                        logger.error(
+                            "Ingestion permanently failed — dead letter alert",
+                            event_id=entry.event_id,
+                            entity_type=entry.entity_type,
+                            entity_id=entry.entity_id,
+                            queue_retry_count=entry.queue_retry_count,
+                            enqueued_at=entry.enqueued_at,
+                        )
+                        if sentry_sdk.is_initialized():
+                            with sentry_sdk.push_scope() as scope:
+                                scope.set_extra("event_id", entry.event_id)
+                                scope.set_extra("entity_type", entry.entity_type)
+                                scope.set_extra("entity_id", entry.entity_id)
+                                scope.set_extra("queue_retry_count", entry.queue_retry_count)
+                                scope.set_extra("enqueued_at", entry.enqueued_at)
+                                scope.set_level("error")
+                                sentry_sdk.capture_message(
+                                    f"Ingestion permanently failed: {entry.entity_type} {entry.entity_id}"
+                                )
+                elif count == 0 and _last_dead_letter_count > 0:
+                    logger.info("Dead letter directory cleared", previous_count=_last_dead_letter_count)
+                _last_dead_letter_count = count
+            except Exception as e:
+                logger.error("Dead letter watcher error", error=str(e))
+
+    _dead_letter_task = asyncio.create_task(dead_letter_watcher(ingest_queue))
+    logger.info("Dead letter watcher started", poll_interval_seconds=300)
+
     yield
 
     _worker_task.cancel()
+    _dead_letter_task.cancel()
     try:
         await _worker_task
     except asyncio.CancelledError:
         logger.info("Ingest queue worker stopped")
+    try:
+        await _dead_letter_task
+    except asyncio.CancelledError:
+        logger.info("Dead letter watcher stopped")
 
     if lock_acquired:
         try:
@@ -324,7 +372,12 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health():
         """Health check endpoint (unauthenticated)."""
-        return {"status": "ok"}
+        ingest_queue = get_ingest_queue()
+        dead_letter_count = ingest_queue.dead_letter_count()
+        return {
+            "status": "degraded" if dead_letter_count > 0 else "ok",
+            "dead_letter_count": dead_letter_count,
+        }
 
     @app.exception_handler(LLMUnavailableError)
     async def llm_unavailable_handler(request: Request, exc: LLMUnavailableError):

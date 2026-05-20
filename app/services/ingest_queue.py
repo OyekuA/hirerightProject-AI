@@ -229,3 +229,37 @@ class IngestQueue:
             entity_id=entry.entity_id,
             queue_retry_count=entry.queue_retry_count,
         )
+
+    def dead_letter_count(self) -> int:
+        with self._lock:
+            return len(list(self._dead_letter_path.glob("*.json")))
+
+    def get_dead_letter_entries(self) -> List[IngestQueueEntry]:
+        entries: List[IngestQueueEntry] = []
+        with self._lock:
+            for p in sorted(self._dead_letter_path.glob("*.json")):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    entries.append(IngestQueueEntry.from_dict(data))
+                except (json.JSONDecodeError, KeyError, IOError) as e:
+                    _logger.warning(
+                        "Skipping corrupt dead letter file",
+                        file_path=str(p),
+                        error=str(e),
+                    )
+        return entries
+
+    def clear_dead_letter(self, event_id: Optional[str] = None) -> int:
+        removed = 0
+        with self._lock:
+            if event_id is not None:
+                path = self._dead_letter_path_for(event_id)
+                if path.exists():
+                    path.unlink()
+                    removed = 1
+            else:
+                for p in self._dead_letter_path.glob("*.json"):
+                    p.unlink()
+                    removed += 1
+        return removed
