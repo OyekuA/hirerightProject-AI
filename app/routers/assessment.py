@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException
-import json
 import structlog
 import asyncio
 from app.clients.dependencies import get_qdrant_client, get_llm_client
@@ -15,8 +14,6 @@ from app.clients.dependencies import get_rate_limiter
 limiter = get_rate_limiter().limiter
 
 
-
-
 from app.schemas.assessment import (
     GenerateAssessmentRequest,
     GradeAssessmentRequest,
@@ -24,7 +21,6 @@ from app.schemas.assessment import (
     GradeAssessmentResponse,
 )
 
-# --- Route handlers ---
 
 @router.post("/assessment/generate", response_model=GenerateAssessmentResponse)
 @limiter.limit("500/day")
@@ -36,7 +32,6 @@ async def generate_assessment(
     qdrant: QdrantClient = Depends(get_qdrant_client),
     llm: LLMClient = Depends(get_llm_client),
 ):
-    """Generate scenario‑based interview questions for a candidate."""
     candidate_id = req.candidate_context.candidate_id if req.candidate_context else None
     target_role = req.candidate_context.target_role if req.candidate_context else None
     job_id = req.job_context.job_id if req.job_context else None
@@ -70,8 +65,6 @@ async def grade_assessment(
     req: GradeAssessmentRequest,
     llm: LLMClient = Depends(get_llm_client),
 ):
-    """Grade candidate answers and produce a score, feedback, and authenticity flag.
-    Questions can be plain strings or multiple‑choice objects (as returned by /assessment/generate)."""
     structlog.contextvars.bind_contextvars(entity_id="unknown")
     service = AssessmentService(llm=llm, qdrant=None)
     try:

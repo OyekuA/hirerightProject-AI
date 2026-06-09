@@ -1,5 +1,3 @@
-"""Domain‑wide constants."""
-
 CANDIDATES_COLLECTION = "candidates"
 JOBS_COLLECTION = "jobs"
 

@@ -1,9 +1,3 @@
-"""Job Description service for generating and analyzing job descriptions.
-
-This module provides the JDService class that orchestrates LLM calls
-to generate job descriptions from prompts and to critique existing JDs.
-"""
-
 import json
 import structlog
 from typing import Optional
@@ -11,7 +5,6 @@ from typing import Optional
 from app.clients.llm import LLMClient, LLMUnavailableError
 from app.clients.qdrant import QdrantClient
 from app.clients.dependencies import JOBS_COLLECTION
-from app.config import get_settings
 from app.utils import parse_llm_json
 from app.utils.ingestion import truncate_to_prompt_cap
 from app.prompts import JD_ANALYSIS_PROMPT_TEMPLATE, JD_GENERATION_PROMPT_TEMPLATE, JD_REFINEMENT_PROMPT_TEMPLATE
@@ -20,15 +13,8 @@ logger = structlog.get_logger()
 
 
 class JDService:
-    """Service that encapsulates LLM‑based JD generation and analysis."""
 
     def __init__(self, llm: LLMClient, qdrant: Optional[QdrantClient] = None):
-        """Initialize the JD service.
-
-        Args:
-            llm: A configured LLMClient instance.
-            qdrant: Optional Qdrant client for job context lookup.
-        """
         self.llm = llm
         self.qdrant = qdrant
 
@@ -38,21 +24,6 @@ class JDService:
         existing_draft: Optional[str] = None,
         job_id: Optional[int] = None,
     ) -> str:
-        """Generate or refine a job description.
-
-        Args:
-            prompt: Textual guidance for the desired JD (e.g., "We need a senior
-                backend engineer with Python and Kubernetes experience").
-            existing_draft: Optional existing JD text to refine.
-            job_id: Optional ID of an ingested job to fetch context from Qdrant.
-
-        Returns:
-            The generated or refined JD as a plain text string.
-
-        Raises:
-            LLMUnavailableError: If the LLM circuit breaker is open or the call fails.
-            ValueError: If a job_id is provided but the job is not found in Qdrant.
-        """
         logger.info(
             "Generating JD",
             prompt_length=len(prompt),
@@ -142,10 +113,10 @@ class JDService:
             )
 
         try:
-            jd_text = self.llm.generate(prompt_text)
-        except Exception as e:
-            logger.error("LLM call failed during JD generation", error=str(e))
-            raise LLMUnavailableError(f"JD generation failed: {e}")
+            jd_text = self.llm.generate(prompt_text, temperature=0.7)
+        except LLMUnavailableError:
+            logger.error("LLM call failed during JD generation")
+            raise
 
         logger.info(
             "JD generated successfully",
@@ -154,18 +125,6 @@ class JDService:
         return jd_text
 
     def analyze_jd(self, jd_text: str) -> list[str]:
-        """Analyze a job description and return a list of critique points.
-
-        Args:
-            jd_text: The job description text to analyse.
-
-        Returns:
-            A list of strings, each being a concrete critique suggestion.
-
-        Raises:
-            LLMUnavailableError: If the LLM circuit breaker is open or the call fails,
-                or if the response is malformed.
-        """
         logger.info(
             "Analyzing JD",
             jd_length=len(jd_text),

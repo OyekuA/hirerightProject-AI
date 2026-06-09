@@ -1,9 +1,3 @@
-"""Shared key‑extractor functions for per‑entity rate limiting.
-
-These functions are used as `key_func` arguments in `@limiter.limit(...)` decorators
-to enforce per‑candidate, per‑job, or per‑target rate limits.
-"""
-
 import hashlib
 import json
 from typing import Optional, Union
@@ -13,7 +7,6 @@ from slowapi.util import get_remote_address
 
 
 def _fingerprint(request: Request, entity_id: Optional[str] = None) -> str:
-    """Return a SHA‑256 hex digest of the API key (or client IP) optionally concatenated with entity_id."""
     api_key = request.headers.get("X-API-Key")
     if api_key:
         base = api_key.encode()
@@ -25,17 +18,7 @@ def _fingerprint(request: Request, entity_id: Optional[str] = None) -> str:
 
 
 def _read_body(request: Request) -> Union[dict, None]:
-    """Synchronously read the cached JSON body from a Starlette Request.
-
-    Starlette caches the raw body bytes in ``request._body`` after the first
-    ``await request.body()`` (which FastAPI runs during Pydantic model binding).
-    This helper returns the parsed dict, or *None* if the body is absent,
-    empty, or not valid JSON.
-    """
-    try:
-        raw = request._body
-    except AttributeError:
-        return None
+    raw = getattr(request.state, "raw_body", None)
     if not raw:
         return None
     try:
@@ -45,12 +28,6 @@ def _read_body(request: Request) -> Union[dict, None]:
 
 
 def candidate_id_key(request: Request) -> str:
-    """Extract candidate_id from request body for rate limiting.
-
-    Returns a key of the form "candidate:{fingerprint}" if candidate_id is present
-    in the JSON request body; otherwise returns "unknown:{fingerprint}" where the
-    fingerprint is derived from the API key (or client IP) alone.
-    """
     body = _read_body(request)
     if not isinstance(body, dict):
         return f"unknown:{_fingerprint(request)}"
@@ -61,12 +38,6 @@ def candidate_id_key(request: Request) -> str:
 
 
 def job_id_key(request: Request) -> str:
-    """Extract job_id from request body for rate limiting.
-
-    Returns a key of the form "job:{fingerprint}" if job_id is present
-    in the JSON request body; otherwise returns "unknown:{fingerprint}" where the
-    fingerprint is derived from the API key (or client IP) alone.
-    """
     body = _read_body(request)
     if not isinstance(body, dict):
         return f"unknown:{_fingerprint(request)}"
@@ -77,12 +48,6 @@ def job_id_key(request: Request) -> str:
 
 
 def target_id_key(request: Request) -> str:
-    """Extract target_id from request body for rate limiting.
-
-    Returns a key of the form "target:{fingerprint}" if target_id is present
-    in the JSON request body; otherwise returns "unknown:{fingerprint}" where the
-    fingerprint is derived from the API key (or client IP) alone.
-    """
     body = _read_body(request)
     if not isinstance(body, dict):
         return f"unknown:{_fingerprint(request)}"
@@ -93,15 +58,6 @@ def target_id_key(request: Request) -> str:
 
 
 def candidate_or_job_id_key(request: Request) -> str:
-    """Extract a stable identifier from request body for rate limiting.
-
-    Looks for a candidate_id inside a "candidate_context" object first,
-    then for a job_id inside a "job_context" object.
-
-    Returns a key of the form "candidate:{fingerprint}" or "job:{fingerprint}"
-    if either is found; otherwise returns "unknown:{fingerprint}" where the
-    fingerprint is derived from the API key (or client IP) alone.
-    """
     body = _read_body(request)
     if not isinstance(body, dict):
         return f"unknown:{_fingerprint(request)}"

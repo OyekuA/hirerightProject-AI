@@ -1,6 +1,10 @@
+import asyncio
+import inspect
+import os
 import pytest
 from unittest.mock import patch, MagicMock
-import os
+
+asyncio.iscoroutinefunction = inspect.iscoroutinefunction
 
 def _is_integration_run():
     if os.getenv("INTEGRATION_TEST") == "1":
@@ -50,7 +54,10 @@ def mock_get_settings():
     mock.MAX_INGEST_FILE_MB = 10
     mock.INGEST_FETCH_TIMEOUT_SECONDS = 20
     mock.ENFORCE_SINGLE_REPLICA = False
-    mock.LOG_LEVEL = "ERROR"
+    mock.LOG_LEVEL = "INFO"
+    mock.ENABLE_DOCS = False
+    mock.DOCS_USERNAME = None
+    mock.DOCS_PASSWORD = None
     mock.LLM_GENERATION_TIMEOUT_SECONDS = 30
     mock.LLM_EMBEDDING_TIMEOUT_SECONDS = 30
     mock.LLM_MAX_RETRIES = 2
@@ -78,7 +85,6 @@ def patch_settings():
         "app.clients.dependencies.get_settings",
         "app.clients.qdrant.get_settings",
         "app.services.scoring_service.get_settings",
-        "app.services.jd_service.get_settings",
     ]
     patches = []
     for target in modules_to_patch:

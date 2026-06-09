@@ -1,5 +1,3 @@
-"""Pydantic schemas for the assessment domain."""
-
 from pydantic import BaseModel, Field, model_validator
 from typing import List, Optional, Union, Literal
 
@@ -16,7 +14,7 @@ class JobContext(BaseModel):
 class GenerateAssessmentRequest(BaseModel):
     candidate_context: Optional[CandidateContext] = None
     job_context: Optional[JobContext] = None
-    num_questions: int = Field(default=3)
+    num_questions: int = Field(default=3, ge=1, le=30)
     question_type: Literal["single", "multiple_choice"] = "single"
 
     @model_validator(mode='after')
@@ -70,19 +68,7 @@ class SkillBreakdownItem(BaseModel):
 
 class GradeAssessmentResponse(BaseModel):
     overall_score: int = Field(..., ge=0, le=100)
-    skill_breakdown: List[SkillBreakdownItem] = Field(..., min_length=3, max_length=5)
+    skill_breakdown: List[SkillBreakdownItem] = Field(default=[], min_length=0, max_length=5)
     authenticity_flag: AuthenticityFlag
-
-
-class MultipleChoiceQuestion(BaseModel):
-    question: str
-    options: List[str]
-    correct_answer: str
-
-    @model_validator(mode='after')
-    def validate_options(self) -> 'MultipleChoiceQuestion':
-        if len(self.options) != 4:
-            raise ValueError('Exactly 4 options are required')
-        if self.correct_answer not in self.options:
-            raise ValueError('correct_answer must be one of the provided options')
-        return self
+    needs_review: bool = False
+    grading_reasoning: str = ""

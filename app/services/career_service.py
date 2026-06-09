@@ -1,57 +1,27 @@
-"""Career path analysis service.
-
-This module provides the CareerPathService class that orchestrates LLM calls
-and Qdrant lookups to suggest three suitable career paths for a candidate.
-"""
-
 import json
 import structlog
 
 from app.clients.dependencies import CANDIDATES_COLLECTION
-from app.clients.llm import LLMClient, LLMUnavailableError
+from app.clients.llm import LLMClient
 from app.clients.qdrant import QdrantClient
 from app.utils import parse_llm_json
 from app.utils.ingestion import truncate_to_prompt_cap
 from app.prompts import CAREER_PATHS_PROMPT_TEMPLATE
-from app.schemas.career import AnalyzeCareerPathsResponse
 
 logger = structlog.get_logger()
 
 
+class MalformedLLMResponseError(Exception):
+    pass
+
+
 class CareerPathService:
-    """Service that encapsulates LLM‑based career path analysis."""
 
     def __init__(self, llm: LLMClient, qdrant: QdrantClient):
-        """Initialize the career path service.
-
-        Args:
-            llm: A configured LLMClient instance.
-            qdrant: A QdrantClient instance.
-        """
         self.llm = llm
         self.qdrant = qdrant
 
     def analyze_career_paths(self, candidate_id: int) -> dict:
-        """Suggest three career paths based on the candidate's profile.
-
-        Args:
-            candidate_id: Unique identifier of the candidate in the vector store.
-
-        Returns:
-            A dict with keys:
-                - profile_summary (string): a 2‑3 sentence second‑person summary of the
-                  candidate's overall profile.
-                - paths (list): a list of exactly three dicts, each with keys:
-                    - role (string)
-                    - match_percentage (integer 0‑100)
-                    - core_skills (list of strings, 3‑5 skills)
-                    - reasoning (string, one sentence in second‑person voice)
-
-        Raises:
-            ValueError: If the candidate is not found in the vector store.
-            LLMUnavailableError: If the LLM circuit breaker is open or the call fails,
-                or if the response is malformed.
-        """
         logger.info(
             "Analyzing career paths",
             candidate_id=candidate_id,
@@ -73,7 +43,7 @@ class CareerPathService:
         )
 
         prompt = truncate_to_prompt_cap(prompt)
-        generated = self.llm.generate(prompt)
+        generated = self.llm.generate(prompt, temperature=0.7)
 
         try:
             result = parse_llm_json(generated)
@@ -82,7 +52,7 @@ class CareerPathService:
                 "LLM returned non‑JSON response",
                 error=str(e),
             )
-            raise LLMUnavailableError(
+            raise MalformedLLMResponseError(
                 f"LLM returned malformed career‑paths JSON: {e}"
             )
 
@@ -91,28 +61,28 @@ class CareerPathService:
                 "LLM response is not a dict",
                 response_type=type(result),
             )
-            raise LLMUnavailableError("LLM response is not a dict")
+            raise MalformedLLMResponseError("LLM response is not a dict")
 
         if "profile_summary" not in result or not isinstance(result["profile_summary"], str) or not result["profile_summary"].strip():
             logger.error(
                 "LLM response missing or invalid top-level profile_summary",
                 profile_summary=result.get("profile_summary"),
             )
-            raise LLMUnavailableError("LLM response missing or invalid top-level profile_summary")
+            raise MalformedLLMResponseError("LLM response missing or invalid top-level profile_summary")
 
         if "paths" not in result or not isinstance(result["paths"], list):
             logger.error(
                 "LLM response missing or invalid paths",
                 paths=result.get("paths"),
             )
-            raise LLMUnavailableError("LLM response missing or invalid paths")
+            raise MalformedLLMResponseError("LLM response missing or invalid paths")
 
         if len(result["paths"]) != 3:
             logger.error(
                 "LLM response does not contain exactly three items in paths",
                 num_items=len(result["paths"]),
             )
-            raise LLMUnavailableError(
+            raise MalformedLLMResponseError(
                 f"LLM returned {len(result['paths'])} items in paths, expected 3"
             )
 
@@ -123,7 +93,7 @@ class CareerPathService:
                     f"Item {i} is not a dict",
                     item=item,
                 )
-                raise LLMUnavailableError(f"Item {i} is not a dict")
+                raise MalformedLLMResponseError(f"Item {i} is not a dict")
             missing = required_keys - set(item.keys())
             if missing:
                 logger.error(
@@ -131,7 +101,7 @@ class CareerPathService:
                     missing_keys=list(missing),
                     item_keys=list(item.keys()),
                 )
-                raise LLMUnavailableError(
+                raise MalformedLLMResponseError(
                     f"Item {i} missing required keys: {missing}"
                 )
             perc = item.get("match_percentage")
@@ -140,7 +110,7 @@ class CareerPathService:
                     f"Item {i} has invalid match_percentage",
                     match_percentage=perc,
                 )
-                raise LLMUnavailableError(
+                raise MalformedLLMResponseError(
                     f"Item {i} match_percentage must be an integer 0‑100"
                 )
             role = item.get("role")
@@ -149,7 +119,7 @@ class CareerPathService:
                     f"Item {i} has invalid role",
                     role=role,
                 )
-                raise LLMUnavailableError(
+                raise MalformedLLMResponseError(
                     f"Item {i} role must be a non‑empty string"
                 )
             reasoning = item.get("reasoning")
@@ -158,7 +128,7 @@ class CareerPathService:
                     f"Item {i} has invalid reasoning",
                     reasoning=reasoning,
                 )
-                raise LLMUnavailableError(
+                raise MalformedLLMResponseError(
                     f"Item {i} reasoning must be a non‑empty string"
                 )
             core_skills = item.get("core_skills")
@@ -187,4 +157,4 @@ class CareerPathService:
             roles=[item["role"] for item in result["paths"]],
             core_skills_counts=[len(item.get("core_skills", [])) for item in result["paths"]],
         )
-        return AnalyzeCareerPathsResponse.model_validate(result).model_dump(mode="json")
+        return result

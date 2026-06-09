@@ -1,9 +1,3 @@
-"""Assessment service for generating interview questions and grading candidate answers.
-
-This module provides the AssessmentService class that orchestrates LLM calls
-and Qdrant lookups to produce scenario‑based questions and evaluate answers.
-"""
-
 import json
 import random
 import structlog
@@ -21,17 +15,55 @@ logger = structlog.get_logger()
 HUMAN_TYPING_SPEED_THRESHOLD_WPS = 2.5
 AUTHENTICITY_PENALTY = 25
 
+GENERIC_COMPETENCY_AXES = (
+    "core role-specific expertise",
+    "analytical problem solving",
+    "communication and collaboration",
+    "ownership, judgement, and execution",
+    "adaptability and continuous learning",
+)
+
+ASSESSMENT_FOCUS_ANGLES = (
+    "designing a solution or system and the trade-offs it requires",
+    "diagnosing and resolving an unexpected failure or incident",
+    "improving performance, scalability, or efficiency",
+    "managing security, privacy, compliance, or risk",
+    "working with data quality, modelling, metrics, or measurement",
+    "aligning stakeholders with competing priorities",
+    "mentoring, coaching, or upskilling a colleague",
+    "operating under ambiguous or shifting requirements",
+    "making trade-offs under tight time or resource constraints",
+    "defining a quality, testing, or validation strategy",
+    "improving a process or automating a workflow",
+    "resolving conflict or disagreement on a team",
+    "navigating an ethical dilemma or difficult judgement call",
+    "planning and executing a migration, rollout, or major change",
+    "collaborating across functions with a different discipline",
+    "deciding under uncertainty or with incomplete information",
+    "learning from a mistake, failure, or post-mortem",
+    "evaluating and adopting a new tool, method, or technology",
+    "balancing short-term delivery against long-term sustainability",
+    "monitoring, observing, or measuring impact after delivery",
+    "ramping up quickly in an unfamiliar domain or system",
+    "driving alignment or leading without formal authority",
+    "responding to direct customer or end-user impact",
+    "doing more with constrained budget or resources",
+)
+
+ASSESSMENT_SITUATION_MODIFIERS = (
+    "a tight deadline or high-pressure environment",
+    "limited budget, headcount, or tooling",
+    "a newly formed, distributed, or junior team",
+    "significant legacy systems or accumulated technical debt",
+    "a period of rapid growth or a sudden spike in demand",
+    "conflicting expectations from multiple stakeholders",
+    "a regulated or low-tolerance-for-error context",
+)
+
 
 class AssessmentService:
-    """Service that encapsulates LLM‑based assessment generation and grading."""
 
     def __init__(self, llm: LLMClient, qdrant: Optional[QdrantClient] = None):
-        """Initialize the assessment service.
-
-        Args:
-            llm: A configured LLMClient instance.
-            qdrant: A QdrantClient instance (optional, required only for generate_questions).
-        """
         self.llm = llm
         self.qdrant = qdrant
 
@@ -43,7 +75,6 @@ class AssessmentService:
         job_id: Optional[int] = None,
         question_type: Literal["single", "multiple_choice"] = "single",
     ) -> List[Union[str, dict]]:
-        """Generate scenario‑based interview questions tailored to a candidate or a job."""
         clamped_n = max(1, min(30, num_questions))
         logger.info(
             "Generating assessment questions",
@@ -81,6 +112,12 @@ class AssessmentService:
                 "title": job_payload.get("title", ""),
                 "required_skills": job_payload.get("required_skills", []),
                 "raw_jd_summary": job_payload.get("raw_jd_summary", ""),
+                "company_name": job_payload.get("company_name", ""),
+                "location": job_payload.get("location", ""),
+                "experience_level": job_payload.get("experience_level", ""),
+                "employment_type": job_payload.get("employment_type", ""),
+                "industry": job_payload.get("industry", ""),
+                "about": job_payload.get("about", ""),
             }
             if not target_role:
                 target_role = job_context["title"]
@@ -118,55 +155,137 @@ The candidate background is not specified (generic assessment)."""
 
         job_block = ""
         if job_id is not None:
-            job_block = f"""
-The assessment is for the following role:
-- Job Title: {job_context['title']}
-- Required Skills: {', '.join(job_context['required_skills']) if job_context['required_skills'] else 'None'}
-- Role Summary: {job_context['raw_jd_summary']}"""
+            _title = job_context.get("title", "").strip()
+            _company_name = job_context.get("company_name", "").strip()
+            _location = job_context.get("location", "").strip()
+            _employment_type = job_context.get("employment_type", "").strip()
+            _experience_level = job_context.get("experience_level", "").strip()
+            _industry = job_context.get("industry", "").strip()
+            _required_skills = [s.strip() for s in job_context.get("required_skills", []) if s.strip()]
+            _raw_jd_summary = job_context.get("raw_jd_summary", "").strip()
+            _about = job_context.get("about", "").strip()
+
+            lines = ["The assessment is for the following role:"]
+            if _title:
+                lines.append(f"- Job Title: {_title}")
+            if _company_name:
+                lines.append(f"- Company: {_company_name}")
+            if _location:
+                lines.append(f"- Location: {_location}")
+            if _employment_type:
+                lines.append(f"- Employment Type: {_employment_type}")
+            if _experience_level:
+                lines.append(f"- Experience Level: {_experience_level}")
+            if _industry:
+                lines.append(f"- Industry: {_industry}")
+            if _required_skills:
+                lines.append(f"- Required Skills: {', '.join(_required_skills)}")
+            if _raw_jd_summary:
+                lines.append(f"- Role Summary: {_raw_jd_summary}")
+            if _about:
+                lines.append(f"- About the Company: {_about}")
+            job_block = "\n".join(lines)
         else:
             job_block = """
 The job context is not specified (generic role)."""
 
+        skill_pool = list(dict.fromkeys(
+            s.strip()
+            for s in (skills + job_context.get("required_skills", []))
+            if isinstance(s, str) and s.strip()
+        ))
+        if not skill_pool:
+            skill_pool = list(GENERIC_COMPETENCY_AXES)
+
+        focus_combos = [
+            (skill, angle, situation)
+            for skill in skill_pool
+            for angle in ASSESSMENT_FOCUS_ANGLES
+            for situation in ASSESSMENT_SITUATION_MODIFIERS
+        ]
+        random.shuffle(focus_combos)
+
+        selected_focus = []
+        seen_angles = set()
+        for combo in focus_combos:
+            if len(selected_focus) >= clamped_n:
+                break
+            if combo[1] not in seen_angles:
+                seen_angles.add(combo[1])
+                selected_focus.append(combo)
+        if len(selected_focus) < clamped_n:
+            for combo in focus_combos:
+                if len(selected_focus) >= clamped_n:
+                    break
+                if combo not in selected_focus:
+                    selected_focus.append(combo)
+
+        focus_block = "\n".join(
+            f"- Question {idx}: anchor it to **{skill}**, probed through the lens of "
+            f"**{angle}**, situated in the context of **{situation}**."
+            for idx, (skill, angle, situation) in enumerate(selected_focus, start=1)
+        )
+
+        if candidate_id is not None and job_id is None:
+            intent_block = (
+                "These questions are for a candidate self-assessing their fit for the role. "
+                "Frame the scenarios as realistic 'day-in-the-life' situations to help them "
+                "reflect on whether they have the right skills and temperament for this job."
+            )
+        else:
+            intent_block = (
+                "These questions are for an employer rigorously testing a candidate. "
+                "Frame the scenarios to uncover the depth of the candidate's actual competency, "
+                "problem-solving abilities, and past experience."
+            )
+
         if question_type == "single":
-            instruction = f"""
-Generate exactly {clamped_n} scenario‑based interview questions that:
-1. Are tailored to the candidate's specific past experience and skills (if provided).
-2. Pose concrete, realistic work situations they might encounter in the {target_role} role.
-3. Require the candidate to explain how they would apply their past experience to solve the scenario.
+            instruction_base = f"""
+Generate exactly {clamped_n} scenario‑based questions that:
+1. Are tailored to the specific industry, role, and skills provided.
+2. Pose concrete, realistic work situations they will encounter in the {target_role} role.
+3. Require the respondent to explain their strategy, thought process, or application of past experience.
 4. Forbid generic definition questions (e.g., "What is X?") or trivia.
 
 Return a JSON array of strings, where each string is one question, and nothing else.
-
-Example format:
-[
-  "Describe a time when you had to ...",
-  "Imagine you are faced with ..."
-]"""
+"""
         else:
-            instruction = f"""
-Generate exactly {clamped_n} multiple-choice interview questions that:
-1. Are tailored to the candidate's specific past experience and skills.
-2. Pose highly complex, tricky, realistic work situations for a {target_role}.
-3. The distractors (wrong options) MUST be common industry misconceptions or plausible mistakes.
-4. CRITICAL FORMATTING: The options must ONLY contain the proposed action or solution.
-   Do NOT include explanations, justifications, or critiques inside the option text itself.
-   - BAD OPTION: "Query the monolith database directly. This creates tight coupling..."
-   - GOOD OPTION: "Query the monolith's production database directly to retrieve the required data."
+            instruction_base = f"""
+Generate exactly {clamped_n} multiple-choice questions that:
+1. Are tailored to the specific industry, role, and skills provided.
+2. Pose highly complex, realistic work situations for a {target_role}.
+3. The distractors (wrong options) MUST be common industry misconceptions, plausible mistakes, or sub-optimal strategies.
+4. CRITICAL FORMATTING: The options must ONLY contain the proposed action or solution. Do NOT include explanations inside the option text itself.
 
 Return a JSON array of objects, where each object has the following keys:
 - "question": a string containing the scenario-based question.
 - "correct_answer": a string with the exact correct answer.
 - "distractors": an array of exactly 3 strings containing the plausible wrong answers.
-Do NOT prepend A, B, C, D to the answers.
+Do NOT prepend A, B, C, D to the answers."""
+
+        instruction = instruction_base + f"""
+
+MANDATORY FOCUS ASSIGNMENTS — NON-NEGOTIABLE:
+Produce the {clamped_n} questions strictly in order. Each question MUST be built around its assigned focus below, so that every question targets a genuinely different competency and scenario:
+
+{focus_block}
+
+ADDITIONAL RULES:
+1. Treat each assignment as the seed for a concrete, realistic scenario a {target_role} would plausibly face — never a definition or trivia question.
+2. Do NOT default to the most obvious textbook example for an assigned focus; pick a specific, less clichéd but still realistic situation.
+3. Never mention, quote, label, or hint at these focus assignments, lenses, or situations in the question text — each question must read naturally and stand alone.
+4. No two questions may collapse into the same underlying theme, even loosely.
+5. Output strictly the requested JSON format and absolutely nothing else.
 """
 
         prompt = GENERATE_QUESTIONS_PROMPT_TEMPLATE.format(
             target_role=target_role,
             job_block=job_block,
             candidate_block=candidate_block,
+            intent_block=intent_block,
             instruction=instruction
         )
-        generated = self.llm.generate(prompt)
+        generated = self.llm.generate(prompt, temperature=0.9)
         try:
             parsed = parse_llm_json(generated)
             if not isinstance(parsed, list):
@@ -215,9 +334,15 @@ Do NOT prepend A, B, C, D to the answers.
                     random.shuffle(all_options)
                     labels = ["A. ", "B. ", "C. ", "D. "]
                     labeled_options = [f"{labels[idx]}{opt}" for idx, opt in enumerate(all_options)]
-                    correct_labeled = next(
-                        opt for opt in labeled_options if opt.endswith(q["correct_answer"])
-                    )
+                    correct_labeled = None
+                    for opt in labeled_options:
+                        if opt[3:].strip() == q["correct_answer"].strip():
+                            correct_labeled = opt
+                            break
+                    if correct_labeled is None:
+                        raise ValueError(
+                            f"Could not match correct answer '{q['correct_answer']}' among labeled options"
+                        )
 
                     formatted_questions.append({
                         "question": q["question"],
@@ -232,7 +357,6 @@ Do NOT prepend A, B, C, D to the answers.
 
     @staticmethod
     def _is_multiple_choice(q: Union[str, dict, MultipleChoiceQuestion]) -> bool:
-        """Return True if the question is a multiple‑choice item."""
         if isinstance(q, dict):
             return "options" in q and "correct_answer" in q
         if hasattr(q, "options") and hasattr(q, "correct_answer"):
@@ -241,7 +365,6 @@ Do NOT prepend A, B, C, D to the answers.
 
     @staticmethod
     def _normalize_question(q: Union[str, dict, MultipleChoiceQuestion]) -> dict:
-        """Convert any question representation into a uniform dict."""
         if isinstance(q, str):
             return {"question": q, "type": "single"}
         if isinstance(q, dict):
@@ -260,7 +383,6 @@ Do NOT prepend A, B, C, D to the answers.
         questions: List[Union[str, dict, MultipleChoiceQuestion]],
         answers: List[str]
     ) -> str:
-        """Build a detailed QA block that includes MC metadata."""
         formatted = []
         for i, (q_raw, ans) in enumerate(zip(questions, answers), start=1):
             q = self._normalize_question(q_raw)
@@ -287,7 +409,6 @@ Do NOT prepend A, B, C, D to the answers.
         questions: List[Union[str, dict, MultipleChoiceQuestion]],
         answers: List[str]
     ) -> Optional[float]:
-        """Compute multiple‑choice score as percentage. Returns None if no MC questions."""
         mc_correct = 0
         mc_total = 0
         for q_raw, ans in zip(questions, answers):
@@ -297,10 +418,9 @@ Do NOT prepend A, B, C, D to the answers.
                 user_ans = str(ans).strip().lower()
                 correct_ans = str(q.get("correct_answer", "")).strip().lower()
 
-                if correct_ans.startswith(("a. ", "b. ", "c. ", "d. ")):
-                    if user_ans and user_ans[0].lower() == correct_ans[0].lower():
-                        mc_correct += 1
-                elif user_ans == correct_ans:
+                if user_ans == correct_ans:
+                    mc_correct += 1
+                elif len(user_ans) == 1 and user_ans.isalpha() and correct_ans.startswith(user_ans + ". "):
                     mc_correct += 1
         if mc_total == 0:
             return None
@@ -314,12 +434,6 @@ Do NOT prepend A, B, C, D to the answers.
         time_taken: int,
         has_subjective: bool
     ) -> Dict[str, Any]:
-        """
-        Enforce authenticity rules programmatically.
-        - If no subjective answers exist, ignore any suspicion (no typing involved).
-        - If hard_flag is True, mark suspicious and apply penalty.
-        - Otherwise, preserve LLM's suspicion flag but only apply penalty if it was set.
-        """
         auth = result.get("authenticity_flag", {})
         is_suspicious = auth.get("is_suspicious", False)
 
@@ -336,6 +450,9 @@ Do NOT prepend A, B, C, D to the answers.
                 f"Completion time of {time_taken}s ({wps:.2f} words/sec) "
                 f"exceeds human typing limit of {HUMAN_TYPING_SPEED_THRESHOLD_WPS} wps."
             )
+        else:
+            auth["is_suspicious"] = False
+            is_suspicious = False
 
         if is_suspicious:
             original_score = result.get("overall_score", 0)
@@ -353,7 +470,6 @@ Do NOT prepend A, B, C, D to the answers.
 
     @staticmethod
     def _extract_question_text(question: Union[str, dict]) -> str:
-        """Extract the question text from a question object."""
         if isinstance(question, str):
             return question
         if isinstance(question, dict):
@@ -364,15 +480,40 @@ Do NOT prepend A, B, C, D to the answers.
             pass
         raise TypeError(f"Unsupported question type: {type(question)}")
 
+    def _run_grading(self, prompt: str) -> dict:
+        generated = self.llm.generate(prompt, temperature=0)
+        result = parse_llm_json(generated)
+
+        required_keys = {"overall_score", "skill_breakdown", "authenticity_flag", "grading_reasoning"}
+        if not all(k in result for k in required_keys):
+            raise ValueError("LLM response missing required keys")
+        if not isinstance(result["authenticity_flag"], dict):
+            raise ValueError("authenticity_flag must be a dict")
+
+        overall = int(result["overall_score"])
+        if not (0 <= overall <= 100):
+            raise ValueError(f"overall_score {overall} out of range 0‑100")
+        result["overall_score"] = overall
+
+        skill_breakdown = result["skill_breakdown"]
+        if not isinstance(skill_breakdown, list) or not (3 <= len(skill_breakdown) <= 5):
+            raise ValueError("skill_breakdown must be a list of 3‑5 items")
+        for item in skill_breakdown:
+            if not all(k in item for k in ("category", "score", "feedback")):
+                raise ValueError("skill_breakdown item missing required keys")
+            score = int(item["score"])
+            if not (0 <= score <= 100):
+                raise ValueError(f"Skill score {score} out of range 0‑100")
+            item["score"] = score
+
+        return result
+
     def grade_answers(
         self,
         questions: List[Union[str, dict, MultipleChoiceQuestion]],
         answers: List[str],
         time_taken_seconds: int
     ) -> Dict[str, Any]:
-        """
-        Grade a candidate's answers and produce a score, skill breakdown, and authenticity flag.
-        """
         if len(questions) != len(answers):
             raise ValueError("Number of questions must match number of answers")
         if time_taken_seconds <= 0:
@@ -404,6 +545,22 @@ Do NOT prepend A, B, C, D to the answers.
             wps = 0.0
             hard_flag = False
 
+        if has_mc and not has_subjective:
+            logger.info(
+                "Pure MC assessment — skipping LLM vote, using deterministic score",
+                mc_score=mc_score,
+            )
+            return {
+                "overall_score": int(round(mc_score)),
+                "skill_breakdown": [],
+                "authenticity_flag": {
+                    "is_suspicious": False,
+                    "reason": "Pure multiple-choice assessment (no typed answers).",
+                },
+                "needs_review": False,
+                "grading_reasoning": "Pure MC assessment — score computed deterministically.",
+            }
+
         if has_mc:
             grading_rules_block = f"""
 The system has pre‑calculated the multiple‑choice score as **{mc_score:.1f}%** ({int(mc_score)}/100).
@@ -423,31 +580,7 @@ All questions are open‑ended. Evaluate based on technical depth, clarity, and 
             grading_rules_block=grading_rules_block,
             qa_pairs=qa_pairs_block
         )
-        generated = self.llm.generate(prompt)
-
-        try:
-            result = parse_llm_json(generated)
-        except json.JSONDecodeError as e:
-            logger.error("LLM returned non‑JSON response", error=str(e))
-            raise LLMUnavailableError(f"Malformed JSON from LLM: {e}")
-
-        required_keys = {"overall_score", "skill_breakdown", "authenticity_flag"}
-        if not all(k in result for k in required_keys):
-            raise ValueError("LLM response missing required keys")
-
-        overall = int(result["overall_score"])
-        if not (0 <= overall <= 100):
-            raise ValueError(f"overall_score {overall} out of range 0‑100")
-
-        skill_breakdown = result["skill_breakdown"]
-        if not isinstance(skill_breakdown, list) or not (3 <= len(skill_breakdown) <= 5):
-            raise ValueError("skill_breakdown must be a list of 3‑5 items")
-        for item in skill_breakdown:
-            if not all(k in item for k in ("category", "score", "feedback")):
-                raise ValueError("skill_breakdown item missing required keys")
-            score = int(item["score"])
-            if not (0 <= score <= 100):
-                raise ValueError(f"Skill score {score} out of range 0‑100")
+        result = self._run_grading(prompt)
 
         if has_mc:
             llm_score = result["overall_score"]
@@ -475,9 +608,12 @@ All questions are open‑ended. Evaluate based on technical depth, clarity, and 
             result, hard_flag, wps, time_taken_seconds, has_subjective
         )
 
+        result["needs_review"] = result["authenticity_flag"]["is_suspicious"]
+
         logger.info(
             "Grading completed",
             overall_score=result["overall_score"],
-            is_suspicious=result["authenticity_flag"]["is_suspicious"]
+            is_suspicious=result["authenticity_flag"]["is_suspicious"],
+            needs_review=result["needs_review"],
         )
         return result

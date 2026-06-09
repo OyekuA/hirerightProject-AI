@@ -1,5 +1,6 @@
 """Unit tests for CircuitBreaker."""
 
+import threading
 import unittest
 from unittest.mock import patch
 from app.clients.llm import CircuitBreaker
@@ -138,3 +139,47 @@ class TestCircuitBreaker(unittest.TestCase):
             breaker.record_failure()
         self.assertEqual(breaker.state, CircuitBreaker.OPEN)
         self.assertAlmostEqual(breaker.opened_at, original_opened_at + 62, delta=0.1)
+
+    def test_concurrent_probe_only_one_allowed(self):
+        """Only one thread should be allowed through as a probe in HALF_OPEN."""
+        breaker = CircuitBreaker(threshold=3, cooldown_seconds=60.0)
+        for _ in range(3):
+            breaker.record_failure()
+        with patch("app.clients.llm.time.monotonic", return_value=breaker.opened_at + 61):
+            breaker.is_open()
+        self.assertEqual(breaker.state, CircuitBreaker.HALF_OPEN)
+        breaker._probe_sent = False
+
+        barrier = threading.Barrier(10)
+        results = []
+
+        def probe():
+            barrier.wait()
+            results.append(breaker.is_open())
+
+        threads = [threading.Thread(target=probe) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(results.count(False), 1)
+        self.assertEqual(results.count(True), 9)
+
+    def test_thread_safe_failure_recording(self):
+        """Concurrent record_failure calls must not corrupt breaker state."""
+        breaker = CircuitBreaker(threshold=3, cooldown_seconds=60.0)
+        barrier = threading.Barrier(10)
+
+        def record():
+            barrier.wait()
+            breaker.record_failure()
+
+        threads = [threading.Thread(target=record) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(breaker.state, CircuitBreaker.OPEN)
+        self.assertGreaterEqual(breaker.failure_count, 3)

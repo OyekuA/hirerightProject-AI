@@ -1,5 +1,3 @@
-"""Qdrant vector database client wrapper."""
-
 import logging
 from typing import Optional, Any
 
@@ -17,38 +15,21 @@ class QdrantClient:
     """Wrapper around qdrant-client SDK with convenience methods."""
 
     def __init__(self, host: str, port: int):
-        """Initialize a connection to Qdrant.
-
-        Args:
-            host: Qdrant server hostname
-            port: Qdrant server port
-        """
         self._client: QdrantSDKClient = qdrant_client.QdrantClient(
             host=host, port=port
         )
         self._log = logging.getLogger(__name__)
 
     def _recreate_collection(self, collection_name: str, expected_dim: int) -> None:
-        """Drop and recreate a collection with the correct vector dimension."""
-        self._log.warning(
-            "Dropping collection '%s' due to dimension mismatch and recreating",
-            collection_name,
+        collection_info = self._client.get_collection(collection_name)
+        existing_dim = collection_info.config.params.vectors.size
+        raise RuntimeError(
+            f"Collection '{collection_name}' has dim={existing_dim} but config expects "
+            f"dim={expected_dim}. Dimension mismatch requires manual migration — "
+            f"aborting startup."
         )
-        self._client.delete_collection(collection_name=collection_name)
-        self._client.create_collection(
-            collection_name=collection_name,
-            vectors_config=VectorParams(size=expected_dim, distance=Distance.COSINE),
-        )
-        self._log.info("Recreated collection '%s' with dim=%d", collection_name, expected_dim)
 
     def ensure_collections(self) -> None:
-        """Create candidates and jobs collections if they do not exist.
-
-        If a collection exists but its vector dimension does not match
-        ``EMBEDDING_DIMENSIONS`` from settings, it is **automatically dropped
-        and recreated** with the correct dimension. This allows switching
-        embedding models (e.g. Gemini → OpenAI) without manual intervention.
-        """
         settings = get_settings()
         collections = self._client.get_collections().collections
         existing = {c.name for c in collections}
@@ -78,7 +59,6 @@ class QdrantClient:
         self._ensure_payload_indexes(JOBS_COLLECTION)
 
     def _ensure_payload_indexes(self, collection_name: str) -> None:
-        """Create payload indexes for filterable fields."""
         if collection_name == CANDIDATES_COLLECTION:
             fields = [
                 ("location", models.PayloadSchemaType.KEYWORD),
@@ -119,27 +99,10 @@ class QdrantClient:
         vector: list[float],
         payload: dict[str, Any],
     ) -> None:
-        """Insert or replace a point in the given collection.
-
-        Args:
-            collection: Name of the collection (candidates or jobs)
-            point_id: Unique integer identifier for the point
-            vector: embedding vector (dimension set by EMBEDDING_DIMENSIONS config)
-            payload: Dictionary of fields matching the collection's schema
-        """
         point = models.PointStruct(id=point_id, vector=vector, payload=payload)
         self._client.upsert(collection_name=collection, points=[point])
 
     def get(self, collection: str, point_id: int) -> Optional[dict[str, Any]]:
-        """Retrieve a point's payload by ID.
-
-        Args:
-            collection: Name of the collection
-            point_id: ID of the point to retrieve
-
-        Returns:
-            The payload dictionary if the point exists, otherwise None.
-        """
         points = self._client.retrieve(
             collection_name=collection,
             ids=[point_id],
@@ -149,15 +112,6 @@ class QdrantClient:
         return points[0].payload or {}
 
     def get_with_vector(self, collection: str, point_id: int) -> tuple[Optional[dict[str, Any]], Optional[list[float]]]:
-        """Retrieve a point's payload and vector by ID.
-
-        Args:
-            collection: Name of the collection
-            point_id: ID of the point to retrieve
-
-        Returns:
-            A tuple (payload, vector). If the point does not exist, returns (None, None).
-        """
         points = self._client.retrieve(
             collection_name=collection,
             ids=[point_id],
@@ -175,17 +129,6 @@ class QdrantClient:
         limit: int,
         query_filter: Optional[models.Filter] = None,
     ) -> list[dict[str, Any]]:
-        """Search for similar vectors in the collection.
-
-        Args:
-            collection: Name of the collection
-            query_vector: query embedding vector (dimension set by EMBEDDING_DIMENSIONS config)
-            limit: Maximum number of results to return
-            query_filter: Optional filter to restrict the search
-
-        Returns:
-            List of payload dictionaries, each enriched with a 'score' field.
-        """
         result = self._client.query_points(
             collection_name=collection,
             query=query_vector,
@@ -208,17 +151,6 @@ class QdrantClient:
         limit: int = 10,
         order_by: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        """Retrieve points by filter without vector similarity.
-
-        Args:
-            collection: Name of the collection.
-            query_filter: Optional filter to restrict the scroll.
-            limit: Maximum number of points to return.
-            order_by: Optional ordering field (not supported by all Qdrant versions).
-
-        Returns:
-            List of payload dictionaries, each enriched with '_point_id' and 'score' = 0.0.
-        """
         scroll_result = self._client.scroll(
             collection_name=collection,
             scroll_filter=query_filter,
@@ -235,25 +167,12 @@ class QdrantClient:
         return results
 
     def delete(self, collection: str, point_id: int) -> None:
-        """Delete a point from the collection.
-
-        Args:
-            collection: Name of the collection
-            point_id: ID of the point to delete
-        """
         self._client.delete(
             collection_name=collection,
             points_selector=models.PointIdsList(points=[point_id]),
         )
 
     def update_payload(self, collection: str, point_id: int, fields: dict) -> None:
-        """Update specific payload fields of an existing point.
-
-        Args:
-            collection: Name of the collection (candidates or jobs)
-            point_id: Unique integer identifier for the point
-            fields: Dictionary of payload fields to update (will be merged with existing payload)
-        """
         self._client.set_payload(
             collection_name=collection,
             payload=fields,

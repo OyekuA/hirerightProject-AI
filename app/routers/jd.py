@@ -1,6 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
-from typing import Optional, List
 import structlog
 import asyncio
 
@@ -15,11 +13,6 @@ router = APIRouter(tags=["Job Description"])
 limiter = get_rate_limiter().limiter
 
 
-async def _unknown_key(request: Request) -> str:
-    """Default key for endpoints without an identifiable actor."""
-    return "unknown"
-
-
 from app.schemas.jd import (
     GenerateJDRequest,
     GenerateJDResponse,
@@ -27,7 +20,6 @@ from app.schemas.jd import (
     AnalyzeJDResponse,
 )
 
-# --- Route handlers ---
 
 @router.post("/generate-jd", response_model=GenerateJDResponse)
 @limiter.limit("500/day")
@@ -39,7 +31,6 @@ async def generate_jd(
     llm: LLMClient = Depends(get_llm_client),
     qdrant: QdrantClient = Depends(get_qdrant_client),
 ):
-    """Generate or refine a job description."""
     structlog.contextvars.bind_contextvars(entity_id="unknown")
     service = JDService(llm=llm, qdrant=qdrant)
     try:
@@ -75,7 +66,6 @@ async def analyze_jd(
     req: AnalyzeJDRequest,
     llm: LLMClient = Depends(get_llm_client),
 ):
-    """Analyze a job description and return critique points."""
     structlog.contextvars.bind_contextvars(entity_id="unknown")
     service = JDService(llm=llm)
     try:

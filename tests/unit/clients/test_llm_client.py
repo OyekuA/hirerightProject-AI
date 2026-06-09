@@ -32,6 +32,7 @@ class TestLLMClientTimeout(unittest.TestCase):
                 model="gemini/gemini-2.5-flash-lite",
                 messages=[{"role": "user", "content": "prompt"}],
                 timeout=45,
+                temperature=0,
             )
 
     def test_embed_passes_timeout(self):
@@ -58,6 +59,26 @@ class TestLLMClientTimeout(unittest.TestCase):
                 dimensions=768,
                 timeout=30,
             )
+
+    def test_generate_passes_temperature_zero(self):
+        """Generation call includes temperature=0 parameter."""
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = "response"
+        with patch('app.clients.llm.litellm.completion', return_value=mock_response) as mock_completion:
+            client = LLMClient(
+                model="gemini/gemini-2.5-flash-lite",
+                embedding_model="gemini/text-embedding-004",
+                embedding_dimensions=768,
+                generation_cooldown=60,
+                embedding_cooldown=60,
+                generation_timeout=45,
+                embedding_timeout=30,
+                max_retries=2,
+                retry_backoff_base=1.0,
+            )
+            result = client.generate("prompt")
+            self.assertEqual(result, "response")
+            self.assertEqual(mock_completion.call_args.kwargs["temperature"], 0)
 
     def test_generate_retry_on_exception(self):
         """Generation retries up to max_retries before failing."""

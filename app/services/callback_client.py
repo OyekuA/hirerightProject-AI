@@ -1,8 +1,3 @@
-"""Client for delivering ingestion‑status callbacks with HMAC‑SHA256 signatures.
-
-Implements SSRF safety, retries with exponential backoff, and configurable timeouts.
-"""
-
 import asyncio
 import hashlib
 import hmac
@@ -12,14 +7,13 @@ import structlog
 from typing import Optional
 import httpx
 
-from app.utils.ingestion import validate_ingest_url
+from app.utils.ingestion import validate_callback_url
 
 
 logger = structlog.get_logger()
 
 
 class CallbackClient:
-    """Thread‑safe client for sending signed ingestion‑status callbacks."""
 
     def __init__(
         self,
@@ -27,14 +21,15 @@ class CallbackClient:
         max_attempts: int = 3,
         retry_base_seconds: int = 2,
         timeout_seconds: float = 10.0,
+        signature_ttl_seconds: int = 300,
     ):
         self.hmac_secret = hmac_secret
         self.max_attempts = max_attempts
         self.retry_base_seconds = retry_base_seconds
         self.timeout_seconds = timeout_seconds
+        self.signature_ttl_seconds = signature_ttl_seconds
 
     def _sign_payload(self, body_bytes: bytes, timestamp: int) -> str:
-        """Compute HMAC‑SHA256 signature of the payload."""
         message = f"{timestamp}.".encode() + body_bytes
         digest = hmac.new(
             self.hmac_secret.encode(),
@@ -52,11 +47,6 @@ class CallbackClient:
         status: str,
         error: Optional[str] = None,
     ) -> bool:
-        """Deliver a callback to the external system.
-
-        Returns True if a HTTP 2xx response was received within `max_attempts` total attempts,
-        False otherwise.
-        """
         base_payload = {
             "event_id": event_id,
             "entity_type": entity_type,
@@ -67,9 +57,10 @@ class CallbackClient:
 
         for attempt in range(self.max_attempts):
             try:
-                validate_ingest_url(callback_url)
+                validate_callback_url(callback_url)
 
                 timestamp = int(time.time())
+
                 payload = base_payload.copy()
                 try:
                     body_bytes = json.dumps(payload, separators=(',', ':')).encode('utf-8')

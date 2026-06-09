@@ -1,5 +1,4 @@
-"""LLM API client with circuit‑breaker protection."""
-
+import threading
 import time
 from typing import Optional
 import litellm
@@ -11,12 +10,7 @@ class LLMUnavailableError(Exception):
 
 
 class CircuitBreaker:
-    """Circuit breaker with CLOSED, OPEN, and HALF_OPEN states and single‑probe recovery.
-
-    Attributes:
-        threshold: Number of consecutive failures needed to open the breaker.
-        cooldown_seconds: Seconds the breaker stays open before moving to HALF_OPEN.
-    """
+    """Circuit breaker with CLOSED, OPEN, and HALF_OPEN states and single-probe recovery."""
 
     CLOSED = "closed"
     OPEN = "open"
@@ -29,102 +23,85 @@ class CircuitBreaker:
         self.failure_count = 0
         self.opened_at: Optional[float] = None
         self._probe_sent = False
+        self._lock = threading.Lock()
         self._log = structlog.get_logger()
 
     def is_open(self) -> bool:
-        """Return True if the breaker is currently open (no requests should pass).
-        
-        If the breaker is OPEN and cooldown has elapsed, it transitions to HALF_OPEN
-        and allows a single probe (returns False for that probe).
-        Subsequent calls while HALF_OPEN and probe already sent return True.
-        """
-        if self.state == self.CLOSED:
-            return False
-        
-        if self.state == self.OPEN:
-            if self.opened_at is None:
-                self.opened_at = time.monotonic()
+        with self._lock:
+            if self.state == self.CLOSED:
+                return False
+
+            if self.state == self.OPEN:
+                if self.opened_at is None:
+                    self.opened_at = time.monotonic()
+                    return True
+                elapsed = time.monotonic() - self.opened_at
+                if elapsed >= self.cooldown_seconds:
+                    self.state = self.HALF_OPEN
+                    self._probe_sent = False
+                    self.opened_at = None
+                    self._log.info(
+                        "Circuit breaker moving to HALF_OPEN",
+                        threshold=self.threshold,
+                        cooldown_seconds=self.cooldown_seconds,
+                    )
+                    return False
                 return True
-            elapsed = time.monotonic() - self.opened_at
-            if elapsed >= self.cooldown_seconds:
-                self.state = self.HALF_OPEN
-                self._probe_sent = False
-                self.opened_at = None
-                self._log.info(
-                    "Circuit breaker moving to HALF_OPEN",
-                    threshold=self.threshold,
-                    cooldown_seconds=self.cooldown_seconds,
-                )
+
+            if not self._probe_sent:
                 self._probe_sent = True
                 return False
             return True
-        
-        if not self._probe_sent:
-            self._probe_sent = True
-            return False
-        return True
 
     def record_failure(self) -> None:
-        """Record a failure, possibly opening the breaker or keeping it open."""
-        if self.state == self.HALF_OPEN:
-            self.state = self.OPEN
-            self.opened_at = time.monotonic()
-            self._probe_sent = False
-            self.failure_count = self.threshold
-            self._log.warning(
-                "Circuit breaker probe failed, reopening",
-                failure_count=self.failure_count,
-                threshold=self.threshold,
-                cooldown_seconds=self.cooldown_seconds,
-            )
-            return
-        
-        self.failure_count += 1
-        if self.failure_count >= self.threshold and self.state == self.CLOSED:
-            self.state = self.OPEN
-            self.opened_at = time.monotonic()
-            self._log.warning(
-                "Circuit breaker opened",
-                failure_count=self.failure_count,
-                threshold=self.threshold,
-                cooldown_seconds=self.cooldown_seconds,
-            )
+        with self._lock:
+            if self.state == self.HALF_OPEN:
+                self.state = self.OPEN
+                self.opened_at = time.monotonic()
+                self._probe_sent = False
+                self.failure_count = self.threshold
+                self._log.warning(
+                    "Circuit breaker probe failed, reopening",
+                    failure_count=self.failure_count,
+                    threshold=self.threshold,
+                    cooldown_seconds=self.cooldown_seconds,
+                )
+                return
+
+            self.failure_count += 1
+            if self.failure_count >= self.threshold and self.state == self.CLOSED:
+                self.state = self.OPEN
+                self.opened_at = time.monotonic()
+                self._log.warning(
+                    "Circuit breaker opened",
+                    failure_count=self.failure_count,
+                    threshold=self.threshold,
+                    cooldown_seconds=self.cooldown_seconds,
+                )
 
     def record_success(self) -> None:
-        """Record a success, resetting the breaker if CLOSED or moving to CLOSED if HALF_OPEN."""
-        if self.state == self.HALF_OPEN:
-            self.state = self.CLOSED
+        with self._lock:
+            if self.state == self.HALF_OPEN:
+                self.state = self.CLOSED
+                self.failure_count = 0
+                self.opened_at = None
+                self._probe_sent = False
+                self._log.info(
+                    "Circuit breaker probe succeeded, closing",
+                    threshold=self.threshold,
+                    cooldown_seconds=self.cooldown_seconds,
+                )
+                return
+
+            if self.failure_count > 0:
+                self._log.debug(
+                    "Circuit breaker reset",
+                    previous_failures=self.failure_count,
+                )
             self.failure_count = 0
+            self.state = self.CLOSED
             self.opened_at = None
             self._probe_sent = False
-            self._log.info(
-                "Circuit breaker probe succeeded, closing",
-                threshold=self.threshold,
-                cooldown_seconds=self.cooldown_seconds,
-            )
-            return
-        
-        if self.failure_count > 0:
-            self._log.debug(
-                "Circuit breaker reset",
-                previous_failures=self.failure_count,
-            )
-        self.failure_count = 0
-        self.state = self.CLOSED
-        self.opened_at = None
-        self._probe_sent = False
-
-    def _reset(self) -> None:
-        """Internal reset of the breaker's state (kept for compatibility)."""
-        if self.failure_count > 0:
-            self._log.debug(
-                "Circuit breaker reset",
-                previous_failures=self.failure_count,
-            )
-        self.state = self.CLOSED
-        self.failure_count = 0
-        self.opened_at = None
-        self._probe_sent = False
 
 
 class LLMClient:
@@ -143,24 +120,6 @@ class LLMClient:
         retry_backoff_base: float = 1.0,
         api_key: Optional[str] = None,
     ):
-        """Initialize the LLM client and its circuit breakers.
-
-        Args:
-            model: litellm model string for text generation (e.g. "openai/gpt-4o-mini")
-            embedding_model: litellm model string for embeddings (e.g. "openai/text-embedding-3-small")
-            embedding_dimensions: Desired output dimension for embeddings. Passed as
-                ``dimensions`` to litellm so that all providers output uniform-sized
-                vectors (e.g. 768), preventing Qdrant collection dimension mismatches
-                when switching models.
-            generation_cooldown: Seconds the generation breaker stays open
-            embedding_cooldown: Seconds the embedding breaker stays open
-            generation_timeout: Timeout in seconds for generation requests
-            embedding_timeout: Timeout in seconds for embedding requests
-            max_retries: Maximum retries for transient failures before recording breaker failure
-            retry_backoff_base: Base backoff seconds for exponential retry
-            api_key: Optional API key forwarded to litellm as ``litellm.api_key``.
-                Takes precedence over provider-specific environment variables.
-        """
         self._model = model
         self._embedding_model = embedding_model
         self._embedding_dimensions = embedding_dimensions
@@ -179,30 +138,18 @@ class LLMClient:
         if api_key is not None:
             litellm.api_key = api_key
 
-    def generate(self, prompt: str) -> str:
-        """Generate text from a prompt using the configured LLM model.
-
-        Args:
-            prompt: Input text to send to the model.
-
-        Returns:
-            The generated text.
-
-        Raises:
-            LLMUnavailableError: If the generation circuit breaker is open
-                or the API call fails after tripping the breaker.
-        """
+    def generate(self, prompt: str, temperature: float = 0) -> str:
         if self._generation_breaker.is_open():
             self._log_token_usage(len(prompt), 0, "generation", outcome="breaker_open")
             raise LLMUnavailableError("Generation circuit breaker is open")
 
-        last_exc = None
         for attempt in range(self._max_retries + 1):
             try:
                 response = litellm.completion(
                     model=self._model,
                     messages=[{"role": "user", "content": prompt}],
                     timeout=self._generation_timeout,
+                    temperature=temperature,
                 )
                 text = response.choices[0].message.content
                 if not text or not text.strip():
@@ -211,9 +158,10 @@ class LLMClient:
                 self._log_token_usage(len(prompt), len(text), "generation", outcome="success")
                 return text
             except Exception as exc:
-                last_exc = exc
                 if attempt < self._max_retries:
                     backoff = self._retry_backoff_base * (2 ** attempt)
+                    # Intentional blocking sleep: this method runs inside asyncio.to_thread,
+                    # so sleeping here blocks only the thread-pool worker, not the event loop.
                     time.sleep(backoff)
                 else:
                     self._generation_breaker.record_failure()
@@ -223,24 +171,10 @@ class LLMClient:
                     ) from exc
 
     def embed(self, text: str) -> list[float]:
-        """Embed a piece of text using the configured embedding model.
-
-        Args:
-            text: Input text to embed.
-
-        Returns:
-            An embedding vector. Dimension depends on the chosen embedding model
-            (e.g. 1536 for openai/text-embedding-3-small; dimension depends on EMBEDDING_MODEL).
-
-        Raises:
-            LLMUnavailableError: If the embedding circuit breaker is open
-                or the API call fails after tripping the breaker.
-        """
         if self._embedding_breaker.is_open():
             self._log_token_usage(len(text), 0, "embedding", outcome="breaker_open")
             raise LLMUnavailableError("Embedding circuit breaker is open")
 
-        last_exc = None
         for attempt in range(self._max_retries + 1):
             try:
                 result = litellm.embedding(
@@ -257,9 +191,10 @@ class LLMClient:
                 self._log_token_usage(len(text), 0, "embedding", outcome="success")
                 return vector
             except Exception as exc:
-                last_exc = exc
                 if attempt < self._max_retries:
                     backoff = self._retry_backoff_base * (2 ** attempt)
+                    # Intentional blocking sleep: this method runs inside asyncio.to_thread,
+                    # so sleeping here blocks only the thread-pool worker, not the event loop.
                     time.sleep(backoff)
                 else:
                     self._embedding_breaker.record_failure()
@@ -271,16 +206,6 @@ class LLMClient:
     def _log_token_usage(
         self, input_chars: int, output_chars: int, operation: str, outcome: str = "success"
     ) -> None:
-        """Log approximate token usage for an LLM call.
-
-        The approximation uses 4 characters ≈ 1 token.
-
-        Args:
-            input_chars: Length of input text in characters.
-            output_chars: Length of output text in characters (zero for embedding).
-            operation: Either "generation" or "embedding".
-            outcome: One of "success", "breaker_open", "failure".
-        """
         input_tokens = input_chars // 4
         output_tokens = output_chars // 4 if output_chars else 0
         self._log.info(

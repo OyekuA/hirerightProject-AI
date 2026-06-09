@@ -8,17 +8,14 @@ dependencies = [
     "pydantic",
     "pydantic-settings",
     "httpx",
-    "python-dotenv",
     "structlog",
     "sentry-sdk[fastapi]",
     "structlog-sentry",
-    "cachetools",
     "slowapi",
     "litellm",
     "qdrant-client",
     "numpy",
     "pymupdf",
-    "python-docx",
 ]
 
 [build-system]

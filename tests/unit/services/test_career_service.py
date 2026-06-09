@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 from pydantic import ValidationError
-from app.services.career_service import CareerPathService
+from app.services.career_service import CareerPathService, MalformedLLMResponseError
 from app.clients.llm import LLMUnavailableError
 from app.clients.dependencies import CANDIDATES_COLLECTION
 
@@ -69,10 +69,10 @@ class TestCareerPathService(unittest.TestCase):
         self.gemini_mock.generate.assert_not_called()
 
     def test_llm_non_json_raises_error(self):
-        """If LLM returns non‑JSON, raise LLMUnavailableError."""
+        """If LLM returns non‑JSON, raise MalformedLLMResponseError."""
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
         self.gemini_mock.generate.return_value = "not json"
-        with self.assertRaises(LLMUnavailableError) as cm:
+        with self.assertRaises(MalformedLLMResponseError) as cm:
             self.service.analyze_career_paths(candidate_id=42)
         self.assertIn("malformed", str(cm.exception).lower())
         self.gemini_mock.generate.assert_called_once()
@@ -131,8 +131,8 @@ class TestCareerPathService(unittest.TestCase):
         self.assertEqual(result["paths"][0]["core_skills"], ["Python", "SQL"])
         self.gemini_mock.generate.assert_called_once()
 
-    def test_core_skills_too_many_raises_validation_error(self):
-        """Item with more than five skills raises pydantic.ValidationError (schema max_length=5)."""
+    def test_core_skills_too_many_returns_data_as_is(self):
+        """Item with more than five skills is returned as-is; validation is deferred to the router."""
         mutated = VALID_ITEM.copy()
         mutated["core_skills"] = ["a", "b", "c", "d", "e", "f"]
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
@@ -140,35 +140,35 @@ class TestCareerPathService(unittest.TestCase):
             "profile_summary": VALID_PROFILE_SUMMARY,
             "paths": [mutated, VALID_ITEM, VALID_ITEM]
         })
-        with self.assertRaises(ValidationError):
-            self.service.analyze_career_paths(candidate_id=42)
+        result = self.service.analyze_career_paths(candidate_id=42)
+        self.assertEqual(len(result["paths"][0]["core_skills"]), 6)
         self.gemini_mock.generate.assert_called_once()
 
     def test_profile_summary_missing_raises_error(self):
-        """Missing top-level profile_summary key raises LLMUnavailableError."""
+        """Missing top-level profile_summary key raises MalformedLLMResponseError."""
         response = {
             "paths": [VALID_ITEM, VALID_ITEM, VALID_ITEM]
         }
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
         self.gemini_mock.generate.return_value = json.dumps(response)
-        with self.assertRaises(LLMUnavailableError) as cm:
+        with self.assertRaises(MalformedLLMResponseError) as cm:
             self.service.analyze_career_paths(candidate_id=42)
         self.gemini_mock.generate.assert_called_once()
 
     def test_profile_summary_empty_raises_error(self):
-        """Empty top-level profile_summary string raises LLMUnavailableError."""
+        """Empty top-level profile_summary string raises MalformedLLMResponseError."""
         response = {
             "profile_summary": "",
             "paths": [VALID_ITEM, VALID_ITEM, VALID_ITEM]
         }
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
         self.gemini_mock.generate.return_value = json.dumps(response)
-        with self.assertRaises(LLMUnavailableError) as cm:
+        with self.assertRaises(MalformedLLMResponseError) as cm:
             self.service.analyze_career_paths(candidate_id=42)
         self.gemini_mock.generate.assert_called_once()
 
     def test_reasoning_missing_raises_error(self):
-        """Item missing reasoning key raises LLMUnavailableError."""
+        """Item missing reasoning key raises MalformedLLMResponseError."""
         mutated = VALID_ITEM.copy()
         del mutated["reasoning"]
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
@@ -176,12 +176,12 @@ class TestCareerPathService(unittest.TestCase):
             "profile_summary": VALID_PROFILE_SUMMARY,
             "paths": [mutated, VALID_ITEM, VALID_ITEM]
         })
-        with self.assertRaises(LLMUnavailableError) as cm:
+        with self.assertRaises(MalformedLLMResponseError) as cm:
             self.service.analyze_career_paths(candidate_id=42)
         self.gemini_mock.generate.assert_called_once()
 
     def test_reasoning_empty_raises_error(self):
-        """Item with empty reasoning string raises LLMUnavailableError."""
+        """Item with empty reasoning string raises MalformedLLMResponseError."""
         mutated = VALID_ITEM.copy()
         mutated["reasoning"] = ""
         self.qdrant_mock.get.return_value = {"name": "Alice", "skills": ["Python"]}
@@ -189,7 +189,7 @@ class TestCareerPathService(unittest.TestCase):
             "profile_summary": VALID_PROFILE_SUMMARY,
             "paths": [mutated, VALID_ITEM, VALID_ITEM]
         })
-        with self.assertRaises(LLMUnavailableError) as cm:
+        with self.assertRaises(MalformedLLMResponseError) as cm:
             self.service.analyze_career_paths(candidate_id=42)
         self.gemini_mock.generate.assert_called_once()
 

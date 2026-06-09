@@ -3,7 +3,6 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    """Application configuration loaded from environment variables."""
     API_KEY: str
     LLM_API_KEY: Optional[str] = None
     LLM_MODEL: str = "openai/gpt-4o-mini"
@@ -32,13 +31,16 @@ class Settings(BaseSettings):
     INGEST_QUEUE_MAX_RETRIES: int = 5
     INGEST_QUEUE_BACKOFF_BASE_SECONDS: int = 60
     INGEST_QUEUE_POLL_INTERVAL_SECONDS: int = 30
-    LOG_LEVEL: str = "ERROR"
+    DEAD_LETTER_POLL_INTERVAL_SECONDS: int = 300
+    LOG_LEVEL: str = "INFO"
+    ENABLE_DOCS: bool = False
+    DOCS_USERNAME: Optional[str] = None
+    DOCS_PASSWORD: Optional[str] = None
 
 _settings_instance: Optional[Settings] = None
 
 
 def get_settings() -> Settings:
-    """Return a singleton Settings instance."""
     global _settings_instance
     if _settings_instance is None:
         _settings_instance = Settings()

@@ -21,7 +21,7 @@ class TestCallbackClient(unittest.IsolatedAsyncioTestCase):
         self.sleep_patcher = patch("app.services.callback_client.asyncio.sleep")
         self.mock_sleep = self.sleep_patcher.start()
         self.validate_patcher = patch(
-            "app.services.callback_client.validate_ingest_url"
+            "app.services.callback_client.validate_callback_url"
         )
         self.mock_validate = self.validate_patcher.start()
         # Patch httpx.AsyncClient to return a mock client

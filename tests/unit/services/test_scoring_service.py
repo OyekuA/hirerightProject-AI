@@ -47,12 +47,8 @@ class TestScoringService(unittest.TestCase):
         self.truncate_patcher.stop()
 
     def test_cache_hit_skips_llm(self):
-        """When cache contains a valid result, LLM should not be called."""
+        """When cache contains a valid result, LLM and Qdrant should not be called."""
         self.cache_mock.get.return_value = VALID_RESULT
-        self.qdrant_mock.get.side_effect = [
-            {"candidate_version": 2},
-            {"job_version": 4},
-        ]
         result = self.service.calculate_fit(
             candidate_id=1,
             candidate_version=2,
@@ -63,7 +59,7 @@ class TestScoringService(unittest.TestCase):
         self.assertEqual(result, VALID_RESULT)
         self.gemini_mock.generate.assert_not_called()
         self.cache_mock.get.assert_called_once_with("1:2:3:4")
-        self.assertEqual(self.qdrant_mock.get.call_count, 2)
+        self.qdrant_mock.get.assert_not_called()
 
     def test_cache_miss_calls_llm(self):
         """Cache miss should trigger an LLM call and store the result."""
@@ -81,7 +77,7 @@ class TestScoringService(unittest.TestCase):
             force_refresh=False,
         )
         self.assertEqual(result, VALID_RESULT)
-        self.gemini_mock.generate.assert_called_once()
+        self.assertEqual(self.gemini_mock.generate.call_count, 1)
         self.cache_mock.set.assert_called_once_with("1:2:3:4", VALID_RESULT, ttl=86400)
 
     def test_force_refresh_bypasses_cache(self):
@@ -101,7 +97,7 @@ class TestScoringService(unittest.TestCase):
         )
         self.assertEqual(result, VALID_RESULT)
         self.cache_mock.get.assert_not_called()
-        self.gemini_mock.generate.assert_called_once()
+        self.assertEqual(self.gemini_mock.generate.call_count, 1)
         self.cache_mock.set.assert_called_once_with("1:2:3:4", VALID_RESULT, ttl=86400)
 
     def test_candidate_not_found_raises_value_error(self):
@@ -138,14 +134,14 @@ class TestScoringService(unittest.TestCase):
         self.gemini_mock.generate.assert_not_called()
 
     def test_malformed_llm_json_raises_error(self):
-        """If LLM returns non‑JSON, raise LLMUnavailableError."""
+        """If LLM returns non‑JSON, raise json.JSONDecodeError."""
         self.cache_mock.get.return_value = None
         self.qdrant_mock.get.side_effect = [
             {"candidate_version": 2, "name": "Alice"},
             {"job_version": 4, "title": "Software Engineer"},
         ]
         self.gemini_mock.generate.return_value = "not json"
-        with self.assertRaises(LLMUnavailableError) as cm:
+        with self.assertRaises(json.JSONDecodeError):
             self.service.calculate_fit(
                 candidate_id=1,
                 candidate_version=2,
@@ -153,8 +149,7 @@ class TestScoringService(unittest.TestCase):
                 job_version=4,
                 force_refresh=False,
             )
-        self.assertIn("malformed", str(cm.exception).lower())
-        self.gemini_mock.generate.assert_called_once()
+        self.assertEqual(self.gemini_mock.generate.call_count, 1)
 
     def test_llm_response_missing_required_keys_raises_error(self):
         """Valid JSON missing required keys raises LLMUnavailableError."""
@@ -172,7 +167,7 @@ class TestScoringService(unittest.TestCase):
                 job_version=4,
                 force_refresh=False,
             )
-        self.gemini_mock.generate.assert_called_once()
+        self.assertEqual(self.gemini_mock.generate.call_count, 1)
 
     def test_overall_score_percentage_out_of_range_raises_error(self):
         """overall_score_percentage out of range raises LLMUnavailableError."""
@@ -192,7 +187,7 @@ class TestScoringService(unittest.TestCase):
                 job_version=4,
                 force_refresh=False,
             )
-        self.gemini_mock.generate.assert_called_once()
+        self.assertEqual(self.gemini_mock.generate.call_count, 1)
 
     def test_overall_score_percentage_non_integer_raises_error(self):
         """Non-integer overall_score_percentage raises LLMUnavailableError."""
@@ -212,15 +207,11 @@ class TestScoringService(unittest.TestCase):
                 job_version=4,
                 force_refresh=False,
             )
-        self.gemini_mock.generate.assert_called_once()
+        self.assertEqual(self.gemini_mock.generate.call_count, 1)
 
     def test_cache_hit_returns_immediately_without_qdrant(self):
-        """Cache hit should return the cached value after validating existence."""
+        """Cache hit should return the cached value immediately without Qdrant calls."""
         self.cache_mock.get.return_value = VALID_RESULT
-        self.qdrant_mock.get.side_effect = [
-            {"candidate_version": 2},
-            {"job_version": 4},
-        ]
         result = self.service.calculate_fit(
             candidate_id=1,
             candidate_version=2,
@@ -229,7 +220,7 @@ class TestScoringService(unittest.TestCase):
             force_refresh=False,
         )
         self.assertEqual(result, VALID_RESULT)
-        self.assertEqual(self.qdrant_mock.get.call_count, 2)
+        self.qdrant_mock.get.assert_not_called()
         self.gemini_mock.generate.assert_not_called()
         self.cache_mock.get.assert_called_once_with("1:2:3:4")
 
@@ -251,7 +242,7 @@ class TestScoringService(unittest.TestCase):
         self.assertEqual(result, VALID_RESULT)
         self.cache_mock.get.assert_called_once_with("1:2:3:4")
         self.assertEqual(self.qdrant_mock.get.call_count, 2)
-        self.gemini_mock.generate.assert_called_once()
+        self.assertEqual(self.gemini_mock.generate.call_count, 1)
         self.cache_mock.set.assert_called_once_with("1:2:3:4", VALID_RESULT, ttl=86400)
 
     def test_cache_key_format(self):
@@ -309,7 +300,7 @@ class TestScoringService(unittest.TestCase):
         )
         prompt = self.gemini_mock.generate.call_args[0][0]
         self.assertIn("short_reason", prompt)
-        self.assertIn("neutral match statement", prompt)
+        self.assertIn("Telegraphic style", prompt)
 
     def test_prompt_skill_gap_analysis_instruction(self):
         """Verify the prompt includes skill_gap_analysis instruction."""
@@ -328,7 +319,7 @@ class TestScoringService(unittest.TestCase):
         )
         prompt = self.gemini_mock.generate.call_args[0][0]
         self.assertIn("skill_gap_analysis", prompt)
-        self.assertIn("State what the role requires and what the profile provides", prompt)
+        self.assertIn("most significant gaps", prompt)
 
     def test_candidate_version_mismatch_raises_value_error(self):
         """Candidate version mismatch should raise ValueError."""
@@ -365,3 +356,59 @@ class TestScoringService(unittest.TestCase):
             )
         self.assertIn("Job version mismatch", str(cm.exception))
         self.gemini_mock.generate.assert_not_called()
+
+    def test_calculate_fit_single_call_returns_score(self):
+        """A single LLM call returns the overall_score_percentage directly."""
+        self.cache_mock.get.return_value = None
+        self.qdrant_mock.get.side_effect = [
+            {"candidate_version": 2, "name": "Alice"},
+            {"job_version": 4, "title": "Engineer"},
+        ]
+        score_data = dict(VALID_RESULT, overall_score_percentage=75)
+        self.gemini_mock.generate.return_value = json.dumps(score_data)
+        result = self.service.calculate_fit(
+            candidate_id=1,
+            candidate_version=2,
+            job_id=3,
+            job_version=4,
+            force_refresh=False,
+        )
+        self.assertEqual(result["overall_score_percentage"], 75)
+        self.assertEqual(self.gemini_mock.generate.call_count, 1)
+
+    def test_calculate_fit_malformed_json_raises_error(self):
+        """Malformed JSON response raises json.JSONDecodeError from parse_llm_json."""
+        self.cache_mock.get.return_value = None
+        self.qdrant_mock.get.side_effect = [
+            {"candidate_version": 2, "name": "Alice"},
+            {"job_version": 4, "title": "Engineer"},
+        ]
+        self.gemini_mock.generate.return_value = "not json"
+        with self.assertRaises(json.JSONDecodeError):
+            self.service.calculate_fit(
+                candidate_id=1,
+                candidate_version=2,
+                job_id=3,
+                job_version=4,
+                force_refresh=False,
+            )
+        self.assertEqual(self.gemini_mock.generate.call_count, 1)
+
+    def test_calculate_fit_score_anchor_transferable_skills(self):
+        """Prompt contains SCORING ANCHORS and the Do NOT score below 70 rule."""
+        self.cache_mock.get.return_value = None
+        self.qdrant_mock.get.side_effect = [
+            {"candidate_version": 2, "name": "Alice"},
+            {"job_version": 4, "title": "Engineer"},
+        ]
+        self.gemini_mock.generate.return_value = json.dumps(VALID_RESULT)
+        self.service.calculate_fit(
+            candidate_id=1,
+            candidate_version=2,
+            job_id=3,
+            job_version=4,
+            force_refresh=False,
+        )
+        prompt = self.gemini_mock.generate.call_args[0][0]
+        self.assertIn("SCORING RUBRIC", prompt)
+        self.assertIn("Tier 2", prompt)

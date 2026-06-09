@@ -1,12 +1,18 @@
 """Unit tests for AssessmentService."""
 
 import json
+import re
 import unittest
 from unittest.mock import MagicMock, patch
 from app.services.assessment_service import AssessmentService
 from app.clients.llm import LLMUnavailableError
 from app.clients.dependencies import JOBS_COLLECTION, CANDIDATES_COLLECTION
-from app.schemas.assessment import GenerateAssessmentRequest, CandidateContext, JobContext
+from app.schemas.assessment import (
+    CandidateContext,
+    GenerateAssessmentRequest,
+    GradeAssessmentResponse,
+    JobContext,
+)
 from pydantic import ValidationError
 
 
@@ -62,8 +68,8 @@ class TestAssessmentService(unittest.TestCase):
         )
         self.assertEqual(len(result), 1)
         prompt = self.gemini_mock.generate.call_args[0][0]
-        self.assertIn("1", prompt)
-        self.assertNotIn("0", prompt)
+        self.assertIn("Generate exactly 1", prompt)
+        self.assertNotIn("Generate exactly 0", prompt)
 
     def test_generate_questions_candidate_not_found(self):
         """If candidate does not exist, raise ValueError."""
@@ -244,6 +250,7 @@ class TestAssessmentService(unittest.TestCase):
                 {"category": "Communication", "score": 70, "feedback": "Clear but concise."}
             ],
             "authenticity_flag": {"is_suspicious": False, "reason": "No suspicious indicators."},
+            "grading_reasoning": "Score based on answer quality and completeness.",
         }
         self.gemini_mock.generate.return_value = json.dumps(expected_result)
         result = self.service.grade_answers(
@@ -254,35 +261,28 @@ class TestAssessmentService(unittest.TestCase):
         self.assertEqual(result["overall_score"], 85)
         self.assertIsInstance(result["skill_breakdown"], list)
         self.assertTrue(3 <= len(result["skill_breakdown"]) <= 5)
-        self.gemini_mock.generate.assert_called_once()
+        self.assertEqual(self.gemini_mock.generate.call_count, 1)
         prompt = self.gemini_mock.generate.call_args[0][0]
         self.assertIn("120", prompt)
 
     def test_grade_answers_valid_response_mc(self):
-        """grade_answers should handle pure multiple-choice correctly."""
+        """grade_answers short-circuits for pure multiple-choice (no LLM call)."""
         questions = [
             {"question": "Q1", "options": ["A. Yes", "B. No"], "correct_answer": "A. Yes"},
             {"question": "Q2", "options": ["A. True", "B. False"], "correct_answer": "B. False"},
         ]
         answers = ["A. Yes", "B. False"]
-        llm_response = {
-            "overall_score": 100,
-            "skill_breakdown": [
-                {"category": "Logic", "score": 100, "feedback": "Perfect."},
-                {"category": "Knowledge", "score": 100, "feedback": "Excellent."},
-                {"category": "Speed", "score": 100, "feedback": "Fast."}
-            ],
-            "authenticity_flag": {"is_suspicious": False, "reason": "OK"},
-        }
-        self.gemini_mock.generate.return_value = json.dumps(llm_response)
         result = self.service.grade_answers(
             questions=questions,
             answers=answers,
             time_taken_seconds=1,
         )
         self.assertEqual(result["overall_score"], 100)
+        self.assertEqual(result["skill_breakdown"], [])
         self.assertFalse(result["authenticity_flag"]["is_suspicious"])
-        self.assertIn("Pure multiple‑choice", result["authenticity_flag"]["reason"])
+        self.assertIn("Pure multiple-choice", result["authenticity_flag"]["reason"])
+        self.assertFalse(result["needs_review"])
+        self.gemini_mock.generate.assert_not_called()
 
     def test_grade_answers_mixed_mc_and_single(self):
         """grade_answers should handle a mix of MC and subjective."""
@@ -300,6 +300,7 @@ class TestAssessmentService(unittest.TestCase):
                 {"category": "Overall", "score": 30, "feedback": "Needs improvement."}
             ],
             "authenticity_flag": {"is_suspicious": False, "reason": "OK"},
+            "grading_reasoning": "Mixed assessment with MC and subjective answers.",
         }
         self.gemini_mock.generate.return_value = json.dumps(llm_response)
         result = self.service.grade_answers(
@@ -330,14 +331,13 @@ class TestAssessmentService(unittest.TestCase):
                 self.gemini_mock.generate.assert_not_called()
 
     def test_grade_answers_malformed_json(self):
-        """If LLM returns non‑JSON, raise LLMUnavailableError."""
+        """If LLM returns non‑JSON, raise json.JSONDecodeError."""
         questions = ["Q1"]
         answers = ["A1"]
         self.gemini_mock.generate.return_value = "not json"
-        with self.assertRaises(LLMUnavailableError) as cm:
+        with self.assertRaises(json.JSONDecodeError):
             self.service.grade_answers(questions=questions, answers=answers, time_taken_seconds=30)
-        self.assertIn("malformed", str(cm.exception).lower())
-        self.gemini_mock.generate.assert_called_once()
+        self.assertEqual(self.gemini_mock.generate.call_count, 1)
 
     def test_grade_answers_skill_breakdown_too_short(self):
         """LLM returns a skill_breakdown with fewer than three items."""
@@ -350,11 +350,12 @@ class TestAssessmentService(unittest.TestCase):
                 {"category": "B", "score": 80, "feedback": "Great"},
             ],
             "authenticity_flag": {"is_suspicious": False, "reason": "OK"},
+            "grading_reasoning": "Some reasoning.",
         }
         self.gemini_mock.generate.return_value = json.dumps(invalid_result)
         with self.assertRaises(ValueError) as cm:
             self.service.grade_answers(questions=questions, answers=answers, time_taken_seconds=30)
-        self.assertIn("must be a list of 3‑5 items", str(cm.exception))
+        self.assertIn("skill_breakdown must be a list of 3‑5 items", str(cm.exception))
 
     def test_grade_answers_skill_breakdown_malformed_item(self):
         """LLM returns a skill_breakdown with a missing key."""
@@ -368,11 +369,12 @@ class TestAssessmentService(unittest.TestCase):
                 {"score": 90, "feedback": "Missing category"},  # no 'category'
             ],
             "authenticity_flag": {"is_suspicious": False, "reason": "OK"},
+            "grading_reasoning": "Some reasoning.",
         }
         self.gemini_mock.generate.return_value = json.dumps(invalid_result)
         with self.assertRaises(ValueError) as cm:
             self.service.grade_answers(questions=questions, answers=answers, time_taken_seconds=30)
-        self.assertIn("missing required keys", str(cm.exception))
+        self.assertIn("skill_breakdown item missing required keys", str(cm.exception))
 
     def test_grade_answers_overall_score_out_of_bounds(self):
         """LLM returns an overall_score outside 0‑100."""
@@ -386,11 +388,12 @@ class TestAssessmentService(unittest.TestCase):
                 {"category": "C", "score": 90, "feedback": "Excellent"},
             ],
             "authenticity_flag": {"is_suspicious": False, "reason": "OK"},
+            "grading_reasoning": "Some reasoning.",
         }
         self.gemini_mock.generate.return_value = json.dumps(invalid_result)
         with self.assertRaises(ValueError) as cm:
             self.service.grade_answers(questions=questions, answers=answers, time_taken_seconds=30)
-        self.assertIn("out of range 0‑100", str(cm.exception))
+        self.assertIn("overall_score 150 out of range", str(cm.exception))
 
     def test_grade_answers_authenticity_penalty_applied(self):
         """When typing speed exceeds limit, penalty is applied."""
@@ -404,6 +407,7 @@ class TestAssessmentService(unittest.TestCase):
                 {"category": "Clarity", "score": 90, "feedback": "Clear."}
             ],
             "authenticity_flag": {"is_suspicious": False, "reason": "OK"},
+            "grading_reasoning": "Score based on answer quality.",
         }
         self.gemini_mock.generate.return_value = json.dumps(llm_response)
         result = self.service.grade_answers(
@@ -415,6 +419,234 @@ class TestAssessmentService(unittest.TestCase):
         self.assertTrue(result["authenticity_flag"]["is_suspicious"])
         self.assertIn("exceeds human typing limit", result["authenticity_flag"]["reason"])
 
+
+    def test_compute_mc_score_exact_match(self):
+        """Full-string MC answer matches correctly."""
+        questions = [
+            {"question": "Q1", "options": ["A. Yes", "B. No"], "correct_answer": "A. Yes"},
+        ]
+        answers = ["A. Yes"]
+        score = self.service._compute_mc_score(questions, answers)
+        self.assertEqual(score, 100.0)
+
+    def test_compute_mc_score_label_only_match(self):
+        """Label-only answer 'A' matches labeled correct_answer 'A. Yes'."""
+        questions = [
+            {"question": "Q1", "options": ["A. Yes", "B. No"], "correct_answer": "A. Yes"},
+        ]
+        answers = ["A"]
+        score = self.service._compute_mc_score(questions, answers)
+        self.assertEqual(score, 100.0)
+
+    def test_compute_mc_score_label_lowercase_match(self):
+        """Lowercase label 'b' matches labeled correct_answer 'B. Option 2'."""
+        questions = [
+            {"question": "Q1", "options": ["A. Opt 1", "B. Option 2"], "correct_answer": "B. Option 2"},
+        ]
+        answers = ["b"]
+        score = self.service._compute_mc_score(questions, answers)
+        self.assertEqual(score, 100.0)
+
+    def test_compute_mc_score_wrong_label_does_not_match(self):
+        """Wrong label 'A' does not match correct_answer 'B. Option 2'."""
+        questions = [
+            {"question": "Q1", "options": ["A. Opt 1", "B. Option 2"], "correct_answer": "B. Option 2"},
+        ]
+        answers = ["A"]
+        score = self.service._compute_mc_score(questions, answers)
+        self.assertEqual(score, 0.0)
+
+    def test_compute_mc_score_no_mc_returns_none(self):
+        """No MC questions returns None."""
+        questions = ["Open-ended Q1", "Open-ended Q2"]
+        answers = ["A1", "A2"]
+        score = self.service._compute_mc_score(questions, answers)
+        self.assertIsNone(score)
+
+    def test_grade_answers_slow_typing_not_flagged_suspicious(self):
+        """Slow typing (< 0.5 wps) should NOT be flagged as suspicious."""
+        questions = ["Explain microservices."]
+        answers = ["A"]
+        llm_response = {
+            "overall_score": 80,
+            "skill_breakdown": [
+                {"category": "Knowledge", "score": 80, "feedback": "Good."},
+                {"category": "Clarity", "score": 80, "feedback": "Clear."},
+                {"category": "Depth", "score": 80, "feedback": "Adequate."},
+            ],
+            "authenticity_flag": {"is_suspicious": False, "reason": "No issues."},
+            "grading_reasoning": "Score based on answer quality.",
+        }
+        self.gemini_mock.generate.return_value = json.dumps(llm_response)
+        result = self.service.grade_answers(
+            questions=questions,
+            answers=answers,
+            time_taken_seconds=600,
+        )
+        self.assertFalse(result["authenticity_flag"]["is_suspicious"])
+        self.assertEqual(result["overall_score"], 80)
+        self.assertEqual(self.gemini_mock.generate.call_count, 1)
+
+    def test_grade_answers_bad_coherent_answers_score_above_zero(self):
+        """A wrong but coherent answer should score 11-30, not 0."""
+        questions = ["Explain microservices."]
+        answers = ["I think it means small services."]
+        llm_response = {
+            "overall_score": 15,
+            "skill_breakdown": [
+                {"category": "Knowledge", "score": 15, "feedback": "Partial."},
+                {"category": "Clarity", "score": 15, "feedback": "Weak."},
+                {"category": "Depth", "score": 15, "feedback": "Shallow."},
+            ],
+            "authenticity_flag": {"is_suspicious": False, "reason": "No issues."},
+            "grading_reasoning": "Score based on answer quality.",
+        }
+        self.gemini_mock.generate.return_value = json.dumps(llm_response)
+        result = self.service.grade_answers(
+            questions=questions,
+            answers=answers,
+            time_taken_seconds=120,
+        )
+        self.assertEqual(result["overall_score"], 15)
+        prompt = self.gemini_mock.generate.call_args[0][0]
+        self.assertIn("11–30", prompt)
+
+    def test_grade_answers_pure_mc_skips_llm(self):
+        """Pure MC assessment short-circuits — LLM is never called."""
+        questions = [
+            {"question": "Q1", "options": ["A. Yes", "B. No"], "correct_answer": "A. Yes"},
+        ]
+        answers = ["A. Yes"]
+        result = self.service.grade_answers(
+            questions=questions,
+            answers=answers,
+            time_taken_seconds=30,
+        )
+        self.gemini_mock.generate.assert_not_called()
+        self.assertEqual(result["overall_score"], 100)
+        self.assertEqual(result["skill_breakdown"], [])
+        self.assertFalse(result["authenticity_flag"]["is_suspicious"])
+        self.assertFalse(result["needs_review"])
+
+    def test_generate_questions_mc_embedded_dot_space_in_answer(self):
+        """correct_answer text containing '. ' should still match its labeled option (regression)."""
+        candidate_payload = {"past_roles": [], "skills": []}
+        self.qdrant_mock.get.return_value = candidate_payload
+        self.gemini_mock.generate.return_value = json.dumps([
+            {
+                "question": "What framework should you use?",
+                "correct_answer": "Use FastAPI. It scales well.",
+                "distractors": ["Use Flask.", "Use Django.", "Use Node.js."],
+            }
+        ])
+        with patch('random.shuffle') as mock_shuffle:
+            mock_shuffle.side_effect = lambda x: None
+            result = self.service.generate_questions(
+                candidate_id=42,
+                target_role="Software Engineer",
+                num_questions=1,
+                question_type="multiple_choice",
+            )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["correct_answer"], "A. Use FastAPI. It scales well.")
+        self.assertEqual(len(result[0]["options"]), 4)
+
+    def test_grade_answers_pure_mc_includes_grading_reasoning(self):
+        """Pure-MC fast-path must include grading_reasoning in the returned dict."""
+        questions = [
+            {"question": "Q1", "options": ["A. Yes", "B. No"], "correct_answer": "A. Yes"},
+        ]
+        answers = ["A. Yes"]
+        result = self.service.grade_answers(
+            questions=questions,
+            answers=answers,
+            time_taken_seconds=30,
+        )
+        self.assertIn("grading_reasoning", result)
+        self.assertEqual(
+            result["grading_reasoning"],
+            "Pure MC assessment — score computed deterministically.",
+        )
+
+    def test_grade_answers_llm_path_includes_grading_reasoning(self):
+        """LLM-grading path must include grading_reasoning in the returned dict."""
+        questions = ["Explain OOP."]
+        answers = ["OOP stands for Object-Oriented Programming."]
+        llm_response = {
+            "overall_score": 85,
+            "skill_breakdown": [
+                {"category": "Fundamentals", "score": 80, "feedback": "Good."},
+                {"category": "Clarity", "score": 85, "feedback": "Clear."},
+                {"category": "Depth", "score": 70, "feedback": "Needs more."},
+            ],
+            "authenticity_flag": {"is_suspicious": False, "reason": "No issues."},
+            "grading_reasoning": "Solid understanding but lacks depth in some areas.",
+        }
+        self.gemini_mock.generate.return_value = json.dumps(llm_response)
+        result = self.service.grade_answers(
+            questions=questions,
+            answers=answers,
+            time_taken_seconds=120,
+        )
+        self.assertIn("grading_reasoning", result)
+        self.assertEqual(
+            result["grading_reasoning"],
+            "Solid understanding but lacks depth in some areas.",
+        )
+
+    def test_grade_answers_llm_false_positive_suspicion_cleared_for_slow_typing(self):
+        """LLM-supplied is_suspicious=true is overridden for slow typing (hard_flag false)."""
+        questions = ["Explain microservices."]
+        answers = ["Microservices are small independent services that work together."]
+        # LLM returns is_suspicious: true despite slow typing
+        llm_response = {
+            "overall_score": 80,
+            "skill_breakdown": [
+                {"category": "Knowledge", "score": 80, "feedback": "Good."},
+                {"category": "Clarity", "score": 80, "feedback": "Clear."},
+                {"category": "Depth", "score": 80, "feedback": "Adequate."},
+            ],
+            "authenticity_flag": {"is_suspicious": True, "reason": "LLM hallucinated suspicion."},
+            "grading_reasoning": "Score based on answer quality.",
+        }
+        self.gemini_mock.generate.return_value = json.dumps(llm_response)
+        result = self.service.grade_answers(
+            questions=questions,
+            answers=answers,
+            time_taken_seconds=600,  # ~0.02 wps — well below 2.5 threshold
+        )
+        # Service must clear the LLM's false positive
+        self.assertFalse(result["authenticity_flag"]["is_suspicious"])
+        # Score must NOT be penalised (80 - 0 = 80, not 80 - 25 = 55)
+        self.assertEqual(result["overall_score"], 80)
+
+    def test_generate_questions_produces_unique_prompts_on_each_call(self):
+        """Per-call entropy (random.shuffle on skill pool) must produce different prompts."""
+        candidate_payload = {"past_roles": ["Engineer at Acme"], "skills": ["Python", "FastAPI", "AWS", "Docker"]}
+        self.qdrant_mock.get.return_value = candidate_payload
+        self.gemini_mock.generate.return_value = '["Q1", "Q2", "Q3"]'
+
+        self.service.generate_questions(
+            candidate_id=42,
+            target_role="Software Engineer",
+            num_questions=3,
+        )
+        self.service.generate_questions(
+            candidate_id=42,
+            target_role="Software Engineer",
+            num_questions=3,
+        )
+
+        prompt_1 = self.gemini_mock.generate.call_args_list[0][0][0]
+        prompt_2 = self.gemini_mock.generate.call_args_list[1][0][0]
+
+        self.assertIn("candidate self-assessing", prompt_1)
+        self.assertIn("candidate self-assessing", prompt_2)
+
+        self.assertNotEqual(
+            prompt_1, prompt_2,
+            "Prompts must differ between calls to prevent repeated questions",
+        )
 
 class TestGenerateAssessmentRequestModel(unittest.TestCase):
     """Test the GenerateAssessmentRequest Pydantic model validation."""
@@ -460,3 +692,44 @@ class TestGenerateAssessmentRequestModel(unittest.TestCase):
                 question_type="single"
             )
         self.assertIn("At least one", str(cm.exception))
+
+
+class TestGradeAssessmentResponseModel(unittest.TestCase):
+    """Regression: GradeAssessmentResponse must preserve grading_reasoning through model_validate."""
+
+    def test_model_validate_preserves_grading_reasoning(self):
+        """GradeAssessmentResponse.model_validate() should keep grading_reasoning."""
+        payload = {
+            "overall_score": 85,
+            "skill_breakdown": [
+                {"category": "A", "score": 80, "feedback": "Good."},
+                {"category": "B", "score": 85, "feedback": "Clear."},
+                {"category": "C", "score": 70, "feedback": "Needs work."},
+            ],
+            "authenticity_flag": {"is_suspicious": False, "reason": "No issues."},
+            "needs_review": False,
+            "grading_reasoning": "Candidate shows solid fundamentals.",
+        }
+        response = GradeAssessmentResponse.model_validate(payload)
+        self.assertEqual(response.grading_reasoning, "Candidate shows solid fundamentals.")
+        serialized = response.model_dump()
+        self.assertIn("grading_reasoning", serialized)
+        self.assertEqual(serialized["grading_reasoning"], "Candidate shows solid fundamentals.")
+
+    def test_model_validate_defaults_grading_reasoning_to_empty_string(self):
+        """If grading_reasoning is omitted, it should default to '' (not crash)."""
+        payload = {
+            "overall_score": 90,
+            "skill_breakdown": [
+                {"category": "A", "score": 90, "feedback": "Excellent."},
+                {"category": "B", "score": 90, "feedback": "Excellent."},
+                {"category": "C", "score": 90, "feedback": "Excellent."},
+            ],
+            "authenticity_flag": {"is_suspicious": False, "reason": "Clean."},
+            "needs_review": False,
+        }
+        response = GradeAssessmentResponse.model_validate(payload)
+        self.assertEqual(response.grading_reasoning, "")
+        serialized = response.model_dump()
+        self.assertIn("grading_reasoning", serialized)
+        self.assertEqual(serialized["grading_reasoning"], "")

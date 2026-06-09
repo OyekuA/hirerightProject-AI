@@ -1,11 +1,13 @@
+import base64
 import os
 import asyncio
+import secrets
 import structlog
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Depends
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from slowapi.errors import RateLimitExceeded
 from app.logging_config import configure_logging
 
@@ -36,9 +38,136 @@ from app.services.ingest_queue import IngestQueue
 logger = structlog.get_logger()
 
 
+async def process_queue_entry(
+    entry,
+    ingest_queue,
+    qdrant_client,
+    llm_client,
+    store,
+    callback_client,
+    settings,
+):
+    try:
+        payload = entry.payload
+        if entry.entity_type == "candidate":
+            await run_candidate_ingestion(
+                candidate_id=entry.entity_id,
+                cv_url=payload["cv_url"],
+                profile_data=payload["profile_data"],
+                callback_url=entry.callback_url,
+                event_id=entry.event_id,
+                qdrant=qdrant_client,
+                llm=llm_client,
+                store=store,
+                callback_client=callback_client,
+                ingest_queue=None,
+                suppress_callback=True,
+                correlation_id=None,
+            )
+        elif entry.entity_type == "job":
+            await run_job_ingestion(
+                job_id=entry.entity_id,
+                jd_text=payload["jd_text"],
+                metadata=payload["metadata"],
+                callback_url=entry.callback_url,
+                event_id=entry.event_id,
+                qdrant=qdrant_client,
+                llm=llm_client,
+                store=store,
+                callback_client=callback_client,
+                ingest_queue=None,
+                suppress_callback=True,
+                correlation_id=None,
+            )
+
+        record = store.get_by_event_id(entry.event_id)
+        if record is not None and record.status == "success":
+            ingest_queue.remove(entry.event_id)
+            await callback_client.send(
+                callback_url=entry.callback_url,
+                event_id=entry.event_id,
+                entity_type=entry.entity_type,
+                entity_id=entry.entity_id,
+                status="success",
+                error=None,
+            )
+            logger.info("Queue entry processed successfully", event_id=entry.event_id)
+        else:
+            requeued = ingest_queue.requeue(
+                entry,
+                settings.INGEST_QUEUE_MAX_RETRIES,
+                settings.INGEST_QUEUE_BACKOFF_BASE_SECONDS,
+            )
+            if not requeued:
+                await callback_client.send(
+                    callback_url=entry.callback_url,
+                    event_id=entry.event_id,
+                    entity_type=entry.entity_type,
+                    entity_id=entry.entity_id,
+                    status="failed",
+                    error="max_queue_retries_exceeded",
+                )
+    except Exception as e:
+        logger.error("Queue entry processing error", event_id=entry.event_id, error=str(e))
+
+
+async def queue_worker(ingest_queue, qdrant_client, llm_client, store, callback_client, settings):
+    while True:
+        await asyncio.sleep(settings.INGEST_QUEUE_POLL_INTERVAL_SECONDS)
+        try:
+            entries = ingest_queue.get_due_entries()
+            for entry in entries:
+                asyncio.create_task(
+                    process_queue_entry(
+                        entry, ingest_queue, qdrant_client, llm_client, store, callback_client, settings
+                    )
+                )
+        except Exception as e:
+            logger.error("Queue worker poll error", error=str(e))
+
+
+async def dead_letter_watcher(queue: IngestQueue) -> None:
+    _last_dead_letter_count: int = 0
+    _seen_event_ids: set[str] = set()
+    settings = get_settings()
+    poll_interval = settings.DEAD_LETTER_POLL_INTERVAL_SECONDS
+    while True:
+        await asyncio.sleep(poll_interval)
+        try:
+            entries = queue.get_dead_letter_entries()
+            new_entries = [e for e in entries if e.event_id not in _seen_event_ids]
+            for entry in new_entries:
+                _seen_event_ids.add(entry.event_id)
+                logger.error(
+                    "Ingestion permanently failed — dead letter alert",
+                    event_id=entry.event_id,
+                    entity_type=entry.entity_type,
+                    entity_id=entry.entity_id,
+                    queue_retry_count=entry.queue_retry_count,
+                    enqueued_at=entry.enqueued_at,
+                )
+                if sentry_sdk.is_initialized():
+                    with sentry_sdk.new_scope() as scope:
+                        scope.set_extra("event_id", entry.event_id)
+                        scope.set_extra("entity_type", entry.entity_type)
+                        scope.set_extra("entity_id", entry.entity_id)
+                        scope.set_extra("queue_retry_count", entry.queue_retry_count)
+                        scope.set_extra("enqueued_at", entry.enqueued_at)
+                        scope.set_level("error")
+                        sentry_sdk.capture_message(
+                            f"Ingestion permanently failed: {entry.entity_type} {entry.entity_id}"
+                        )
+            count = len(entries)
+            if count == 0 and _last_dead_letter_count > 0:
+                logger.info("Dead letter directory cleared", previous_count=_last_dead_letter_count)
+                _seen_event_ids.clear()
+            _last_dead_letter_count = count
+        except Exception as e:
+            logger.error("Dead letter watcher error", error=str(e))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown hooks."""
     settings = get_settings()
 
     configure_logging()
@@ -48,6 +177,9 @@ async def lifespan(app: FastAPI):
             integrations=[FastApiIntegration()],
             traces_sample_rate=1.0,
         )
+
+    if settings.ENABLE_DOCS and (not settings.DOCS_USERNAME or not settings.DOCS_PASSWORD):
+        logger.warning("ENABLE_DOCS=true but DOCS_USERNAME/DOCS_PASSWORD not set — Swagger UI is publicly accessible")
 
     lock_acquired = False
     lock_path = "/data/ingest_status/.hireright.lock"
@@ -101,8 +233,8 @@ async def lifespan(app: FastAPI):
     incomplete = store.get_all_incomplete()
     if incomplete:
         logger.info("Found incomplete ingestion records, marking as failed", count=len(incomplete))
-        RECOVERY_BUDGET = 30.0  # seconds
-        start_time = asyncio.get_event_loop().time()
+        RECOVERY_BUDGET = 30.0
+        start_time = asyncio.get_running_loop().time()
         deferred = []
         for record in incomplete:
             store.update(
@@ -110,7 +242,7 @@ async def lifespan(app: FastAPI):
                 status="failed",
                 error_summary="interrupted_by_restart",
             )
-            if asyncio.get_event_loop().time() - start_time >= RECOVERY_BUDGET:
+            if asyncio.get_running_loop().time() - start_time >= RECOVERY_BUDGET:
                 deferred.append(record)
                 logger.debug("Recovery budget exceeded, deferring callback", event_id=record.event_id)
                 continue
@@ -158,141 +290,15 @@ async def lifespan(app: FastAPI):
     else:
         logger.debug("No incomplete ingestion records found")
 
-    # ── Queue worker ──────────────────────────────────────────────
     ingest_queue = get_ingest_queue()
-
-    async def process_queue_entry(
-        entry,
-        ingest_queue,
-        qdrant_client,
-        llm_client,
-        store,
-        callback_client,
-        settings,
-    ):
-        try:
-            payload = entry.payload
-            if entry.entity_type == "candidate":
-                await run_candidate_ingestion(
-                    candidate_id=entry.entity_id,
-                    cv_url=payload["cv_url"],
-                    profile_data=payload["profile_data"],
-                    callback_url=entry.callback_url,
-                    event_id=entry.event_id,
-                    qdrant=qdrant_client,
-                    llm=llm_client,
-                    store=store,
-                    callback_client=callback_client,
-                    ingest_queue=None,
-                    suppress_callback=True,
-                )
-            elif entry.entity_type == "job":
-                await run_job_ingestion(
-                    job_id=entry.entity_id,
-                    jd_text=payload["jd_text"],
-                    metadata=payload["metadata"],
-                    callback_url=entry.callback_url,
-                    event_id=entry.event_id,
-                    qdrant=qdrant_client,
-                    llm=llm_client,
-                    store=store,
-                    callback_client=callback_client,
-                    ingest_queue=None,
-                    suppress_callback=True,
-                )
-
-            record = store.get_by_event_id(entry.event_id)
-            if record is not None and record.status == "success":
-                ingest_queue.remove(entry.event_id)
-                # Send success callback now that the queue replay succeeded
-                await callback_client.send(
-                    callback_url=entry.callback_url,
-                    event_id=entry.event_id,
-                    entity_type=entry.entity_type,
-                    entity_id=entry.entity_id,
-                    status="success",
-                    error=None,
-                )
-                logger.info("Queue entry processed successfully", event_id=entry.event_id)
-            else:
-                requeued = ingest_queue.requeue(
-                    entry,
-                    settings.INGEST_QUEUE_MAX_RETRIES,
-                    settings.INGEST_QUEUE_BACKOFF_BASE_SECONDS,
-                )
-                if not requeued:
-                    # Entry was moved to dead letter — send final failure callback
-                    await callback_client.send(
-                        callback_url=entry.callback_url,
-                        event_id=entry.event_id,
-                        entity_type=entry.entity_type,
-                        entity_id=entry.entity_id,
-                        status="failed",
-                        error="max_queue_retries_exceeded",
-                    )
-        except Exception as e:
-            logger.error("Queue entry processing error", event_id=entry.event_id, error=str(e))
-
-    async def queue_worker(ingest_queue, qdrant_client, llm_client, store, callback_client, settings):
-        while True:
-            await asyncio.sleep(settings.INGEST_QUEUE_POLL_INTERVAL_SECONDS)
-            try:
-                entries = ingest_queue.get_due_entries()
-                for entry in entries:
-                    asyncio.create_task(
-                        process_queue_entry(
-                            entry, ingest_queue, qdrant_client, llm_client, store, callback_client, settings
-                        )
-                    )
-            except Exception as e:
-                logger.error("Queue worker poll error", error=str(e))
 
     _worker_task = asyncio.create_task(
         queue_worker(ingest_queue, qdrant_client, llm_client, store, callback_client, settings)
     )
     logger.info("Ingest queue worker started", poll_interval=settings.INGEST_QUEUE_POLL_INTERVAL_SECONDS)
 
-    _last_dead_letter_count = 0
-
-    async def dead_letter_watcher(queue: IngestQueue) -> None:
-        nonlocal _last_dead_letter_count
-        poll_interval = 300
-        while True:
-            await asyncio.sleep(poll_interval)
-            try:
-                count = queue.dead_letter_count()
-                if count > _last_dead_letter_count:
-                    new_entries = count - _last_dead_letter_count
-                    entries = queue.get_dead_letter_entries()
-                    recent = entries[-new_entries:] if new_entries <= len(entries) else entries
-                    for entry in recent:
-                        logger.error(
-                            "Ingestion permanently failed — dead letter alert",
-                            event_id=entry.event_id,
-                            entity_type=entry.entity_type,
-                            entity_id=entry.entity_id,
-                            queue_retry_count=entry.queue_retry_count,
-                            enqueued_at=entry.enqueued_at,
-                        )
-                        if sentry_sdk.is_initialized():
-                            with sentry_sdk.push_scope() as scope:
-                                scope.set_extra("event_id", entry.event_id)
-                                scope.set_extra("entity_type", entry.entity_type)
-                                scope.set_extra("entity_id", entry.entity_id)
-                                scope.set_extra("queue_retry_count", entry.queue_retry_count)
-                                scope.set_extra("enqueued_at", entry.enqueued_at)
-                                scope.set_level("error")
-                                sentry_sdk.capture_message(
-                                    f"Ingestion permanently failed: {entry.entity_type} {entry.entity_id}"
-                                )
-                elif count == 0 and _last_dead_letter_count > 0:
-                    logger.info("Dead letter directory cleared", previous_count=_last_dead_letter_count)
-                _last_dead_letter_count = count
-            except Exception as e:
-                logger.error("Dead letter watcher error", error=str(e))
-
     _dead_letter_task = asyncio.create_task(dead_letter_watcher(ingest_queue))
-    logger.info("Dead letter watcher started", poll_interval_seconds=300)
+    logger.info("Dead letter watcher started", poll_interval_seconds=settings.DEAD_LETTER_POLL_INTERVAL_SECONDS)
 
     yield
 
@@ -317,17 +323,48 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    """Factory function to create and configure the FastAPI application."""
+    settings = get_settings()
     app = FastAPI(
-        title="HireRight AI API", 
+        title="HireRight AI API",
         description="Core AI microservice for candidate ingestion, scoring, and career recommendations.",
         version="1.0.0",
         
         lifespan=lifespan,
-        openapi_url="/openapi.json", 
-        docs_url="/", 
+        openapi_url="/openapi.json" if settings.ENABLE_DOCS else None,
+        docs_url="/" if settings.ENABLE_DOCS else None,
         redoc_url=None,
     )
+
+    if settings.ENABLE_DOCS and settings.DOCS_USERNAME and settings.DOCS_PASSWORD:
+        @app.middleware("http")
+        async def docs_basic_auth(request: Request, call_next):
+            protected_paths = {"/openapi.json", "/", "/docs"}
+            if request.url.path in protected_paths:
+                auth = request.headers.get("Authorization", "")
+                if not auth.startswith("Basic "):
+                    return Response(
+                        status_code=401,
+                        headers={"WWW-Authenticate": 'Basic realm="HireRight AI Docs"'},
+                        content="Unauthorized",
+                    )
+                try:
+                    decoded = base64.b64decode(auth[6:]).decode("utf-8")
+                    username, _, password = decoded.partition(":")
+                except Exception:
+                    return Response(
+                        status_code=401,
+                        headers={"WWW-Authenticate": 'Basic realm="HireRight AI Docs"'},
+                        content="Unauthorized",
+                    )
+                valid_user = secrets.compare_digest(username, settings.DOCS_USERNAME)
+                valid_pass = secrets.compare_digest(password, settings.DOCS_PASSWORD)
+                if not (valid_user and valid_pass):
+                    return Response(
+                        status_code=401,
+                        headers={"WWW-Authenticate": 'Basic realm="HireRight AI Docs"'},
+                        content="Unauthorized",
+                    )
+            return await call_next(request)
 
     app.add_middleware(CorrelationIdMiddleware)
 
@@ -371,7 +408,6 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health():
-        """Health check endpoint (unauthenticated)."""
         ingest_queue = get_ingest_queue()
         dead_letter_count = ingest_queue.dead_letter_count()
         return {
@@ -389,7 +425,6 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
-        """Catch any unhandled exception and return a generic 500."""
         logger.error("Unhandled exception", exc_info=exc)
         return JSONResponse(
             status_code=500,

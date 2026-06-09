@@ -564,11 +564,14 @@ class TestAdaptiveWeights(unittest.TestCase):
 
     def test_two_saves_cooccurrence_weight(self):
         """2 saves → cooccurrence_weight > 0."""
-        self.mock_qdrant.get_with_vector.side_effect = [
-            ({"some": "payload", "skills": ["a", "b", "c"]}, [0.3] * 768),
-            ({"some": "payload"}, [0.4] * 768),
-            ({"some": "payload"}, [0.5] * 768),
+        self.mock_qdrant._client = MagicMock()
+        self.mock_qdrant._client.retrieve.return_value = [
+            MagicMock(vector=[0.4] * 768),
+            MagicMock(vector=[0.5] * 768),
         ]
+        self.mock_qdrant.get_with_vector.return_value = (
+            {"some": "payload", "skills": ["a", "b", "c"]}, [0.3] * 768,
+        )
         self.service.recommend(
             rec_type="jobs",
             target_id=123,
@@ -578,9 +581,10 @@ class TestAdaptiveWeights(unittest.TestCase):
             force_refresh=False,
             limit=10,
         )
-        calls = self.mock_qdrant.get_with_vector.call_args_list
-        self.assertGreaterEqual(len(calls), 3)
-        self.assertEqual(len(calls), 3)
+        # get_with_vector called once for the target profile; co-occurrence vectors
+        # are now fetched via batch _client.retrieve()
+        self.mock_qdrant.get_with_vector.assert_called_once()
+        self.mock_qdrant._client.retrieve.assert_called_once()
 
     def test_weights_always_sum_to_one(self):
         """The four adaptive weights must always sum to exactly 1.0."""
@@ -624,6 +628,14 @@ class TestPeerCentroid(unittest.TestCase):
 
     def test_peer_centroid_excludes_target(self):
         """Search returns 6 hits including target ID; target is excluded."""
+        self.mock_qdrant._client = MagicMock()
+        self.mock_qdrant._client.retrieve.return_value = [
+            MagicMock(vector=[0.2] * 768),
+            MagicMock(vector=[0.3] * 768),
+            MagicMock(vector=[0.4] * 768),
+            MagicMock(vector=[0.5] * 768),
+            MagicMock(vector=[0.6] * 768),
+        ]
         self.mock_qdrant.search.side_effect = [
             [
                 {"_point_id": 123, "score": 0.99},
@@ -635,14 +647,9 @@ class TestPeerCentroid(unittest.TestCase):
             ],
             [],
         ]
-        self.mock_qdrant.get_with_vector.side_effect = [
-            ({"skills": ["a", "b", "c"]}, [0.1] * 768),
-            ({"payload": "peer1"}, [0.2] * 768),
-            ({"payload": "peer2"}, [0.3] * 768),
-            ({"payload": "peer3"}, [0.4] * 768),
-            ({"payload": "peer4"}, [0.5] * 768),
-            ({"payload": "peer5"}, [0.6] * 768),
-        ]
+        self.mock_qdrant.get_with_vector.return_value = (
+            {"skills": ["a", "b", "c"]}, [0.1] * 768,
+        )
         self.service.recommend(
             rec_type="jobs",
             target_id=123,
@@ -652,17 +659,13 @@ class TestPeerCentroid(unittest.TestCase):
             force_refresh=False,
             limit=10,
         )
-        calls = self.mock_qdrant.get_with_vector.call_args_list
-        self.assertEqual(len(calls), 6)
-        target_call = calls[0]
-        self.assertEqual(target_call[0][0], "candidates")
-        self.assertEqual(target_call[0][1], 123)
-        peer_ids = {101, 102, 103, 104, 105}
-        for call in calls[1:]:
-            self.assertEqual(call[0][0], "candidates")
-            self.assertIn(call[0][1], peer_ids)
-            peer_ids.remove(call[0][1])
-        self.assertEqual(len(peer_ids), 0)
+        # get_with_vector is called once for the target profile; peer vectors
+        # are now fetched via batch _client.retrieve()
+        self.mock_qdrant.get_with_vector.assert_called_once()
+        self.mock_qdrant._client.retrieve.assert_called_once()
+        retrieve_call = self.mock_qdrant._client.retrieve.call_args
+        self.assertIn("ids", retrieve_call.kwargs)
+        self.assertEqual(set(retrieve_call.kwargs["ids"]), {101, 102, 103, 104, 105})
 
 
 class TestReRanker(unittest.TestCase):

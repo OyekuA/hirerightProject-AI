@@ -14,16 +14,11 @@ router = APIRouter(tags=["Scoring"])
 limiter = get_rate_limiter().limiter
 
 
-
-
 from app.schemas.scoring import (
-    CategoryStatus,
-    CategoryBreakdown,
     CalculateFitRequest,
     CalculateFitResponse,
 )
 
-# --- Route handler ---
 
 @router.post("/calculate-fit", response_model=CalculateFitResponse)
 @limiter.limit("1000/hour")
@@ -36,7 +31,6 @@ async def calculate_fit(
     llm: LLMClient = Depends(get_llm_client),
     cache: CacheBackend = Depends(get_cache_backend),
 ):
-    """Calculate a detailed fit score between a candidate and a job."""
     structlog.contextvars.bind_contextvars(entity_id=req.candidate_id)
     service = ScoringService(llm=llm, qdrant=qdrant, cache=cache)
     try:

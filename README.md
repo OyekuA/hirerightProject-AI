@@ -23,12 +23,13 @@ The HireRight AI Microservice adds semantic candidate‑to‑job matching, expla
 ```
 .
 ├── app/
+│   ├── __init__.py
 │   ├── main.py                     # FastAPI app factory, lifespan, background workers
 │   ├── config.py                   # Pydantic Settings (env‑var loading)
 │   ├── auth.py                     # API‑key verification dependency
-│   ├── constants.py                # Collection names, prompt constants
+│   ├── constants.py                # Collection names, experience level ladder
 │   ├── logging_config.py           # structlog configuration
-│   ├── prompts.py                  # LLM prompt templates
+│   ├── prompts.py                  # LLM prompt templates (generation, grading, extraction)
 │   ├── clients/
 │   │   ├── __init__.py
 │   │   ├── cache.py                # Abstract cache + TTLCacheBackend
@@ -67,26 +68,29 @@ The HireRight AI Microservice adds semantic candidate‑to‑job matching, expla
 │   │   ├── recommendation_service.py # Hybrid recommendation engine
 │   │   └── scoring_service.py      # LLM‑based fit‑score calculation
 │   └── utils/
-│       ├── __init__.py
-│       └── ingestion.py            # CV fetch & parse helpers
+│       ├── __init__.py             # LLM JSON parser (parse_llm_json)
+│       └── ingestion.py            # CV fetch & parse, SSRF validation, prompt truncation
 ├── nginx/
 │   └── nginx.conf                  # Reverse‑proxy config (TLS‑ready)
 ├── tests/
+│   ├── __init__.py
 │   ├── conftest.py                 # Shared fixtures (mock settings, Qdrant patches)
-│   ├── integration/
-│   │   └── test_e2e_workflow.py    # End‑to‑end integration tests
 │   └── unit/
+│       ├── __init__.py
 │       ├── test_config.py
 │       ├── test_utils.py
 │       ├── clients/
+│       │   ├── __init__.py
 │       │   ├── test_cache.py
 │       │   ├── test_circuit_breaker.py
 │       │   └── test_llm_client.py
 │       ├── routers/
+│       │   ├── __init__.py
 │       │   ├── test_ingestion_router.py
 │       │   ├── test_rate_limit_keys.py
 │       │   └── test_rate_limits.py
 │       └── services/
+│           ├── __init__.py
 │           ├── test_assessment_service.py
 │           ├── test_callback_client.py
 │           ├── test_career_service.py
@@ -202,8 +206,37 @@ Full table sourced from [`.env.example`](.env.example):
 | `INGEST_QUEUE_MAX_RETRIES` | Optional | `5` | Maximum queue‑level retries before an entry moves to dead letter |
 | `INGEST_QUEUE_BACKOFF_BASE_SECONDS` | Optional | `60` | Base backoff in seconds between queue retries (doubles each attempt: 60→120→240→480→960) |
 | `INGEST_QUEUE_POLL_INTERVAL_SECONDS` | Optional | `30` | How often (seconds) the background queue worker polls for due entries |
-| `ENFORCE_SINGLE_REPLICA` | Optional | `False` | If `True`, warns on startup when multiple replicas are detected |
-| `LOG_LEVEL` | Optional | `ERROR` | Log level — use `ERROR` for production, `DEBUG` for local dev |
+| `ENFORCE_SINGLE_REPLICA` | Optional | `False` | If `True`, acquires a startup lock to prevent multi‑instance execution. Logs a warning if another replica is already running. |
+| `DEAD_LETTER_POLL_INTERVAL_SECONDS` | Optional | `300` | How often (seconds) the background dead‑letter watcher polls for new entries |
+| `LOG_LEVEL` | Optional | `INFO` | Log level — use `INFO` for production, `DEBUG` for local dev. Sentry only receives ERROR-level events regardless of this setting. |
+| `ENABLE_DOCS` | Optional | `False` | Set to `true` to enable Swagger UI at `/` and OpenAPI schema at `/openapi.json` |
+| `DOCS_USERNAME` | Optional | _(empty)_ | HTTP Basic Auth username for Swagger UI (only enforced when `ENABLE_DOCS=true` and both credentials are set) |
+| `DOCS_PASSWORD` | Optional | _(empty)_ | HTTP Basic Auth password for Swagger UI (only enforced when `ENABLE_DOCS=true` and both credentials are set) |
+
+## Swagger / API Documentation
+
+Swagger UI is available when `ENABLE_DOCS=true` is set in your environment.
+
+### Enabling in Production
+
+Set the following in your `.env`:
+
+```
+ENABLE_DOCS=true
+DOCS_USERNAME=your-docs-username
+DOCS_PASSWORD=your-docs-password
+```
+
+Access Swagger UI at `https://your-domain/` — your browser will prompt for the Basic Auth credentials above.
+
+> ⚠️ If `ENABLE_DOCS=true` but `DOCS_USERNAME` or `DOCS_PASSWORD` is not set, the Swagger UI is publicly accessible with no authentication. Always set both credentials in production.
+
+### Using Swagger UI
+
+1. Open `https://your-domain/` and enter your `DOCS_USERNAME` / `DOCS_PASSWORD` when prompted.
+2. Click the **Authorize** button (🔒) at the top right of the Swagger UI.
+3. Enter your `API_KEY` value in the `X-API-Key` field and click **Authorize**.
+4. All API calls made from Swagger UI will now include the `X-API-Key` header automatically.
 
 ## Rate Limits
 
@@ -304,6 +337,7 @@ The [`LLMClient`](app/clients/llm.py) uses a **circuit breaker** pattern with th
 - Separate circuit breakers for **generation** and **embedding**.
 - A successful probe in HALF_OPEN resets the breaker to CLOSED.
 - A failed probe in HALF_OPEN reopens the breaker and restarts the cooldown.
+- Thread safety: All CircuitBreaker state transitions (`is_open`, `record_failure`, `record_success`) are protected by a `threading.Lock`, making the breaker safe for concurrent use across the `ThreadPoolExecutor` in `rank_pool` and `asyncio.to_thread` calls.
 
 ## Correlation ID Middleware
 
@@ -320,24 +354,26 @@ The [`CallbackClient`](app/services/callback_client.py) delivers ingestion‑sta
 - **HMAC‑SHA256 signing**: Each callback includes `X-HireRight-Signature`, `X-HireRight-Timestamp`, and `X-HireRight-Event-Id` headers.
 - **Retries**: Up to `CALLBACK_MAX_ATTEMPTS` with exponential backoff (`CALLBACK_RETRY_BASE_SECONDS`).
 - **Timeout**: Each HTTP request times out after `CALLBACK_TIMEOUT_SECONDS`.
-- **SSRF safety**: Callback URLs are validated via `validate_ingest_url()` to prevent server‑side request forgery.
+- **SSRF safety**: CV URLs are validated via `validate_ingest_url()` (HTTPS only). Callback URLs are validated via `validate_callback_url()` which allows both HTTP and HTTPS but still blocks private, loopback, link-local, reserved, multicast, and unspecified IP ranges.
 - **Replay protection**: PHP verifies the timestamp is within `CALLBACK_SIGNATURE_TTL_SECONDS` of the current time.
 
 ## API Reference
 
 ### `POST /api/ai/ingest‑candidate`
 - **Purpose:** Asynchronously ingest a candidate CV from a cloud URL into the vector store.
-- **Request:** `candidate_id` (int), `cv_url` (HTTPS URL to PDF), `profile_data` (`name`, `location`, `experience_level`, `industry`, `employment_type`, `candidate_version`), `callback_url` (HTTPS)
+- **Request:** `candidate_id` (int), `cv_url` (HTTPS URL to PDF), `profile_data` (`name`, `location`, `experience_level`, `industry`, `employment_type`, `candidate_version`), `callback_url` (HTTP or HTTPS)
 - **Response:** `202 Accepted` — `{"event_id": "<uuid>"}`
 - **Rate limit:** 500/day, 10/minute, 20/day per candidate
 - **curl:** `curl -X POST http://localhost/api/ai/ingest-candidate -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"candidate_id": 123, "cv_url": "https://example.com/cv.pdf", "profile_data": {...}, "callback_url": "https://php-backend.example.com/callback"}'`
+  > `callback_url` accepts both `http://` and `https://`.
 
 ### `POST /api/ai/ingest‑job`
 - **Purpose:** Asynchronously ingest a job description text into the vector store.
-- **Request:** `job_id` (int), `jd_text` (string), `metadata` (`title`, `location`, `experience_level`, `industry`, `employment_type`, `job_version`), `callback_url` (HTTPS)
+- **Request:** `job_id` (int), `jd_text` (string), `metadata` (`title`, `location`, `experience_level`, `industry`, `employment_type`, `job_version`), `callback_url` (HTTP or HTTPS)
 - **Response:** `202 Accepted` — `{"event_id": "<uuid>"}`
 - **Rate limit:** 200/day, 10/minute, 20/day per job
-- **curl:** `curl -X POST http://localhost/api/ai/ingest-job -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"job_id": 456, "jd_text": "...", "metadata": {...}, "callback_url": "https://php-backend.example.com/callback"}'`
+- **curl:** `curl -X POST http://localhost/api/ai/ingest-job -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"job_id": 456, "jd_text": "...", "metadata": {...}, "callback_url": "http://php-backend.internal/callback"}'`
+  > `callback_url` accepts both `http://` and `https://`.
 
 ### `POST /api/ai/cv‑parse`
 - **Purpose:** Synchronously parse a CV PDF from a URL and return structured autofill data (name, email, phone, skills, experience, education, social links). **No vector store write occurs.**
@@ -418,8 +454,8 @@ The [`CallbackClient`](app/services/callback_client.py) delivers ingestion‑sta
     }'
   ```
 ### `POST /api/ai/assessment/grade`
-- **Purpose:** Grade candidate answers for accuracy and authenticity.
-- **Request:** `questions` (list of strings **or** multiple‑choice objects), `answers` (list of strings), `time_taken_seconds` (int). Multiple‑choice objects must be full `MultipleChoiceQuestion` objects with `question` (string), `options` (list of exactly 4 strings), and `correct_answer` (must match one of the options).
+- **Purpose:** Grade candidate answers for accuracy and authenticity. The LLM is called **once** (temperature 0) to produce a deterministic score, skill breakdown, and authenticity flag.
+- **Request:** `questions` (list of strings **or** multiple‑choice objects), `answers` (list of strings), `time_taken_seconds` (int). Multiple‑choice objects must be full `MultipleChoiceQuestion` objects with `question` (string), `options` (list of exactly 4 strings), and `correct_answer` (must match one of the options). For multiple‑choice answers, the full labeled option text (e.g. `"A. Yes"`) or just the letter label (e.g. `"A"` or `"b"`) is accepted.
 - **Response:**
   ```
   {
@@ -427,7 +463,8 @@ The [`CallbackClient`](app/services/callback_client.py) delivers ingestion‑sta
     "skill_breakdown": [
       { "category": "System Design", "score": 72, "feedback": "You demonstrate..." }
     ],
-    "authenticity_flag": { "is_suspicious": false, "reason": "..." }
+    "authenticity_flag": { "is_suspicious": false, "reason": "..." },
+    "needs_review": false
   }
   ```
 - **Rate limit:** 1000/day, 30/minute, 100/day per entity
@@ -493,7 +530,7 @@ The [`CallbackClient`](app/services/callback_client.py) delivers ingestion‑sta
 
 If `job_id` is supplied but not found in Qdrant, the endpoint returns `404`.
 - **Response:** `{"jd_text": "..."}`
-- **Note:** Output is plain text only — no markdown formatting (`**`, `##`, `*` bullets) is used. All sections are written as prose with plain line breaks.
+- **Note:** Output uses clean Markdown formatting — `##` for section headers, `*` for bullet lists, `**` for bold key terms — as instructed in the generation prompt template.
 - **Rate limit:** 500/day, 10/minute, 50/day per job
 - **curl:**
   ```bash
@@ -568,11 +605,11 @@ GET /api/ai/ingestion‑status?event_id=<event_id>
 # Unit tests (CI — no live services required)
 uv run pytest tests/unit/ -v
 
-# Integration / E2E tests (manual — requires live stack: Qdrant + LLM API)
-uv run pytest tests/integration/ -v -s
+# Integration / E2E tests (optional — requires live Qdrant + LLM API)
+# No integration test suite exists yet; coverage is provided by unit tests.
 ```
 
-Unit tests mock all external dependencies (Qdrant, OpenAI) and run in CI on every push via [`.github/workflows/test.yml`](.github/workflows/test.yml). Integration tests require the full Docker Compose stack and a valid `OPENAI_API_KEY`.
+Unit tests mock all external dependencies (Qdrant, OpenAI) and run in CI on every push via [`.github/workflows/test.yml`](.github/workflows/test.yml).
 
 ### Test Coverage
 
@@ -651,15 +688,15 @@ The [`nginx/nginx.conf`](nginx/nginx.conf) reverse proxy:
 | `401` | Missing or invalid `X-API-Key` | [`verify_api_key`](app/auth.py:14) |
 | `404` | Entity not found in Qdrant | Router-level |
 | `422` | CV fetch/parse failure | Router-level |
-| `429` | Rate limit exceeded | [`_rate_limit_exceeded_handler`](app/main.py:337) |
-| `500` | Unexpected internal error | [`global_exception_handler`](app/main.py:390) |
-| `503` | LLM unavailable (circuit breaker open) | [`llm_unavailable_handler`](app/main.py:382) |
+| `429` | Rate limit exceeded | [`_rate_limit_exceeded_handler`](app/main.py:382) |
+| `500` | Unexpected internal error | [`global_exception_handler`](app/main.py:436) |
+| `503` | LLM unavailable (circuit breaker open) | [`llm_unavailable_handler`](app/main.py:427) |
 
 ## Logging
 
 Structured logging via `structlog` (configured in [`app/logging_config.py`](app/logging_config.py)):
 
-- **Production:** `LOG_LEVEL=ERROR` — only errors and above
+- **Production:** `LOG_LEVEL=INFO` — info and above; errors are forwarded to Sentry
 - **Development:** `LOG_LEVEL=DEBUG` — full request/response tracing
 - **Context:** Correlation ID, event ID, entity type/ID are automatically bound to each log entry
 - **Sentry:** Errors are forwarded to Sentry when `SENTRY_DSN` is configured

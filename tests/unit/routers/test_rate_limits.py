@@ -187,6 +187,7 @@ class TestAssessmentGradeBurstLimit(IsolatedAsyncioTestCase):
                 {"category": "Communication", "score": 80, "feedback": "Good"},
             ],
             "authenticity_flag": {"is_suspicious": False, "reason": "No issues detected"},
+            "grading_reasoning": "Score based on answer quality.",
         })
         self.app = _build_test_app(assessment_router, llm_client_override=self.mock_llm)
         self.client = TestClient(self.app)
@@ -512,3 +513,67 @@ class Test429ResponseContract(IsolatedAsyncioTestCase):
         retry_after = int(resp.headers["Retry-After"])
         self.assertGreater(retry_after, 0)
         self.assertIn("X-Correlation-Id", resp.headers)
+
+
+class TestPerEntityLimitIsolation(IsolatedAsyncioTestCase):
+    """Verify per‑entity rate limits are isolated by entity ID when CorrelationIdMiddleware is active."""
+
+    def setUp(self):
+        from app.middleware.correlation import CorrelationIdMiddleware
+        from app.routers._rate_limit_keys import candidate_id_key
+        from slowapi import Limiter, _rate_limit_exceeded_handler
+        from slowapi.util import get_remote_address
+        from slowapi.errors import RateLimitExceeded
+        from fastapi import APIRouter
+        from fastapi.responses import JSONResponse
+        from pydantic import BaseModel
+
+        _reset_rate_limiter()
+
+        limiter = Limiter(key_func=get_remote_address)
+
+        router = APIRouter()
+
+        class DummyRequest(BaseModel):
+            candidate_id: int
+
+        @router.post("/test-entity-limit")
+        @limiter.limit("5/minute", key_func=candidate_id_key)
+        async def test_endpoint(request: Request, req: DummyRequest):
+            return {"ok": True}
+
+        self.app = FastAPI()
+        self.app.add_middleware(CorrelationIdMiddleware)
+        self.app.include_router(router, prefix="/api/ai")
+
+        self.app.state.limiter = limiter
+
+        @self.app.exception_handler(RateLimitExceeded)
+        async def handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+            return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
+
+        self.client = TestClient(self.app)
+
+    def test_different_entity_ids_get_different_buckets(self):
+        """Two different candidate_ids should not share the same rate‑limit bucket."""
+        for _ in range(5):
+            resp = self.client.post(
+                "/api/ai/test-entity-limit",
+                json={"candidate_id": 1},
+            )
+            self.assertEqual(resp.status_code, 200, msg=f"candidate 1 burst: {resp.text}")
+
+        # candidate_id=1 should now be rate‑limited
+        resp = self.client.post(
+            "/api/ai/test-entity-limit",
+            json={"candidate_id": 1},
+        )
+        self.assertEqual(resp.status_code, 429, msg=f"candidate 1 should be limited: {resp.text}")
+
+        # candidate_id=2 should still succeed (different bucket)
+        resp = self.client.post(
+            "/api/ai/test-entity-limit",
+            json={"candidate_id": 2},
+        )
+        self.assertEqual(resp.status_code, 200, msg=f"candidate 2 should not be limited: {resp.text}")
+

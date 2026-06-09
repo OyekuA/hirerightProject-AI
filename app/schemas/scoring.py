@@ -1,17 +1,13 @@
-"""Pydantic schemas for the scoring domain."""
-
 from pydantic import BaseModel, Field
 from typing import Literal
 
 
 class CategoryStatus(BaseModel):
-    """Status and short reason for a single fit category."""
     status: Literal["pass", "warning", "fail"]
     short_reason: str
 
 
 class CategoryBreakdown(BaseModel):
-    """Breakdown of fit across four categories."""
     role_match: CategoryStatus
     experience: CategoryStatus
     location: CategoryStatus
@@ -19,7 +15,6 @@ class CategoryBreakdown(BaseModel):
 
 
 class CalculateFitRequest(BaseModel):
-    """Request payload for fit‑score calculation."""
     candidate_id: int
     candidate_version: int
     job_id: int
@@ -28,7 +23,6 @@ class CalculateFitRequest(BaseModel):
 
 
 class CalculateFitResponse(BaseModel):
-    """Response payload containing the detailed fit score."""
     overall_score_percentage: int = Field(..., ge=0, le=100)
     category_breakdown: CategoryBreakdown
     skill_gap_analysis: str

@@ -14,12 +14,8 @@ router = APIRouter(tags=["Recommendation"])
 limiter = get_rate_limiter().limiter
 
 
-
-
 from app.schemas.recommendation import (
     RecommendResult,
-    RecentClick,
-    BehavioralSignals,
     RecommendRequest,
     RecommendResponse,
     PoolRankRequest,
@@ -27,7 +23,6 @@ from app.schemas.recommendation import (
     PoolRankResponse,
 )
 
-# --- Route handler ---
 
 @router.post("/recommend", response_model=RecommendResponse)
 @limiter.limit("500/day")
@@ -40,7 +35,6 @@ async def recommend(
     llm: LLMClient = Depends(get_llm_client),
     cache: CacheBackend = Depends(get_cache_backend),
 ):
-    """Generate recommendations for a target profile."""
     structlog.contextvars.bind_contextvars(entity_id=req.target_id)
     service = RecommendationService(llm=llm, qdrant=qdrant, cache=cache)
     try:
@@ -75,7 +69,6 @@ async def pool_rank(
     llm: LLMClient = Depends(get_llm_client),
     cache: CacheBackend = Depends(get_cache_backend),
 ):
-    """Rank a pre‑filtered candidate pool by fit score."""
     structlog.contextvars.bind_contextvars(job_id=req.job_id)
     service = RecommendationService(llm=llm, qdrant=qdrant, cache=cache)
     try:

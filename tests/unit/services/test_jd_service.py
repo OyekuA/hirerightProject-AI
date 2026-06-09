@@ -41,7 +41,7 @@ class TestJDService(unittest.TestCase):
             existing_draft=None,
         )
         prompt = self.gemini_mock.generate.call_args[0][0]
-        self.assertIn("**bold**", prompt)
+        self.assertIn("Bold", prompt)
         self.assertIn("##", prompt)
 
     def test_generate_jd_refinement_returns_string(self):
@@ -62,12 +62,12 @@ class TestJDService(unittest.TestCase):
             existing_draft="Some draft",
         )
         prompt = self.gemini_mock.generate.call_args[0][0]
-        self.assertIn("**bold**", prompt)
+        self.assertIn("Bold", prompt)
         self.assertIn("##", prompt)
 
     def test_generate_jd_llm_exception_raises_error(self):
-        """If LLM raises an exception, generate_jd should raise LLMUnavailableError."""
-        self.gemini_mock.generate.side_effect = Exception("network error")
+        """If LLM raises LLMUnavailableError, generate_jd should propagate it."""
+        self.gemini_mock.generate.side_effect = LLMUnavailableError("network error")
         with self.assertRaises(LLMUnavailableError) as cm:
             self.service.generate_jd(
                 prompt="Some prompt",

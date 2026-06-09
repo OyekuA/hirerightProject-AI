@@ -1,6 +1,4 @@
-"""Pydantic schemas for the ingestion domain."""
-
-from pydantic import BaseModel, HttpUrl, field_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 from typing import Literal, Optional, List
 
 
@@ -19,11 +17,18 @@ class IngestCandidateRequest(BaseModel):
     profile_data: ProfileData
     callback_url: HttpUrl
 
-    @field_validator("cv_url", "callback_url")
+    @field_validator("cv_url")
     @classmethod
     def ensure_https(cls, v: HttpUrl) -> HttpUrl:
         if v.scheme != "https":
             raise ValueError("URL scheme must be HTTPS")
+        return v
+
+    @field_validator("callback_url")
+    @classmethod
+    def ensure_http_or_https(cls, v: HttpUrl) -> HttpUrl:
+        if v.scheme not in ("http", "https"):
+            raise ValueError("Callback URL scheme must be http or https")
         return v
 
 
@@ -61,15 +66,15 @@ class JobExtraction(BaseModel):
 
 class IngestJobRequest(BaseModel):
     job_id: int
-    jd_text: str
+    jd_text: str = Field(..., max_length=500_000)
     metadata: JobMetadata
     callback_url: HttpUrl
 
     @field_validator("callback_url")
     @classmethod
-    def ensure_https(cls, v: HttpUrl) -> HttpUrl:
-        if v.scheme != "https":
-            raise ValueError("URL scheme must be HTTPS")
+    def ensure_http_or_https(cls, v: HttpUrl) -> HttpUrl:
+        if v.scheme not in ("http", "https"):
+            raise ValueError("Callback URL scheme must be http or https")
         return v
 
 

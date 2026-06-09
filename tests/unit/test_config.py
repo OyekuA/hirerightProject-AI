@@ -67,3 +67,19 @@ class TestSettingsBootstrap:
         with mock.patch.dict(os.environ, env, clear=True):
             settings = Settings()
             assert settings.EMBEDDING_DIMENSIONS == 1024
+
+    def test_log_level_default_is_info(self):
+        """LOG_LEVEL should default to INFO when not set in environment."""
+        env = {**self.REQUIRED_ENV}
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = Settings()
+            assert settings.LOG_LEVEL == "INFO"
+
+    def test_docs_settings_default_to_disabled(self):
+        """ENABLE_DOCS, DOCS_USERNAME, DOCS_PASSWORD should default to disabled/None."""
+        env = {**self.REQUIRED_ENV}
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = Settings()
+            assert settings.ENABLE_DOCS is False
+            assert settings.DOCS_USERNAME is None
+            assert settings.DOCS_PASSWORD is None

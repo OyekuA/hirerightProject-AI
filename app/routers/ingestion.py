@@ -7,7 +7,7 @@ from typing import Optional
 import structlog
 from pydantic import ValidationError
 
-from app.utils.ingestion import validate_ingest_url, fetch_and_parse_cv, truncate_to_prompt_cap
+from app.utils.ingestion import validate_ingest_url, validate_callback_url, fetch_and_parse_cv, truncate_to_prompt_cap
 from app.utils import parse_llm_json
 from app.prompts import CV_AUTOFILL_PROMPT_TEMPLATE
 from app.services.ingestion_service import run_candidate_ingestion, run_job_ingestion
@@ -29,6 +29,8 @@ from app.clients.qdrant import QdrantClient
 from app.clients.llm import LLMClient
 from app.clients.cache import CacheBackend
 from app.routers._rate_limit_keys import candidate_id_key, job_id_key
+
+logger = structlog.get_logger()
 
 router = APIRouter(tags=["Ingestion"])
 
@@ -61,8 +63,8 @@ async def ingest_candidate(
 ):
     structlog.contextvars.bind_contextvars(entity_id=req.candidate_id)
     try:
-        validate_ingest_url(str(req.cv_url))
-        validate_ingest_url(str(req.callback_url))
+        await asyncio.to_thread(validate_ingest_url, str(req.cv_url))
+        await asyncio.to_thread(validate_callback_url, str(req.callback_url))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -76,6 +78,7 @@ async def ingest_candidate(
         },
     )
 
+    correlation_id = request.state.correlation_id
     background_tasks.add_task(
         run_candidate_ingestion,
         candidate_id=req.candidate_id,
@@ -88,6 +91,7 @@ async def ingest_candidate(
         store=store,
         callback_client=callback_client,
         ingest_queue=ingest_queue,
+        correlation_id=correlation_id,
     )
 
     return JSONResponse(
@@ -112,7 +116,7 @@ async def ingest_job(
 ):
     structlog.contextvars.bind_contextvars(entity_id=req.job_id)
     try:
-        validate_ingest_url(str(req.callback_url))
+        await asyncio.to_thread(validate_callback_url, str(req.callback_url))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -126,6 +130,7 @@ async def ingest_job(
         },
     )
 
+    correlation_id = request.state.correlation_id
     background_tasks.add_task(
         run_job_ingestion,
         job_id=req.job_id,
@@ -138,6 +143,7 @@ async def ingest_job(
         store=store,
         callback_client=callback_client,
         ingest_queue=ingest_queue,
+        correlation_id=correlation_id,
     )
 
     return JSONResponse(
@@ -214,7 +220,7 @@ async def parse_cv(
 ):
     structlog.contextvars.bind_contextvars(entity_id="cv-parse")
     try:
-        validate_ingest_url(str(req.cv_url))
+        await asyncio.to_thread(validate_ingest_url, str(req.cv_url))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -230,7 +236,6 @@ async def parse_cv(
     try:
         extracted = parse_llm_json(generated)
     except json.JSONDecodeError:
-        logger = structlog.get_logger()
         payload_hash = hashlib.sha256(generated.encode()).hexdigest()[:8]
         logger.warning(
             "Failed to parse LLM JSON for CV autofill",
@@ -247,15 +252,12 @@ async def parse_cv(
                 if isinstance(item, dict):
                     cleaned.append(item)
                 else:
-                    logger = structlog.get_logger()
                     logger.warning(
                         "Discarded non-dict social_links entry",
                         entry=item,
                     )
             extracted["social_links"] = cleaned
         else:
-            # Bare URL list, string, or other non-list shape -> reset to empty
-            logger = structlog.get_logger()
             logger.warning(
                 "Discarded non-list social_links value",
                 value=raw_links,
@@ -265,7 +267,6 @@ async def parse_cv(
     try:
         return CVAutofillResponse.model_validate(extracted)
     except ValidationError:
-        logger = structlog.get_logger()
         extracted_str = json.dumps(extracted) if isinstance(extracted, (dict, list)) else str(extracted)
         payload_hash = hashlib.sha256(extracted_str.encode()).hexdigest()[:8]
         logger.warning(

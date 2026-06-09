@@ -1,9 +1,3 @@
-"""Durable store for ingestion job status.
-
-Each ingestion job is persisted as a JSON file in a configurable directory.
-Thread‑safe via a global lock.
-"""
-
 import json
 import threading
 import uuid
@@ -22,7 +16,6 @@ Status = Literal["pending", "running", "success", "failed"]
 
 @dataclass
 class IngestionRecord:
-    """Immutable representation of an ingestion job's status."""
     event_id: str
     entity_type: EntityType
     entity_id: int
@@ -45,13 +38,31 @@ class IngestionRecord:
 
 
 class IngestionStatusStore:
-    """Thread‑safe file‑based store for ingestion status records."""
 
     def __init__(self, store_path: str):
         self._store_path = Path(store_path)
         self._store_path.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._entity_index: dict[tuple[str, int], tuple[str, str]] = {}
+        self._build_entity_index()
         _logger.info("Ingestion status store initialized", store_path=self._store_path)
+
+    def _build_entity_index(self) -> None:
+        for p in self._store_path.glob("*.json"):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                entity_type = data.get("entity_type")
+                entity_id = data.get("entity_id")
+                event_id = data.get("event_id")
+                created_at = data.get("created_at", "")
+                if entity_type is not None and entity_id is not None and event_id is not None:
+                    key = (entity_type, entity_id)
+                    existing = self._entity_index.get(key)
+                    if existing is None or created_at > existing[1]:
+                        self._entity_index[key] = (event_id, created_at)
+            except (json.JSONDecodeError, KeyError, IOError) as e:
+                _logger.warning("Skipping corrupt status file during index build", file_path=str(p), error=str(e))
 
     def _path_for(self, event_id: str) -> Path:
         return self._store_path / f"{event_id}.json"
@@ -63,7 +74,6 @@ class IngestionStatusStore:
         callback_url: str,
         payload: Optional[dict] = None,
     ) -> IngestionRecord:
-        """Create a new pending record and persist it."""
         event_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         record = IngestionRecord(
@@ -83,12 +93,12 @@ class IngestionStatusStore:
         with self._lock:
             with open(self._path_for(event_id), "w", encoding="utf-8") as f:
                 json.dump(record.to_dict(), f, ensure_ascii=False, indent=2)
+            self._entity_index[(entity_type, entity_id)] = (event_id, now)
 
         _logger.debug("Created ingestion record", event_id=event_id, entity_type=entity_type, entity_id=entity_id)
         return record
 
     def update(self, event_id: str, **kwargs) -> None:
-        """Update specific fields of an existing record."""
         with self._lock:
             path = self._path_for(event_id)
             if not path.exists():
@@ -106,7 +116,6 @@ class IngestionStatusStore:
         _logger.debug("Updated ingestion record", event_id=event_id)
 
     def get_by_event_id(self, event_id: str) -> Optional[IngestionRecord]:
-        """Retrieve a record by its event_id."""
         path = self._path_for(event_id)
         with self._lock:
             if not path.exists():
@@ -120,7 +129,14 @@ class IngestionStatusStore:
         entity_type: EntityType,
         entity_id: int,
     ) -> Optional[IngestionRecord]:
-        """Find the most recent record for a given entity."""
+        with self._lock:
+            key = (entity_type, entity_id)
+            indexed = self._entity_index.get(key)
+
+        if indexed is not None:
+            event_id = indexed[0]
+            return self.get_by_event_id(event_id)
+
         with self._lock:
             candidates = []
             for p in self._store_path.glob("*.json"):
@@ -135,10 +151,12 @@ class IngestionStatusStore:
 
         if not candidates:
             return None
-        return max(candidates, key=lambda r: r.created_at)
+        best = max(candidates, key=lambda r: r.created_at)
+        with self._lock:
+            self._entity_index[key] = (best.event_id, best.created_at)
+        return best
 
     def get_all_incomplete(self) -> List[IngestionRecord]:
-        """Return all records with status 'pending' or 'running'."""
         with self._lock:
             incomplete = []
             for p in self._store_path.glob("*.json"):

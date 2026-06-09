@@ -1,9 +1,3 @@
-"""Scoring service for calculating fit scores between candidates and jobs.
-
-This module provides the ScoringService class that orchestrates LLM calls,
-Qdrant lookups, and caching to produce a detailed fit score.
-"""
-
 import json
 import structlog
 
@@ -20,7 +14,6 @@ logger = structlog.get_logger()
 
 
 class ScoringService:
-    """Service that encapsulates LLM‑based fit‑score calculation."""
 
     def __init__(
         self,
@@ -28,16 +21,44 @@ class ScoringService:
         qdrant: QdrantClient,
         cache: CacheBackend,
     ):
-        """Initialize the scoring service.
-
-        Args:
-            llm: A configured LLMClient instance.
-            qdrant: A QdrantClient instance.
-            cache: A CacheBackend instance.
-        """
         self.llm = llm
         self.qdrant = qdrant
         self.cache = cache
+
+    def _run_scoring(self, prompt: str) -> dict:
+        generated = self.llm.generate(prompt, temperature=0)
+        result = parse_llm_json(generated)
+
+        if not isinstance(result, dict):
+            raise LLMUnavailableError("LLM returned a non‑dict payload")
+
+        required_top = {"overall_score_percentage", "category_breakdown", "skill_gap_analysis"}
+        if not all(k in result for k in required_top):
+            raise LLMUnavailableError("LLM response missing required top‑level keys")
+
+        category_keys = {"role_match", "experience", "location", "employment_type"}
+        cat_breakdown = result.get("category_breakdown")
+        if not isinstance(cat_breakdown, dict) or not all(
+            k in cat_breakdown for k in category_keys
+        ):
+            raise LLMUnavailableError("category_breakdown missing required sub‑keys")
+
+        for key in category_keys:
+            sub = cat_breakdown[key]
+            if not isinstance(sub, dict) or "status" not in sub or "short_reason" not in sub:
+                raise LLMUnavailableError(f"Category {key} is missing required fields")
+            if sub["status"] not in ("pass", "warning", "fail"):
+                raise LLMUnavailableError(f"Invalid status '{sub['status']}' in category {key}")
+
+        try:
+            overall = int(result["overall_score_percentage"])
+        except (TypeError, ValueError):
+            raise LLMUnavailableError("overall_score_percentage must be an integer")
+        if not (0 <= overall <= 100):
+            raise LLMUnavailableError("overall_score_percentage out of range 0‑100")
+        result["overall_score_percentage"] = overall
+
+        return result
 
     def calculate_fit(
         self,
@@ -47,26 +68,6 @@ class ScoringService:
         job_version: int,
         force_refresh: bool = False,
     ) -> dict:
-        """Calculate a detailed fit score between a candidate and a job.
-
-        Args:
-            candidate_id: Unique identifier of the candidate in the vector store.
-            candidate_version: Version of the candidate profile.
-            job_id: Unique identifier of the job in the vector store.
-            job_version: Version of the job profile.
-            force_refresh: If True, bypass the cache and recompute the score.
-
-        Returns:
-            A dict with the following keys:
-                - overall_score_percentage (int)
-                - category_breakdown (dict with four sub‑keys)
-                - skill_gap_analysis (str)
-
-        Raises:
-            ValueError: If the candidate or job is not found in the vector store.
-            LLMUnavailableError: If the LLM circuit breaker is open or the call fails,
-                or if the response is malformed.
-        """
         cache_key = f"{candidate_id}:{candidate_version}:{job_id}:{job_version}"
         logger.info(
             "Calculating fit score",
@@ -82,31 +83,7 @@ class ScoringService:
             cached = self.cache.get(cache_key)
             if cached is not None:
                 logger.info("Cache hit", cache_key=cache_key)
-                candidate_payload = self.qdrant.get(CANDIDATES_COLLECTION, candidate_id)
-                job_payload = self.qdrant.get(JOBS_COLLECTION, job_id)
-                if candidate_payload and job_payload:
-                    cached_candidate_version = candidate_payload.get("candidate_version", 1)
-                    cached_job_version = job_payload.get("job_version", 1)
-                    if cached_candidate_version == candidate_version and cached_job_version == job_version:
-                        return cached
-                    else:
-                        logger.warning(
-                            "Stale cache entry due to version mismatch, deleting",
-                            cache_key=cache_key,
-                            cached_candidate_version=cached_candidate_version,
-                            expected_candidate_version=candidate_version,
-                            cached_job_version=cached_job_version,
-                            expected_job_version=job_version,
-                        )
-                        self.cache.delete(cache_key)
-                else:
-                    logger.warning(
-                        "Stale cache entry for deleted entity, deleting",
-                        cache_key=cache_key,
-                        candidate_exists=bool(candidate_payload),
-                        job_exists=bool(job_payload),
-                    )
-                    self.cache.delete(cache_key)
+                return cached
 
         logger.info("Cache miss or forced refresh", cache_key=cache_key)
 
@@ -158,92 +135,7 @@ class ScoringService:
         )
 
         prompt = truncate_to_prompt_cap(prompt)
-        generated = self.llm.generate(prompt)
-
-        try:
-            result = parse_llm_json(generated)
-        except json.JSONDecodeError as e:
-            logger.error(
-                "LLM returned non‑JSON response",
-                error=str(e),
-                raw=generated[:500],
-            )
-            raise LLMUnavailableError(
-                f"LLM returned malformed fit-score JSON: {e}"
-            )
-
-        if not isinstance(result, dict):
-            logger.error(
-                "LLM returned a non‑dict JSON payload",
-                payload_type=type(result).__name__,
-                raw=generated[:500],
-            )
-            raise LLMUnavailableError(
-                "LLM returned malformed fit‑score JSON: expected a dict"
-            )
-
-        required_top = {"overall_score_percentage", "category_breakdown", "skill_gap_analysis"}
-        if not all(k in result for k in required_top):
-            logger.error(
-                "LLM response missing required top‑level keys",
-                response_keys=list(result.keys()),
-                required_keys=list(required_top),
-            )
-            raise LLMUnavailableError(
-                "LLM response missing required top‑level keys"
-            )
-
-        category_keys = {"role_match", "experience", "location", "employment_type"}
-        cat_breakdown = result.get("category_breakdown")
-        if not isinstance(cat_breakdown, dict) or not all(
-            k in cat_breakdown for k in category_keys
-        ):
-            logger.error(
-                "LLM category_breakdown missing or malformed",
-                category_breakdown=cat_breakdown,
-            )
-            raise LLMUnavailableError(
-                "LLM category_breakdown missing required sub‑keys"
-            )
-
-        for key in category_keys:
-            sub = cat_breakdown[key]
-            if not isinstance(sub, dict) or "status" not in sub or "short_reason" not in sub:
-                logger.error(
-                    f"Category {key} is missing 'status' or 'short_reason'",
-                    sub=sub,
-                )
-                raise LLMUnavailableError(
-                    f"Category {key} is missing required fields"
-                )
-            if sub["status"] not in ("pass", "warning", "fail"):
-                logger.error(
-                    f"Unexpected status value in category {key}",
-                    status=sub["status"],
-                )
-                raise LLMUnavailableError(
-                    f"LLM returned invalid status '{sub['status']}' in category {key}"
-                )
-
-        try:
-            overall = int(result["overall_score_percentage"])
-        except (TypeError, ValueError):
-            logger.error(
-                "LLM returned non-integer overall_score_percentage",
-                value=result["overall_score_percentage"],
-            )
-            raise LLMUnavailableError(
-                "overall_score_percentage must be an integer between 0 and 100"
-            )
-        if not (0 <= overall <= 100):
-            logger.error(
-                "LLM returned out-of-range overall_score_percentage",
-                value=overall,
-            )
-            raise LLMUnavailableError(
-                "overall_score_percentage must be an integer between 0 and 100"
-            )
-        result["overall_score_percentage"] = overall
+        result = self._run_scoring(prompt)
 
         settings = get_settings()
         self.cache.set(cache_key, result, ttl=settings.CACHE_TTL_SECONDS)

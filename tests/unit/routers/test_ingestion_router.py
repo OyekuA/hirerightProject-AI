@@ -32,10 +32,12 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
 
     # ── candidate ingestion ────────────────────────────────────────────
 
+    @patch("app.routers.ingestion.validate_callback_url")
     @patch("app.routers.ingestion.validate_ingest_url")
     async def test_candidate_ingestion_passes_llm_keyword(
         self,
         mock_validate: MagicMock,
+        mock_validate_cb: MagicMock,
     ):
         """``add_task`` for candidate endpoint must use ``llm=llm``."""
         from app.routers.ingestion import ingest_candidate
@@ -127,10 +129,12 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
             },
         )
 
+    @patch("app.routers.ingestion.validate_callback_url")
     @patch("app.routers.ingestion.validate_ingest_url")
     async def test_candidate_ingestion_rejects_gemini_keyword(
         self,
         mock_validate: MagicMock,
+        mock_validate_cb: MagicMock,
     ):
         """Guard: if ``gemini`` somehow reappears, this test must catch it."""
         from app.routers.ingestion import ingest_candidate
@@ -202,10 +206,10 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
 
     # ── job ingestion ──────────────────────────────────────────────────
 
-    @patch("app.routers.ingestion.validate_ingest_url")
+    @patch("app.routers.ingestion.validate_callback_url")
     async def test_job_ingestion_passes_llm_keyword(
         self,
-        mock_validate: MagicMock,
+        mock_validate_cb: MagicMock,
     ):
         """``add_task`` for job endpoint must use ``llm=llm``."""
         from app.routers.ingestion import ingest_job
@@ -301,10 +305,10 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
             },
         )
 
-    @patch("app.routers.ingestion.validate_ingest_url")
+    @patch("app.routers.ingestion.validate_callback_url")
     async def test_job_ingestion_rejects_gemini_keyword(
         self,
-        mock_validate: MagicMock,
+        mock_validate_cb: MagicMock,
     ):
         """Guard: if ``gemini`` somehow reappears, this test must catch it."""
         from app.routers.ingestion import ingest_job

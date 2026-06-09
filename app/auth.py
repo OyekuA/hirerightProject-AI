@@ -1,13 +1,9 @@
-"""
-Authentication dependencies for FastAPI routes.
-"""
 import hmac
 from typing import Optional
 from fastapi import Depends, HTTPException, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, APIKeyHeader
+from fastapi.security import APIKeyHeader
 from app.config import get_settings, Settings
 
-security = HTTPBearer(auto_error=False)
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
@@ -16,11 +12,6 @@ async def verify_api_key(
     api_key: Optional[str] = Depends(api_key_header),
     settings: Settings = Depends(get_settings),
 ) -> None:
-    """
-    Verify the X-API-Key header against the configured API_KEY.
-
-    Raises HTTP 401 if the header is missing or does not match.
-    """
     provided_key = api_key
     expected_key = settings.API_KEY
 

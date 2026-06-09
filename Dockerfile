@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
 
 RUN mkdir -p /data/ingest_status && chown -R appuser:appuser /data/ingest_status
 
-COPY app/ ./app/
+COPY --from=builder /app/app ./app/
 
 ENV PATH="/app/.venv/bin:$PATH"
 
