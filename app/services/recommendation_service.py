@@ -175,7 +175,7 @@ class RecommendationService:
             version_field = "candidate_version"
 
         target_payload, profile_vec = self.qdrant.get_with_vector(target_collection, target_id)
-        if not target_payload:
+        if target_payload is MISSING:
             logger.warning(
                 "Target profile not found in vector store",
                 target_id=target_id,
