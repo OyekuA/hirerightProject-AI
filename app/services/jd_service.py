@@ -3,7 +3,7 @@ import structlog
 from typing import Optional
 
 from app.clients.llm import LLMClient, LLMUnavailableError
-from app.clients.qdrant import QdrantClient
+from app.clients.qdrant import QdrantClient, MISSING
 from app.clients.dependencies import JOBS_COLLECTION
 from app.utils import parse_llm_json
 from app.utils.ingestion import truncate_to_prompt_cap
@@ -44,7 +44,7 @@ class JDService:
                     "enrichment cannot be performed"
                 )
             payload = self.qdrant.get(JOBS_COLLECTION, job_id)
-            if payload is None:
+            if payload is MISSING or payload is None:
                 raise ValueError(f"Job with ID {job_id} not found in Qdrant")
             resolved_title = payload.get("title", "[Job Title]")
             resolved_location = payload.get("location", "[Location]")
@@ -134,36 +134,41 @@ class JDService:
 
         prompt = JD_ANALYSIS_PROMPT_TEMPLATE.format(jd_text=jd_text)
 
-        generated = self.llm.generate(prompt)
+        def _attempt(temp: float) -> list[str]:
+            rf = LLMClient.get_response_format(self.llm._model, "array")
+            generated = self.llm.generate(prompt, temperature=temp, response_format=rf)
+            critiques = parse_llm_json(generated)
+
+            if not isinstance(critiques, list):
+                logger.error(
+                    "LLM response is not a list",
+                    response_type=type(critiques),
+                )
+                raise LLMUnavailableError("LLM response is not a list")
+
+            for i, item in enumerate(critiques):
+                if not isinstance(item, str):
+                    logger.error(
+                        f"Item {i} is not a string",
+                        item=item,
+                    )
+                    raise LLMUnavailableError(f"Item {i} is not a string")
+            return critiques
 
         try:
-            critiques = parse_llm_json(generated)
-        except json.JSONDecodeError as e:
-            logger.error(
-                "LLM returned non‑JSON response",
+            return _attempt(temp=0)
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(
+                "First JD analysis parse failed, attempting repair retry",
                 error=str(e),
             )
-            raise LLMUnavailableError(
-                f"LLM returned malformed critique JSON: {e}"
-            )
-
-        if not isinstance(critiques, list):
-            logger.error(
-                "LLM response is not a list",
-                response_type=type(critiques),
-            )
-            raise LLMUnavailableError("LLM response is not a list")
-
-        for i, item in enumerate(critiques):
-            if not isinstance(item, str):
+            try:
+                return _attempt(temp=0.3)
+            except (json.JSONDecodeError, ValueError) as e2:
                 logger.error(
-                    f"Item {i} is not a string",
-                    item=item,
+                    "Repair retry also failed for JD analysis",
+                    error=str(e2),
                 )
-                raise LLMUnavailableError(f"Item {i} is not a string")
-
-        logger.info(
-            "JD analysis completed",
-            num_critiques=len(critiques),
-        )
-        return critiques
+                raise LLMUnavailableError(
+                    f"LLM returned malformed critique JSON: {e2}"
+                )

@@ -22,9 +22,11 @@ from app.clients.dependencies import (
     get_ingest_queue,
     get_rate_limiter,
     get_cache_backend,
+    get_interview_session_store,
     CANDIDATES_COLLECTION,
     JOBS_COLLECTION,
 )
+from app.services.interview_session_store import InterviewSessionStore
 from app.clients.qdrant import QdrantClient
 from app.clients.llm import LLMClient
 from app.clients.cache import CacheBackend
@@ -158,6 +160,7 @@ async def delete_candidate(
     candidate_id: int,
     qdrant: QdrantClient = Depends(get_qdrant_client),
     cache: CacheBackend = Depends(get_cache_backend),
+    interview_store: InterviewSessionStore = Depends(get_interview_session_store),
 ):
     structlog.contextvars.bind_contextvars(entity_id=candidate_id)
     existing = qdrant.get(CANDIDATES_COLLECTION, candidate_id)
@@ -165,6 +168,9 @@ async def delete_candidate(
         raise HTTPException(status_code=404, detail="Candidate not found")
     qdrant.delete(CANDIDATES_COLLECTION, candidate_id)
     cache.delete_by_prefix(f"{candidate_id}:")
+    sessions = interview_store.get_all_by_candidate_id(candidate_id)
+    for session in sessions:
+        interview_store.delete(session.session_id)
     return {"deleted": True}
 
 

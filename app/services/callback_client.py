@@ -46,6 +46,7 @@ class CallbackClient:
         entity_id: int,
         status: str,
         error: Optional[str] = None,
+        extra_payload: Optional[dict] = None,
     ) -> bool:
         base_payload = {
             "event_id": event_id,
@@ -54,6 +55,8 @@ class CallbackClient:
             "status": status,
             "error": error,
         }
+        if extra_payload:
+            base_payload = {**base_payload, **extra_payload}
 
         for attempt in range(self.max_attempts):
             try:

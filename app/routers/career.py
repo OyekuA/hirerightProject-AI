@@ -3,7 +3,8 @@ from pydantic import ValidationError
 import structlog
 import asyncio
 
-from app.clients.dependencies import get_qdrant_client, get_llm_client, get_rate_limiter
+from app.clients.cache import CacheBackend
+from app.clients.dependencies import get_qdrant_client, get_llm_client, get_rate_limiter, get_cache_backend
 from app.clients.llm import LLMClient, LLMUnavailableError
 from app.clients.qdrant import QdrantClient
 from app.services.career_service import CareerPathService, MalformedLLMResponseError
@@ -32,9 +33,10 @@ async def analyze_career_paths(
     req: AnalyzeCareerPathsRequest,
     qdrant: QdrantClient = Depends(get_qdrant_client),
     llm: LLMClient = Depends(get_llm_client),
+    cache: CacheBackend = Depends(get_cache_backend),
 ):
     structlog.contextvars.bind_contextvars(entity_id=req.candidate_id)
-    service = CareerPathService(llm=llm, qdrant=qdrant)
+    service = CareerPathService(llm=llm, qdrant=qdrant, cache=cache)
     try:
         result = await asyncio.to_thread(service.analyze_career_paths, candidate_id=req.candidate_id)
         paths = []

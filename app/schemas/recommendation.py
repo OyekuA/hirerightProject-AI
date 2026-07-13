@@ -1,5 +1,6 @@
-from pydantic import BaseModel, Field, field_validator
 from typing import Literal, Optional
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class RecommendResult(BaseModel):
@@ -10,7 +11,6 @@ class RecommendResult(BaseModel):
 
 class RecentClick(BaseModel):
     id: int
-    dwell_time_seconds: int = 0
 
 
 class BehavioralSignals(BaseModel):
@@ -51,6 +51,7 @@ class PoolRankRequest(BaseModel):
 class PoolRankResult(BaseModel):
     candidate_id: int
     fit_score: int = Field(..., ge=0, le=100)
+    status: Literal["scored", "failed", "timeout"] = "scored"
 
 
 class PoolRankResponse(BaseModel):

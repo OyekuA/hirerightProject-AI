@@ -1,17 +1,21 @@
-"""Unit tests for ingestion service payload composition."""
+
 
 import json
 import unittest
 from unittest.mock import MagicMock, patch, ANY, AsyncMock
 
-from app.services.ingestion_service import run_candidate_ingestion, run_job_ingestion
-
+from app.services.ingestion_service import (
+    run_candidate_ingestion,
+    run_job_ingestion,
+    extract_candidate_entities,
+    extract_job_entities,
+)
+from app.schemas.ingestion import CandidateExtraction, JobExtraction
 
 class TestIngestionServicePayloads(unittest.IsolatedAsyncioTestCase):
-    """Verify that raw_profile_summary and raw_jd_summary are persisted in Qdrant upsert payloads."""
 
     async def test_candidate_ingestion_includes_raw_profile_summary(self):
-        """Check that candidate payload contains raw_profile_summary."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.upsert = MagicMock()
         mock_gemini = MagicMock()
@@ -22,8 +26,9 @@ class TestIngestionServicePayloads(unittest.IsolatedAsyncioTestCase):
             "industry": "Tech",
             "employment_type": "Full-time",
             "skills": ["Python", "ML"],
-            "past_roles": ["Engineer"],
-            "raw_profile_summary": "Experienced software engineer with ML background."
+            "past_roles": ["Engineer at Acme (Jan 2020 – Present)"],
+            "raw_profile_summary": "Experienced software engineer with ML background.",
+            "total_years_experience": None
         }))
         mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
         mock_store = MagicMock()
@@ -61,9 +66,10 @@ class TestIngestionServicePayloads(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["raw_profile_summary"],
                          "Experienced software engineer with ML background.")
         self.assertEqual(payload["candidate_id"], 123)
+        self.assertIn("total_years_experience", payload)
 
     async def test_job_ingestion_includes_raw_jd_summary(self):
-        """Check that job payload contains raw_jd_summary."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.upsert = MagicMock()
         mock_gemini = MagicMock()
@@ -114,12 +120,10 @@ class TestIngestionServicePayloads(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["company_name"], "ORACLE")
         self.assertEqual(payload["about"], "Nice")
 
-
 class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
-    """Test hash-based deduplication in candidate and job ingestion."""
 
     async def test_candidate_hash_match_skips_gemini_calls(self):
-        """When stored cv_hash matches new hash, Gemini not called, update_payload is called."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock()
         mock_qdrant.update_payload = MagicMock()
@@ -174,7 +178,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         mock_store.update.assert_called_with("evt_123", status="success", attempt_count=1)
 
     async def test_candidate_hash_mismatch_runs_full_pipeline(self):
-        """When stored cv_hash differs, full pipeline runs, cv_hash added to upsert payload."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock()
         mock_qdrant.update_payload = MagicMock()
@@ -233,7 +237,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["cv_hash"], new_hash)
 
     async def test_candidate_no_existing_payload_runs_full_pipeline(self):
-        """When no existing payload (first ingest), full pipeline runs, cv_hash added."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock(return_value=None)
         mock_qdrant.update_payload = MagicMock()
@@ -291,7 +295,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["cv_hash"], new_hash)
 
     async def test_job_hash_match_skips_gemini_calls(self):
-        """When stored jd_hash matches new hash, Gemini not called, update_payload is called."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock()
         mock_qdrant.update_payload = MagicMock()
@@ -348,7 +352,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         mock_store.update.assert_called_with("evt_456", status="success", attempt_count=1)
 
     async def test_job_hash_mismatch_runs_full_pipeline(self):
-        """When stored jd_hash differs, full pipeline runs, jd_hash added to upsert payload."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock()
         mock_qdrant.update_payload = MagicMock()
@@ -408,7 +412,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["about"], "Nice")
 
     async def test_job_no_existing_payload_runs_full_pipeline(self):
-        """When no existing payload (first ingest), full pipeline runs, jd_hash added."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock(return_value=None)
         mock_qdrant.update_payload = MagicMock()
@@ -467,7 +471,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["about"], "Nice")
 
     async def test_candidate_hash_differs_when_only_content_beyond_prompt_cap_changes(self):
-        """Hash should differ when raw text differs beyond truncation limit."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock(return_value=None)
         mock_qdrant.update_payload = MagicMock()
@@ -489,9 +493,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         mock_callback = MagicMock()
         mock_callback.send = AsyncMock(return_value=True)
 
-        # Raw CV text longer than prompt cap
         raw_cv_text = "A" * 1000
-        # Different raw text that truncates to same first 500 characters
         raw_cv_text2 = raw_cv_text[:500] + "EXTRA DIFFERENT CONTENT"
         import hashlib
         existing_hash = hashlib.sha256(raw_cv_text.encode()).hexdigest()
@@ -520,7 +522,6 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                 callback_client=mock_callback,
             )
 
-        # Hash mismatch should trigger full pipeline, not skip
         mock_gemini.generate.assert_called_once()
         mock_gemini.embed.assert_called_once()
         mock_qdrant.upsert.assert_called_once()
@@ -530,7 +531,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["cv_hash"], expected_hash)
 
     async def test_job_hash_differs_when_only_content_beyond_prompt_cap_changes(self):
-        """Hash should differ when raw JD text differs beyond truncation limit."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock(return_value=None)
         mock_qdrant.update_payload = MagicMock()
@@ -551,7 +552,6 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         mock_callback = MagicMock()
         mock_callback.send = AsyncMock(return_value=True)
 
-        # Raw JD text longer than prompt cap
         raw_jd_text = "B" * 1000
         raw_jd_text2 = raw_jd_text[:500] + "EXTRA DIFFERENT CONTENT"
         import hashlib
@@ -581,7 +581,6 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                 callback_client=mock_callback,
             )
 
-        # Hash mismatch should trigger full pipeline, not skip
         mock_gemini.generate.assert_called_once()
         mock_gemini.embed.assert_called_once()
         mock_qdrant.upsert.assert_called_once()
@@ -593,10 +592,9 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["about"], "Nice")
 
 class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
-    """Verify retry behavior of candidate and job ingestion."""
 
     async def test_candidate_ingestion_retries_up_to_three_times(self):
-        """Candidate ingestion should retry up to 3 times (4 total attempts) on transient failure."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock(return_value=None)
         mock_qdrant.update_payload = MagicMock()
@@ -650,7 +648,7 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_job_ingestion_retries_up_to_three_times(self):
-        """Job ingestion should retry up to 3 times (4 total attempts) on transient failure."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock(return_value=None)
         mock_qdrant.update_payload = MagicMock()
@@ -704,7 +702,7 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_candidate_ingestion_handles_malformed_extraction(self):
-        """Verify that malformed extraction (non-list skills, non-string summary) is handled gracefully."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock(return_value=None)
         mock_qdrant.upsert = MagicMock()
@@ -746,13 +744,11 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
 
         mock_qdrant.upsert.assert_called_once()
         payload = mock_qdrant.upsert.call_args[0][3]
-        # skills should be empty list (fallback)
         self.assertEqual(payload["skills"], [])
-        # raw_profile_summary should be string (default empty)
         self.assertIsInstance(payload["raw_profile_summary"], str)
 
     async def test_job_ingestion_handles_malformed_extraction(self):
-        """Verify that malformed extraction (non-list required_skills, non-string summary) is handled gracefully."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock(return_value=None)
         mock_qdrant.upsert = MagicMock()
@@ -794,16 +790,13 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
 
         mock_qdrant.upsert.assert_called_once()
         payload = mock_qdrant.upsert.call_args[0][3]
-        # required_skills should be empty list (fallback)
         self.assertEqual(payload["required_skills"], [])
-        # raw_jd_summary should be string (default empty)
         self.assertIsInstance(payload["raw_jd_summary"], str)
 
 class TestIngestionCallbackSuppression(unittest.IsolatedAsyncioTestCase):
-    """Verify that intermediate failure callbacks are suppressed during queue-managed retry flows."""
 
     async def test_candidate_suppress_callback_skips_callback_on_failure(self):
-        """When suppress_callback=True and ingestion fails, callback_client.send should not be called."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock(return_value=None)
         mock_gemini = MagicMock()
@@ -837,11 +830,10 @@ class TestIngestionCallbackSuppression(unittest.IsolatedAsyncioTestCase):
                 suppress_callback=True,
             )
 
-        # Callback should NOT have been sent when suppress_callback=True
         mock_callback.send.assert_not_called()
 
     async def test_candidate_suppress_callback_suppresses_all_callbacks(self):
-        """When suppress_callback=True, no callback is sent even on success — the caller handles it."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock(return_value=None)
         mock_qdrant.upsert = MagicMock()
@@ -881,11 +873,10 @@ class TestIngestionCallbackSuppression(unittest.IsolatedAsyncioTestCase):
                 suppress_callback=True,
             )
 
-        # No callback should be sent — the caller (process_queue_entry) handles it
         mock_callback.send.assert_not_called()
 
     async def test_candidate_enqueue_suppresses_failure_callback(self):
-        """When ingest_queue is provided and all retries fail, callback is suppressed because the record is enqueued."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock(return_value=None)
         mock_gemini = MagicMock()
@@ -926,13 +917,11 @@ class TestIngestionCallbackSuppression(unittest.IsolatedAsyncioTestCase):
                 ingest_queue=mock_queue,
             )
 
-        # Record should have been enqueued
         mock_queue.enqueue.assert_called_once()
-        # Callback should NOT have been sent (suppressed by enqueue path)
         mock_callback.send.assert_not_called()
 
     async def test_job_suppress_callback_skips_callback_on_failure(self):
-        """When suppress_callback=True and job ingestion fails, callback_client.send should not be called."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock(return_value=None)
         mock_gemini = MagicMock()
@@ -968,7 +957,7 @@ class TestIngestionCallbackSuppression(unittest.IsolatedAsyncioTestCase):
         mock_callback.send.assert_not_called()
 
     async def test_job_enqueue_suppresses_failure_callback(self):
-        """When ingest_queue is provided and all retries fail, job callback is suppressed."""
+
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock(return_value=None)
         mock_gemini = MagicMock()
@@ -1011,6 +1000,326 @@ class TestIngestionCallbackSuppression(unittest.IsolatedAsyncioTestCase):
         mock_queue.enqueue.assert_called_once()
         mock_callback.send.assert_not_called()
 
+class TestExtractionHelpers(unittest.IsolatedAsyncioTestCase):
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_extract_candidate_entities_valid(self):
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps({
+            "name": "Jane Doe",
+            "location": "Remote",
+            "experience_level": "Senior",
+            "industry": "Tech",
+            "employment_type": "Full-time",
+            "skills": ["Python", "ML"],
+            "past_roles": ["Engineer at Acme (Jan 2020 – Present)"],
+            "raw_profile_summary": "Experienced engineer.",
+        })
+
+        result = extract_candidate_entities(
+            cv_text="CV content here",
+            profile_data_json=json.dumps({"name": "Jane"}),
+            llm=mock_llm,
+        )
+        self.assertEqual(result.name, "Jane Doe")
+        self.assertEqual(result.skills, ["Python", "ML"])
+        self.assertEqual(result.raw_profile_summary, "Experienced engineer.")
+        self.assertIsNotNone(result.total_years_experience)
+
+    def test_extract_candidate_entities_fallback_on_validation_error(self):
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps({
+            "name": "Jane",
+            "skills": "not a list",  # should be list
+            "raw_profile_summary": None,
+        })
+
+        result = extract_candidate_entities(
+            cv_text="CV content",
+            profile_data_json="{}",
+            llm=mock_llm,
+        )
+        self.assertIsInstance(result, CandidateExtraction)
+        self.assertEqual(result.skills, [])
+        self.assertIsInstance(result.raw_profile_summary, str)
+
+    def test_extract_candidate_entities_raw_profile_summary_fallback(self):
+
+        generated_text = json.dumps({
+            "name": "John",
+            "location": "NYC",
+            "experience_level": "Mid",
+            "industry": "Finance",
+            "employment_type": "Full-time",
+            "skills": [],
+            "past_roles": [],
+            "raw_profile_summary": None,
+        })
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = generated_text
+
+        result = extract_candidate_entities(
+            cv_text="Some CV",
+            profile_data_json="{}",
+            llm=mock_llm,
+        )
+        self.assertEqual(result.raw_profile_summary, generated_text[:500])
+
+    def test_extract_job_entities_valid(self):
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps({
+            "title": "Software Engineer",
+            "location": "Remote",
+            "experience_level": "Senior",
+            "industry": "Tech",
+            "employment_type": "Full-time",
+            "required_skills": ["Python", "AWS"],
+            "raw_jd_summary": "Looking for an engineer.",
+        })
+
+        result = extract_job_entities(
+            jd_text="JD content",
+            metadata_json=json.dumps({"title": "Engineer"}),
+            llm=mock_llm,
+        )
+        self.assertEqual(result.title, "Software Engineer")
+        self.assertEqual(result.required_skills, ["Python", "AWS"])
+        self.assertEqual(result.raw_jd_summary, "Looking for an engineer.")
+
+    def test_extract_job_entities_fallback_on_validation_error(self):
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps({
+            "title": "Engineer",
+            "required_skills": "not a list",  # wrong type
+            "raw_jd_summary": None,
+        })
+
+        result = extract_job_entities(
+            jd_text="JD content",
+            metadata_json="{}",
+            llm=mock_llm,
+        )
+        self.assertIsInstance(result, JobExtraction)
+        self.assertEqual(result.required_skills, [])
+        self.assertIsInstance(result.raw_jd_summary, str)
+
+    def test_extract_job_entities_raw_jd_summary_fallback(self):
+
+        generated_text = json.dumps({
+            "title": "Engineer",
+            "location": "Remote",
+            "experience_level": "Senior",
+            "industry": "Tech",
+            "employment_type": "Full-time",
+            "required_skills": ["Python"],
+            "raw_jd_summary": None,
+        })
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = generated_text
+
+        result = extract_job_entities(
+            jd_text="Some JD",
+            metadata_json="{}",
+            llm=mock_llm,
+        )
+        self.assertEqual(result.raw_jd_summary, generated_text[:500])
+
+class TestYearsOfExperienceComputation(unittest.TestCase):
+    """Test the _compute_total_years_experience helper."""
+
+    def test_multiple_roles_non_overlapping(self):
+        from app.services.ingestion_service import _compute_total_years_experience
+        roles = [
+            "Junior Dev at Acme (Jan 2015 – Dec 2017)",
+            "Senior Dev at Beta (Jan 2018 – Dec 2020)",
+            "Lead at Gamma (Jan 2021 – Present)",
+        ]
+        result = _compute_total_years_experience(roles)
+        self.assertIsNotNone(result)
+        self.assertGreater(result, 0)
+
+    def test_overlapping_roles_merged(self):
+        from app.services.ingestion_service import _compute_total_years_experience
+        roles = [
+            "Junior at Acme (Jan 2015 – Dec 2019)",
+            "Senior at Acme (Jan 2018 – Dec 2022)",  # overlaps
+        ]
+        result = _compute_total_years_experience(roles)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result, 7.0, delta=1)
+
+    def test_present_uses_current_year(self):
+        from app.services.ingestion_service import _compute_total_years_experience
+        roles = [
+            "Engineer at Co (Jan 2020 – Present)",
+        ]
+        result = _compute_total_years_experience(roles)
+        self.assertIsNotNone(result)
+        self.assertGreater(result, 0)
+
+    def test_no_dates_returns_none(self):
+        from app.services.ingestion_service import _compute_total_years_experience
+        roles = ["Engineer at Acme", "Manager at Beta"]
+        result = _compute_total_years_experience(roles)
+        self.assertIsNone(result)
+
+    def test_mixed_dates_and_no_dates(self):
+        from app.services.ingestion_service import _compute_total_years_experience
+        roles = [
+            "Engineer at Acme",  # no date
+            "Senior at Beta (Jan 2020 – Dec 2023)",
+        ]
+        result = _compute_total_years_experience(roles)
+        self.assertIsNotNone(result)
+        # Only the dated role counts: 2020-2023 = 3 years
+        self.assertAlmostEqual(result, 3.0, delta=1)
+
+    def test_various_date_formats(self):
+        from app.services.ingestion_service import _compute_total_years_experience
+        roles = [
+            "Role at A (2020 - 2022)",  # year only
+            "Role at B (Jan 2021 – Present)",  # with month
+            "Role at C (2018 to 2020)",  # 'to' separator
+            "Role at D (2019-2021)",  # hyphen separator
+        ]
+        result = _compute_total_years_experience(roles)
+        self.assertIsNotNone(result)
+        self.assertGreater(result, 0)
+
+    def test_no_fabricated_number_when_no_date(self):
+        from app.services.ingestion_service import _compute_total_years_experience
+        roles = []  # empty list
+        result = _compute_total_years_experience(roles)
+        self.assertIsNone(result)
+
+    def test_total_years_persisted_in_payload(self):
+        from app.services.ingestion_service import (
+            _compute_total_years_experience,
+            extract_candidate_entities,
+        )
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps({
+            "name": "Jane",
+            "location": "Remote",
+            "experience_level": "Senior",
+            "industry": "Tech",
+            "employment_type": "Full-time",
+            "skills": ["Python"],
+            "past_roles": ["Engineer at Acme (Jan 2020 – Dec 2023)"],
+            "raw_profile_summary": "Engineer.",
+        })
+        result = extract_candidate_entities(
+            cv_text="CV",
+            profile_data_json="{}",
+            llm=mock_llm,
+        )
+        self.assertIsNotNone(result.total_years_experience)
+        self.assertAlmostEqual(result.total_years_experience, 3.0, delta=1)
+
+
+class TestCandidateDataSource(unittest.IsolatedAsyncioTestCase):
+
+    async def test_candidate_ingestion_includes_data_source_in_upsert(self):
+
+        mock_qdrant = MagicMock()
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "name": "John Doe",
+            "location": "Remote",
+            "experience_level": "Senior",
+            "industry": "Tech",
+            "employment_type": "Full-time",
+            "skills": ["Python", "ML"],
+            "past_roles": ["Engineer"],
+            "raw_profile_summary": "Experienced software engineer with ML background."
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = AsyncMock(return_value=True)
+
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_fetch.return_value = "CV text"
+            mock_truncate.side_effect = lambda x: x
+            await run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={
+                    "name": "John",
+                    "location": "Remote",
+                    "experience_level": "Senior",
+                    "industry": "Tech",
+                    "employment_type": "Full-time",
+                    "candidate_version": 1,
+                    "data_source": "indeed",
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_123",
+                qdrant=mock_qdrant,
+                llm=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        mock_qdrant.upsert.assert_called_once()
+        payload = mock_qdrant.upsert.call_args[0][3]
+        self.assertIn("data_source", payload)
+        self.assertEqual(payload["data_source"], "indeed")
+        self.assertIn("raw_profile_summary", payload)
+
+    async def test_candidate_hash_match_includes_data_source_in_update_payload(self):
+
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock()
+        mock_qdrant.update_payload = MagicMock()
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock()
+        mock_gemini.embed = MagicMock()
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = AsyncMock(return_value=True)
+
+        cv_text = "CV text"
+        import hashlib
+        new_hash = hashlib.sha256(cv_text.encode()).hexdigest()
+        mock_qdrant.get.return_value = {"cv_hash": new_hash}
+
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_fetch.return_value = cv_text
+            mock_truncate.side_effect = lambda x: x
+            await run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={
+                    "name": "John",
+                    "location": "Remote",
+                    "experience_level": "Senior",
+                    "industry": "Tech",
+                    "employment_type": "Full-time",
+                    "candidate_version": 2,
+                    "data_source": "linkedin",
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_123",
+                qdrant=mock_qdrant,
+                llm=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        mock_qdrant.update_payload.assert_called_once()
+        payload_fields = mock_qdrant.update_payload.call_args[0][2]
+        self.assertIn("data_source", payload_fields)
+        self.assertEqual(payload_fields["data_source"], "linkedin")
+        self.assertEqual(payload_fields["candidate_version"], 2)

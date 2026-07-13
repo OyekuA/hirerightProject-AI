@@ -1,14 +1,4 @@
-"""Unit tests for ingestion router background-task wiring and ``/cv-parse`` endpoint.
 
-Verifies that ``background_tasks.add_task()`` is called with the correct
-keyword argument (``llm=llm``) matching the refactored service signatures,
-so that a ``gemini``→``llm`` rename regression is caught if the parameter
-name changes again.
-
-Also covers the ``/cv-parse`` endpoint contract: HTTPS-only validation,
-fetch/parse failure mapping, malformed/schema-invalid LLM JSON fallback,
-and ``LLMUnavailableError`` propagation as 503.
-"""
 
 import json
 from unittest.mock import MagicMock, patch
@@ -19,18 +9,14 @@ from fastapi.testclient import TestClient
 
 from app.clients.llm import LLMUnavailableError
 
-
 class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
-    """Ensure ``background_tasks.add_task`` receives ``llm``, not ``gemini``."""
 
     def _make_mock_req(self, **attrs):
-        """Build a generic mock request-like object."""
+
         obj = MagicMock()
         for k, v in attrs.items():
             setattr(obj, k, v)
         return obj
-
-    # ── candidate ingestion ────────────────────────────────────────────
 
     @patch("app.routers.ingestion.validate_callback_url")
     @patch("app.routers.ingestion.validate_ingest_url")
@@ -39,10 +25,9 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
         mock_validate: MagicMock,
         mock_validate_cb: MagicMock,
     ):
-        """``add_task`` for candidate endpoint must use ``llm=llm``."""
+
         from app.routers.ingestion import ingest_candidate
 
-        # -- fixtures ---------------------------------------------------
         mock_profile = MagicMock()
         mock_profile.model_dump.return_value = {
             "name": "Jane",
@@ -69,7 +54,6 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
         mock_callback = MagicMock()
         mock_request = MagicMock(spec=Request)
 
-        # -- exercise ---------------------------------------------------
         await ingest_candidate(
             request=mock_request,
             req=mock_req,
@@ -81,7 +65,6 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
             ingest_queue=MagicMock(),
         )
 
-        # -- verify keyword wiring --------------------------------------
         mock_bt.add_task.assert_called_once()
         call_kwargs = mock_bt.add_task.call_args.kwargs
 
@@ -106,12 +89,10 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
             "Expected 'ingest_queue' keyword in background_tasks.add_task() call",
         )
 
-        # -- verify other key args are present --------------------------
         self.assertEqual(call_kwargs["candidate_id"], 42)
         self.assertEqual(call_kwargs["cv_url"], "https://example.com/cv.pdf")
         self.assertEqual(call_kwargs["event_id"], "evt_candidate_001")
 
-        # -- verify store.create payload contract -----------------------
         mock_store.create.assert_called_once_with(
             entity_type="candidate",
             entity_id=42,
@@ -136,7 +117,7 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
         mock_validate: MagicMock,
         mock_validate_cb: MagicMock,
     ):
-        """Guard: if ``gemini`` somehow reappears, this test must catch it."""
+
         from app.routers.ingestion import ingest_candidate
 
         mock_profile = MagicMock()
@@ -178,7 +159,6 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
         mock_bt.add_task.assert_called_once()
         call_kwargs = mock_bt.add_task.call_args.kwargs
 
-        # Explicit negative assertion
         self.assertNotIn(
             "gemini",
             call_kwargs,
@@ -186,7 +166,6 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
         )
         self.assertIn("llm", call_kwargs)
 
-        # -- verify store.create payload contract -----------------------
         mock_store.create.assert_called_once_with(
             entity_type="candidate",
             entity_id=99,
@@ -204,17 +183,14 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
             },
         )
 
-    # ── job ingestion ──────────────────────────────────────────────────
-
     @patch("app.routers.ingestion.validate_callback_url")
     async def test_job_ingestion_passes_llm_keyword(
         self,
         mock_validate_cb: MagicMock,
     ):
-        """``add_task`` for job endpoint must use ``llm=llm``."""
+
         from app.routers.ingestion import ingest_job
 
-        # -- fixtures ---------------------------------------------------
         mock_metadata = MagicMock()
         mock_metadata.model_dump.return_value = {
             "title": "Engineer",
@@ -243,7 +219,6 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
         mock_callback = MagicMock()
         mock_request = MagicMock(spec=Request)
 
-        # -- exercise ---------------------------------------------------
         await ingest_job(
             request=mock_request,
             req=mock_req,
@@ -255,7 +230,6 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
             ingest_queue=MagicMock(),
         )
 
-        # -- verify keyword wiring --------------------------------------
         mock_bt.add_task.assert_called_once()
         call_kwargs = mock_bt.add_task.call_args.kwargs
 
@@ -280,12 +254,10 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
             "Expected 'ingest_queue' keyword in background_tasks.add_task() call",
         )
 
-        # -- verify other key args are present --------------------------
         self.assertEqual(call_kwargs["job_id"], 77)
         self.assertEqual(call_kwargs["jd_text"], "We are looking for…")
         self.assertEqual(call_kwargs["event_id"], "evt_job_001")
 
-        # -- verify store.create payload contract -----------------------
         mock_store.create.assert_called_once_with(
             entity_type="job",
             entity_id=77,
@@ -310,7 +282,7 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
         self,
         mock_validate_cb: MagicMock,
     ):
-        """Guard: if ``gemini`` somehow reappears, this test must catch it."""
+
         from app.routers.ingestion import ingest_job
 
         mock_metadata = MagicMock()
@@ -361,7 +333,6 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
         )
         self.assertIn("llm", call_kwargs)
 
-        # -- verify store.create payload contract -----------------------
         mock_store.create.assert_called_once_with(
             entity_type="job",
             entity_id=88,
@@ -381,16 +352,8 @@ class TestIngestionRouterBackgroundTaskWiring(IsolatedAsyncioTestCase):
             },
         )
 
-
-# ── /cv-parse endpoint tests ──────────────────────────────────────────
-
-
 def _build_test_app(llm_client_override=None) -> FastAPI:
-    """Build a minimal FastAPI app with the ingestion router and exception handlers.
 
-    Overrides the ``llm`` dependency so tests can control LLM behaviour
-    without hitting a real model.
-    """
     from app.clients.dependencies import get_llm_client
     from app.routers.ingestion import router as ingestion_router
 
@@ -415,11 +378,7 @@ def _build_test_app(llm_client_override=None) -> FastAPI:
 
     return app
 
-
 class TestCvParseEndpoint(IsolatedAsyncioTestCase):
-    """Contract tests for ``POST /api/ai/cv-parse``."""
-
-    # ── happy path ────────────────────────────────────────────────────
 
     @patch("app.routers.ingestion.validate_ingest_url")
     @patch("app.routers.ingestion.fetch_and_parse_cv")
@@ -432,8 +391,7 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         mock_fetch: MagicMock,
         mock_validate: MagicMock,
     ):
-        """Valid URL + successful LLM response returns a populated CVAutofillResponse
-        with all eleven fields."""
+
         mock_fetch.return_value = "John Doe CV text …"
         mock_truncate.return_value = "John Doe CV text …"
         mock_template.format.return_value = "prompt"
@@ -465,7 +423,6 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         )
         assert resp.status_code == 200, resp.text
         data = resp.json()
-        # Original five fields
         assert data["name"] == "John Doe"
         assert data["bio"] == "Experienced engineer"
         assert len(data["experience"]) == 1
@@ -473,7 +430,6 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         assert len(data["education"]) == 1
         assert data["education"][0]["degree"] == "BSc"
         assert data["certifications"] == ["AWS Certified"]
-        # New onboarding fields
         assert data["email"] == "john.doe@example.com"
         assert data["phone"] == "+1-555-0123"
         assert data["title"] == "Senior Software Engineer"
@@ -485,11 +441,9 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         assert data["social_links"][1]["platform"] == "github"
         assert data["social_links"][1]["url"] == "https://github.com/johndoe"
 
-    # ── invalid / non-HTTPS URL ───────────────────────────────────────
-
     @patch("app.routers.ingestion.validate_ingest_url")
     async def test_rejects_non_https_url(self, mock_validate: MagicMock):
-        """Non-HTTPS URL is rejected with 422 (Pydantic ``HttpUrl`` validator catches it first)."""
+
         mock_llm = MagicMock()
         app = _build_test_app(llm_client_override=mock_llm)
         client = TestClient(app)
@@ -499,10 +453,7 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
             json={"cv_url": "http://example.com/cv.pdf"},
         )
         assert resp.status_code == 422, resp.text
-        # Pydantic's HttpUrl validator rejects non-HTTPS before validate_ingest_url runs
         assert "URL scheme must be HTTPS" in resp.text
-
-    # ── fetch / parse failure → 422 ───────────────────────────────────
 
     @patch("app.routers.ingestion.validate_ingest_url")
     @patch("app.routers.ingestion.fetch_and_parse_cv")
@@ -511,7 +462,7 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         mock_fetch: MagicMock,
         mock_validate: MagicMock,
     ):
-        """``ValueError`` / ``RuntimeError`` from ``fetch_and_parse_cv`` maps to 422."""
+
         mock_fetch.side_effect = ValueError("CV exceeds size limit")
 
         mock_llm = MagicMock()
@@ -524,7 +475,6 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         )
         assert resp.status_code == 422, resp.text
         assert "CV exceeds size limit" in resp.text
-
 
     @patch("app.routers.ingestion.validate_ingest_url")
     @patch("app.routers.ingestion.fetch_and_parse_cv")
@@ -553,7 +503,6 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         )
         assert resp.status_code == 200, resp.text
         data = resp.json()
-        # All fields should be empty / None
         assert data["name"] is None
         assert data["bio"] is None
         assert data["email"] is None
@@ -565,7 +514,6 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         assert data["education"] == []
         assert data["certifications"] == []
         assert data["social_links"] == []
-
 
     @patch("app.routers.ingestion.validate_ingest_url")
     @patch("app.routers.ingestion.fetch_and_parse_cv")
@@ -606,8 +554,6 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         assert data["certifications"] == []
         assert data["social_links"] == []
 
-    # ── malformed social_links resilience ──────────────────────────────
-
     @patch("app.routers.ingestion.validate_ingest_url")
     @patch("app.routers.ingestion.fetch_and_parse_cv")
     @patch("app.routers.ingestion.truncate_to_prompt_cap")
@@ -619,8 +565,7 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         mock_fetch: MagicMock,
         mock_validate: MagicMock,
     ):
-        """When ``social_links`` is malformed (bare URL list), the endpoint
-        still returns the other valid fields instead of an empty response."""
+
         mock_fetch.return_value = "CV text"
         mock_truncate.return_value = "CV text"
         mock_template.format.return_value = "prompt"
@@ -637,7 +582,6 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
             "experience": [{"title": "Dev", "company": "Corp", "duration": "3y", "description": "Built things"}],
             "education": [{"degree": "MSc", "institution": "Stanford", "year": "2018"}],
             "certifications": ["Google Cloud Certified"],
-            # social_links is a bare list of URL strings, not objects
             "social_links": ["https://linkedin.com/in/janesmith", "https://github.com/janesmith"],
         })
 
@@ -650,7 +594,6 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         )
         assert resp.status_code == 200, resp.text
         data = resp.json()
-        # Valid fields must be preserved
         assert data["name"] == "Jane Smith"
         assert data["bio"] == "A seasoned developer"
         assert data["email"] == "jane@example.com"
@@ -663,8 +606,6 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         assert data["certifications"] == ["Google Cloud Certified"]
         assert data["social_links"] == []
 
-    # ── LLMUnavailableError → 503 ─────────────────────────────────────
-
     @patch("app.routers.ingestion.validate_ingest_url")
     @patch("app.routers.ingestion.fetch_and_parse_cv")
     @patch("app.routers.ingestion.truncate_to_prompt_cap")
@@ -676,7 +617,7 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         mock_fetch: MagicMock,
         mock_validate: MagicMock,
     ):
-        """``LLMUnavailableError`` from ``llm.generate`` propagates as 503."""
+
         mock_fetch.return_value = "CV text"
         mock_truncate.return_value = "CV text"
         mock_template.format.return_value = "prompt"
@@ -693,3 +634,87 @@ class TestCvParseEndpoint(IsolatedAsyncioTestCase):
         )
         assert resp.status_code == 503, resp.text
         assert "AI service temporarily unavailable" in resp.text
+
+class TestDeleteCandidateEndpoint(IsolatedAsyncioTestCase):
+
+    async def test_delete_candidate_calls_qdrant_delete_and_cache_clear(self):
+
+        from app.routers.ingestion import delete_candidate
+
+        mock_qdrant = MagicMock()
+        mock_qdrant.get.return_value = {"name": "Alice", "candidate_version": 2}
+        mock_cache = MagicMock()
+        mock_interview_store = MagicMock()
+        mock_interview_store.get_all_by_candidate_id.return_value = []
+
+        mock_request = MagicMock(spec=Request)
+
+        result = await delete_candidate(
+            request=mock_request,
+            candidate_id=42,
+            qdrant=mock_qdrant,
+            cache=mock_cache,
+            interview_store=mock_interview_store,
+        )
+
+        self.assertTrue(result["deleted"])
+        mock_qdrant.get.assert_called_once()
+        mock_qdrant.delete.assert_called_once()
+        mock_qdrant.delete.assert_called_with("candidates", 42)
+        mock_cache.delete_by_prefix.assert_called_once_with("42:")
+        mock_interview_store.get_all_by_candidate_id.assert_called_once_with(42)
+
+    async def test_delete_candidate_purges_even_with_data_source(self):
+
+        from app.routers.ingestion import delete_candidate
+
+        mock_qdrant = MagicMock()
+        mock_qdrant.get.return_value = {
+            "name": "Alice",
+            "candidate_version": 2,
+            "data_source": "indeed",
+        }
+        mock_cache = MagicMock()
+        mock_interview_store = MagicMock()
+        mock_interview_store.get_all_by_candidate_id.return_value = []
+
+        mock_request = MagicMock(spec=Request)
+
+        result = await delete_candidate(
+            request=mock_request,
+            candidate_id=99,
+            qdrant=mock_qdrant,
+            cache=mock_cache,
+            interview_store=mock_interview_store,
+        )
+
+        self.assertTrue(result["deleted"])
+        mock_qdrant.get.assert_called_once()
+        mock_qdrant.delete.assert_called_with("candidates", 99)
+        mock_cache.delete_by_prefix.assert_called_once_with("99:")
+        mock_interview_store.get_all_by_candidate_id.assert_called_once_with(99)
+
+    async def test_delete_candidate_not_found_raises_404(self):
+
+        from app.routers.ingestion import delete_candidate
+
+        mock_qdrant = MagicMock()
+        mock_qdrant.get.return_value = None
+        mock_cache = MagicMock()
+        mock_interview_store = MagicMock()
+
+        mock_request = MagicMock(spec=Request)
+        from fastapi import HTTPException
+
+        with self.assertRaises(HTTPException) as cm:
+            await delete_candidate(
+                request=mock_request,
+                candidate_id=999,
+                qdrant=mock_qdrant,
+                cache=mock_cache,
+                interview_store=mock_interview_store,
+            )
+        self.assertEqual(cm.exception.status_code, 404)
+        self.assertIn("Candidate not found", str(cm.exception.detail))
+        mock_qdrant.delete.assert_not_called()
+        mock_cache.delete_by_prefix.assert_not_called()

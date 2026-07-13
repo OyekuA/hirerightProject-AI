@@ -6,15 +6,16 @@ services:
     restart: unless-stopped
     volumes:
       - ingest_status_data:/data/ingest_status
+      - interview_session_data:/data/interview_sessions
     deploy:
       replicas: 1
       resources:
         limits:
           cpus: '1.0'
-          memory: 1024m
+          memory: 2048m
         reservations:
-          cpus: '0.5'
-          memory: 384m
+          cpus: '0.4'
+          memory: 768m
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -25,17 +26,17 @@ services:
     image: qdrant/qdrant:v1.17.0
     restart: unless-stopped
     environment:
-      - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=2
+      - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=4
     volumes:
       - qdrant_data:/qdrant/storage
     deploy:
       resources:
         limits:
           cpus: '0.8'
-          memory: 1280m
+          memory: 3072m
         reservations:
           cpus: '0.3'
-          memory: 512m
+          memory: 1024m
 
   nginx:
     image: docker.io/library/nginx:1.29.7-alpine
@@ -59,3 +60,4 @@ services:
 volumes:
   qdrant_data:
   ingest_status_data:
+  interview_session_data:

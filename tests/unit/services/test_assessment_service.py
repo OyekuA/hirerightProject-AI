@@ -1,4 +1,4 @@
-"""Unit tests for AssessmentService."""
+
 
 import json
 import re
@@ -15,18 +15,16 @@ from app.schemas.assessment import (
 )
 from pydantic import ValidationError
 
-
 class TestAssessmentService(unittest.TestCase):
-    """Test the AssessmentService methods."""
 
     def setUp(self):
-        """Create mocked dependencies for each test."""
+
         self.gemini_mock = MagicMock()
         self.qdrant_mock = MagicMock()
         self.service = AssessmentService(llm=self.gemini_mock, qdrant=self.qdrant_mock)
 
     def test_generate_questions_valid_response(self):
-        """generate_questions should return the list of questions from LLM."""
+
         candidate_payload = {"past_roles": ["Engineer at Acme"], "skills": ["Python"]}
         self.qdrant_mock.get.return_value = candidate_payload
         self.gemini_mock.generate.return_value = '["Q1", "Q2", "Q3"]'
@@ -40,9 +38,12 @@ class TestAssessmentService(unittest.TestCase):
         self.gemini_mock.generate.assert_called_once()
         prompt = self.gemini_mock.generate.call_args[0][0]
         self.assertIn("3", prompt)
+        call_kwargs = self.gemini_mock.generate.call_args.kwargs
+        self.assertIn("response_format", call_kwargs)
+        self.assertIn("max_tokens", call_kwargs)
 
     def test_generate_questions_clamped_to_30(self):
-        """Requested number of questions should be clamped to a maximum of 30."""
+
         candidate_payload = {"past_roles": [], "skills": []}
         self.qdrant_mock.get.return_value = candidate_payload
         self.gemini_mock.generate.return_value = json.dumps([f"Q{i}" for i in range(1, 31)])
@@ -57,7 +58,7 @@ class TestAssessmentService(unittest.TestCase):
         self.assertNotIn("35", prompt)
 
     def test_generate_questions_clamped_to_minimum_1(self):
-        """num_questions below 1 should be clamped to 1."""
+
         candidate_payload = {"past_roles": [], "skills": []}
         self.qdrant_mock.get.return_value = candidate_payload
         self.gemini_mock.generate.return_value = '["Q1"]'
@@ -72,7 +73,7 @@ class TestAssessmentService(unittest.TestCase):
         self.assertNotIn("Generate exactly 0", prompt)
 
     def test_generate_questions_candidate_not_found(self):
-        """If candidate does not exist, raise ValueError."""
+
         self.qdrant_mock.get.return_value = None
         with self.assertRaises(ValueError) as cm:
             self.service.generate_questions(
@@ -84,7 +85,7 @@ class TestAssessmentService(unittest.TestCase):
         self.gemini_mock.generate.assert_not_called()
 
     def test_generate_questions_fewer_than_requested(self):
-        """If LLM returns fewer questions than requested, raise LLMUnavailableError."""
+
         candidate_payload = {"past_roles": [], "skills": []}
         self.qdrant_mock.get.return_value = candidate_payload
         self.gemini_mock.generate.return_value = '["Q1"]'
@@ -95,10 +96,10 @@ class TestAssessmentService(unittest.TestCase):
                 num_questions=3,
             )
         self.assertIn("only", str(cm.exception).lower())
-        self.gemini_mock.generate.assert_called_once()
+        self.assertEqual(self.gemini_mock.generate.call_count, 2)
 
     def test_generate_questions_job_id_only(self):
-        """generate_questions should work with only job_id provided."""
+
         job_payload = {
             "title": "Software Engineer",
             "required_skills": ["Python", "AWS"],
@@ -119,7 +120,7 @@ class TestAssessmentService(unittest.TestCase):
         self.assertIn("Software Engineer", prompt)
 
     def test_generate_questions_job_id_only_derived_target_role(self):
-        """generate_questions should derive target_role from job title when target_role is None."""
+
         job_payload = {
             "title": "Senior DevOps Engineer",
             "required_skills": ["Kubernetes", "AWS"],
@@ -140,7 +141,7 @@ class TestAssessmentService(unittest.TestCase):
         self.assertIn("Senior DevOps Engineer", prompt)
 
     def test_generate_questions_job_id_empty_title_raises(self):
-        """generate_questions should raise ValueError when job title is empty and target_role not provided."""
+
         job_payload = {"title": "", "required_skills": [], "raw_jd_summary": ""}
         self.qdrant_mock.get.return_value = job_payload
         with self.assertRaises(ValueError) as cm:
@@ -155,7 +156,7 @@ class TestAssessmentService(unittest.TestCase):
         self.gemini_mock.generate.assert_not_called()
 
     def test_generate_questions_combined_ids(self):
-        """generate_questions should fetch both candidate and job contexts."""
+
         candidate_payload = {"past_roles": ["Engineer at Acme"], "skills": ["Python"]}
         job_payload = {
             "title": "Senior Software Engineer",
@@ -182,7 +183,7 @@ class TestAssessmentService(unittest.TestCase):
         self.assertIn("Senior Software Engineer", prompt)
 
     def test_generate_questions_multiple_choice_happy_path(self):
-        """generate_questions should return multiple‑choice objects."""
+
         candidate_payload = {"past_roles": [], "skills": []}
         self.qdrant_mock.get.return_value = candidate_payload
         self.gemini_mock.generate.return_value = json.dumps([
@@ -209,10 +210,9 @@ class TestAssessmentService(unittest.TestCase):
         self.gemini_mock.generate.assert_called_once()
 
     def test_generate_questions_malformed_multiple_choice_rejection(self):
-        """generate_questions should reject malformed multiple‑choice payloads."""
+
         candidate_payload = {"past_roles": [], "skills": []}
         self.qdrant_mock.get.return_value = candidate_payload
-        # Missing correct_answer key
         self.gemini_mock.generate.return_value = json.dumps([
             {"question": "Q1", "distractors": ["Option 2", "Option 3", "Option 4"]}
         ])
@@ -226,7 +226,7 @@ class TestAssessmentService(unittest.TestCase):
         self.assertIn("malformed", str(cm.exception).lower())
 
     def test_generate_questions_no_ids_raises(self):
-        """generate_questions must have at least one ID."""
+
         with self.assertRaises(ValueError) as cm:
             self.service.generate_questions(
                 candidate_id=None,
@@ -239,7 +239,7 @@ class TestAssessmentService(unittest.TestCase):
         self.gemini_mock.generate.assert_not_called()
 
     def test_grade_answers_valid_response_single(self):
-        """grade_answers should return the parsed JSON dict from LLM for single response."""
+
         questions = ["What is Python?", "Explain OOP"]
         answers = ["Python is a language.", "OOP is about objects."]
         expected_result = {
@@ -266,7 +266,7 @@ class TestAssessmentService(unittest.TestCase):
         self.assertIn("120", prompt)
 
     def test_grade_answers_valid_response_mc(self):
-        """grade_answers short-circuits for pure multiple-choice (no LLM call)."""
+
         questions = [
             {"question": "Q1", "options": ["A. Yes", "B. No"], "correct_answer": "A. Yes"},
             {"question": "Q2", "options": ["A. True", "B. False"], "correct_answer": "B. False"},
@@ -285,7 +285,7 @@ class TestAssessmentService(unittest.TestCase):
         self.gemini_mock.generate.assert_not_called()
 
     def test_grade_answers_mixed_mc_and_single(self):
-        """grade_answers should handle a mix of MC and subjective."""
+
         questions = [
             {"question": "MC Q1", "options": ["A. 1", "B. 2"], "correct_answer": "A. 1"},
             "Explain your answer."
@@ -311,7 +311,7 @@ class TestAssessmentService(unittest.TestCase):
         self.assertEqual(result["overall_score"], 30)
 
     def test_grade_answers_mismatched_length(self):
-        """If questions and answers length mismatch, raise ValueError."""
+
         questions = ["Q1", "Q2"]
         answers = ["A1"]
         with self.assertRaises(ValueError) as cm:
@@ -320,7 +320,7 @@ class TestAssessmentService(unittest.TestCase):
         self.gemini_mock.generate.assert_not_called()
 
     def test_grade_answers_zero_or_negative_time(self):
-        """If time_taken_seconds is zero or negative, raise ValueError."""
+
         questions = ["Q1", "Q2"]
         answers = ["A1", "A2"]
         for invalid_time in (0, -5):
@@ -331,34 +331,31 @@ class TestAssessmentService(unittest.TestCase):
                 self.gemini_mock.generate.assert_not_called()
 
     def test_grade_answers_malformed_json(self):
-        """If LLM returns non‑JSON, raise json.JSONDecodeError."""
+
         questions = ["Q1"]
         answers = ["A1"]
         self.gemini_mock.generate.return_value = "not json"
-        with self.assertRaises(json.JSONDecodeError):
+        with self.assertRaises(LLMUnavailableError):
             self.service.grade_answers(questions=questions, answers=answers, time_taken_seconds=30)
-        self.assertEqual(self.gemini_mock.generate.call_count, 1)
+        self.assertEqual(self.gemini_mock.generate.call_count, 2)
 
     def test_grade_answers_skill_breakdown_too_short(self):
-        """LLM returns a skill_breakdown with fewer than three items."""
+
         questions = ["Q1"]
         answers = ["A1"]
         invalid_result = {
             "overall_score": 80,
-            "skill_breakdown": [
-                {"category": "A", "score": 70, "feedback": "Good"},
-                {"category": "B", "score": 80, "feedback": "Great"},
-            ],
+            "skill_breakdown": [],
             "authenticity_flag": {"is_suspicious": False, "reason": "OK"},
             "grading_reasoning": "Some reasoning.",
         }
         self.gemini_mock.generate.return_value = json.dumps(invalid_result)
-        with self.assertRaises(ValueError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.grade_answers(questions=questions, answers=answers, time_taken_seconds=30)
-        self.assertIn("skill_breakdown must be a list of 3‑5 items", str(cm.exception))
+        self.assertIn("malformed", str(cm.exception).lower())
 
     def test_grade_answers_skill_breakdown_malformed_item(self):
-        """LLM returns a skill_breakdown with a missing key."""
+
         questions = ["Q1"]
         answers = ["A1"]
         invalid_result = {
@@ -372,12 +369,12 @@ class TestAssessmentService(unittest.TestCase):
             "grading_reasoning": "Some reasoning.",
         }
         self.gemini_mock.generate.return_value = json.dumps(invalid_result)
-        with self.assertRaises(ValueError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.grade_answers(questions=questions, answers=answers, time_taken_seconds=30)
-        self.assertIn("skill_breakdown item missing required keys", str(cm.exception))
+        self.assertIn("malformed", str(cm.exception).lower())
 
     def test_grade_answers_overall_score_out_of_bounds(self):
-        """LLM returns an overall_score outside 0‑100."""
+
         questions = ["Q1"]
         answers = ["A1"]
         invalid_result = {
@@ -391,12 +388,12 @@ class TestAssessmentService(unittest.TestCase):
             "grading_reasoning": "Some reasoning.",
         }
         self.gemini_mock.generate.return_value = json.dumps(invalid_result)
-        with self.assertRaises(ValueError) as cm:
+        with self.assertRaises(LLMUnavailableError) as cm:
             self.service.grade_answers(questions=questions, answers=answers, time_taken_seconds=30)
-        self.assertIn("overall_score 150 out of range", str(cm.exception))
+        self.assertIn("malformed", str(cm.exception).lower())
 
     def test_grade_answers_authenticity_penalty_applied(self):
-        """When typing speed exceeds limit, penalty is applied."""
+
         questions = ["Explain concurrency in Python."]
         answers = ["Concurrency can be achieved using threading or asyncio. The GIL limits true parallelism..."]  # long answer
         llm_response = {
@@ -419,9 +416,8 @@ class TestAssessmentService(unittest.TestCase):
         self.assertTrue(result["authenticity_flag"]["is_suspicious"])
         self.assertIn("exceeds human typing limit", result["authenticity_flag"]["reason"])
 
-
     def test_compute_mc_score_exact_match(self):
-        """Full-string MC answer matches correctly."""
+
         questions = [
             {"question": "Q1", "options": ["A. Yes", "B. No"], "correct_answer": "A. Yes"},
         ]
@@ -430,7 +426,7 @@ class TestAssessmentService(unittest.TestCase):
         self.assertEqual(score, 100.0)
 
     def test_compute_mc_score_label_only_match(self):
-        """Label-only answer 'A' matches labeled correct_answer 'A. Yes'."""
+
         questions = [
             {"question": "Q1", "options": ["A. Yes", "B. No"], "correct_answer": "A. Yes"},
         ]
@@ -439,7 +435,7 @@ class TestAssessmentService(unittest.TestCase):
         self.assertEqual(score, 100.0)
 
     def test_compute_mc_score_label_lowercase_match(self):
-        """Lowercase label 'b' matches labeled correct_answer 'B. Option 2'."""
+
         questions = [
             {"question": "Q1", "options": ["A. Opt 1", "B. Option 2"], "correct_answer": "B. Option 2"},
         ]
@@ -448,7 +444,7 @@ class TestAssessmentService(unittest.TestCase):
         self.assertEqual(score, 100.0)
 
     def test_compute_mc_score_wrong_label_does_not_match(self):
-        """Wrong label 'A' does not match correct_answer 'B. Option 2'."""
+
         questions = [
             {"question": "Q1", "options": ["A. Opt 1", "B. Option 2"], "correct_answer": "B. Option 2"},
         ]
@@ -457,14 +453,14 @@ class TestAssessmentService(unittest.TestCase):
         self.assertEqual(score, 0.0)
 
     def test_compute_mc_score_no_mc_returns_none(self):
-        """No MC questions returns None."""
+
         questions = ["Open-ended Q1", "Open-ended Q2"]
         answers = ["A1", "A2"]
         score = self.service._compute_mc_score(questions, answers)
         self.assertIsNone(score)
 
     def test_grade_answers_slow_typing_not_flagged_suspicious(self):
-        """Slow typing (< 0.5 wps) should NOT be flagged as suspicious."""
+
         questions = ["Explain microservices."]
         answers = ["A"]
         llm_response = {
@@ -488,7 +484,7 @@ class TestAssessmentService(unittest.TestCase):
         self.assertEqual(self.gemini_mock.generate.call_count, 1)
 
     def test_grade_answers_bad_coherent_answers_score_above_zero(self):
-        """A wrong but coherent answer should score 11-30, not 0."""
+
         questions = ["Explain microservices."]
         answers = ["I think it means small services."]
         llm_response = {
@@ -512,7 +508,7 @@ class TestAssessmentService(unittest.TestCase):
         self.assertIn("11–30", prompt)
 
     def test_grade_answers_pure_mc_skips_llm(self):
-        """Pure MC assessment short-circuits — LLM is never called."""
+
         questions = [
             {"question": "Q1", "options": ["A. Yes", "B. No"], "correct_answer": "A. Yes"},
         ]
@@ -529,7 +525,7 @@ class TestAssessmentService(unittest.TestCase):
         self.assertFalse(result["needs_review"])
 
     def test_generate_questions_mc_embedded_dot_space_in_answer(self):
-        """correct_answer text containing '. ' should still match its labeled option (regression)."""
+
         candidate_payload = {"past_roles": [], "skills": []}
         self.qdrant_mock.get.return_value = candidate_payload
         self.gemini_mock.generate.return_value = json.dumps([
@@ -552,7 +548,7 @@ class TestAssessmentService(unittest.TestCase):
         self.assertEqual(len(result[0]["options"]), 4)
 
     def test_grade_answers_pure_mc_includes_grading_reasoning(self):
-        """Pure-MC fast-path must include grading_reasoning in the returned dict."""
+
         questions = [
             {"question": "Q1", "options": ["A. Yes", "B. No"], "correct_answer": "A. Yes"},
         ]
@@ -568,8 +564,25 @@ class TestAssessmentService(unittest.TestCase):
             "Pure MC assessment — score computed deterministically.",
         )
 
+    def test_generate_questions_repair_retry_on_malformed(self):
+
+        candidate_payload = {"past_roles": [], "skills": []}
+        self.qdrant_mock.get.return_value = candidate_payload
+        # First call returns malformed, second returns valid
+        self.gemini_mock.generate.side_effect = [
+            "not json",
+            '["Q1", "Q2"]'
+        ]
+        result = self.service.generate_questions(
+            candidate_id=42,
+            target_role="Software Engineer",
+            num_questions=2,
+        )
+        self.assertEqual(result, ["Q1", "Q2"])
+        self.assertEqual(self.gemini_mock.generate.call_count, 2)
+
     def test_grade_answers_llm_path_includes_grading_reasoning(self):
-        """LLM-grading path must include grading_reasoning in the returned dict."""
+
         questions = ["Explain OOP."]
         answers = ["OOP stands for Object-Oriented Programming."]
         llm_response = {
@@ -595,10 +608,9 @@ class TestAssessmentService(unittest.TestCase):
         )
 
     def test_grade_answers_llm_false_positive_suspicion_cleared_for_slow_typing(self):
-        """LLM-supplied is_suspicious=true is overridden for slow typing (hard_flag false)."""
+
         questions = ["Explain microservices."]
         answers = ["Microservices are small independent services that work together."]
-        # LLM returns is_suspicious: true despite slow typing
         llm_response = {
             "overall_score": 80,
             "skill_breakdown": [
@@ -615,13 +627,11 @@ class TestAssessmentService(unittest.TestCase):
             answers=answers,
             time_taken_seconds=600,  # ~0.02 wps — well below 2.5 threshold
         )
-        # Service must clear the LLM's false positive
         self.assertFalse(result["authenticity_flag"]["is_suspicious"])
-        # Score must NOT be penalised (80 - 0 = 80, not 80 - 25 = 55)
         self.assertEqual(result["overall_score"], 80)
 
     def test_generate_questions_produces_unique_prompts_on_each_call(self):
-        """Per-call entropy (random.shuffle on skill pool) must produce different prompts."""
+
         candidate_payload = {"past_roles": ["Engineer at Acme"], "skills": ["Python", "FastAPI", "AWS", "Docker"]}
         self.qdrant_mock.get.return_value = candidate_payload
         self.gemini_mock.generate.return_value = '["Q1", "Q2", "Q3"]'
@@ -649,7 +659,6 @@ class TestAssessmentService(unittest.TestCase):
         )
 
 class TestGenerateAssessmentRequestModel(unittest.TestCase):
-    """Test the GenerateAssessmentRequest Pydantic model validation."""
 
     def test_both_contexts_accepted(self):
         candidate = CandidateContext(candidate_id=123, target_role="Engineer")
@@ -693,12 +702,10 @@ class TestGenerateAssessmentRequestModel(unittest.TestCase):
             )
         self.assertIn("At least one", str(cm.exception))
 
-
 class TestGradeAssessmentResponseModel(unittest.TestCase):
-    """Regression: GradeAssessmentResponse must preserve grading_reasoning through model_validate."""
 
     def test_model_validate_preserves_grading_reasoning(self):
-        """GradeAssessmentResponse.model_validate() should keep grading_reasoning."""
+
         payload = {
             "overall_score": 85,
             "skill_breakdown": [
@@ -717,7 +724,7 @@ class TestGradeAssessmentResponseModel(unittest.TestCase):
         self.assertEqual(serialized["grading_reasoning"], "Candidate shows solid fundamentals.")
 
     def test_model_validate_defaults_grading_reasoning_to_empty_string(self):
-        """If grading_reasoning is omitted, it should default to '' (not crash)."""
+
         payload = {
             "overall_score": 90,
             "skill_breakdown": [

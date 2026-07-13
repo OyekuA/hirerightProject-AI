@@ -17,6 +17,7 @@ The HireRight AI Microservice adds semantic candidate‑to‑job matching, expla
 | Docker Compose | Container orchestration |
 | structlog + Sentry | Structured logging + error telemetry |
 | slowapi | Rate limiting (in‑memory sliding window) |
+| svix | Webhook signature verification (Recall.ai callbacks) |
 
 ## Project Structure
 
@@ -35,6 +36,7 @@ The HireRight AI Microservice adds semantic candidate‑to‑job matching, expla
 │   │   ├── cache.py                # Abstract cache + TTLCacheBackend
 │   │   ├── dependencies.py         # Singleton accessors for all clients
 │   │   ├── llm.py                  # LLM client + CircuitBreaker (generation & embedding)
+│   │   ├── meeting_bot.py          # MeetingBotClient (abstract), RecallAIClient, MeetingBaaSClient stub
 │   │   ├── qdrant.py               # Qdrant vector DB wrapper
 │   │   └── rate_limiter.py         # Rate‑limiter abstraction + SlowAPIRateLimiterBackend
 │   ├── middleware/
@@ -45,14 +47,21 @@ The HireRight AI Microservice adds semantic candidate‑to‑job matching, expla
 │   │   ├── _rate_limit_keys.py     # Shared key‑extractor functions for per‑entity limits
 │   │   ├── assessment.py           # POST /assessment/generate, /assessment/grade
 │   │   ├── career.py               # POST /analyze-career-paths
+│   │   ├── decision.py             # POST /decision
+│   │   ├── email.py                # POST /generate-invite-email
 │   │   ├── ingestion.py            # POST /ingest-candidate, /ingest-job, /cv-parse, DELETEs, GET /ingestion-status
+│   │   ├── interview.py            # POST /interview/start, GET/DELETE /interview/{session_id}
+│   │   ├── interview_webhook.py    # POST /interview/webhook (Svix-verified, no X-API-Key)
 │   │   ├── jd.py                   # POST /generate-jd, /analyze-jd
 │   │   ├── recommend.py            # POST /recommend, /recommend/pool
 │   │   └── scoring.py              # POST /calculate-fit
 │   ├── schemas/
 │   │   ├── assessment.py           # Pydantic models for assessment endpoints
 │   │   ├── career.py               # Pydantic models for career‑path endpoints
+│   │   ├── decision.py             # Pydantic models for decision endpoint
+│   │   ├── email.py                # Pydantic models for email endpoint
 │   │   ├── ingestion.py            # Pydantic models for ingestion endpoints
+│   │   ├── interview.py            # Pydantic models for interview endpoints
 │   │   ├── jd.py                   # Pydantic models for JD endpoints
 │   │   ├── recommendation.py       # Pydantic models for recommend endpoints
 │   │   └── scoring.py              # Pydantic models for scoring endpoints
@@ -61,15 +70,20 @@ The HireRight AI Microservice adds semantic candidate‑to‑job matching, expla
 │   │   ├── assessment_service.py   # Interview question generation & answer grading
 │   │   ├── callback_client.py      # HMAC‑SHA256 signed callback delivery with retries
 │   │   ├── career_service.py       # Career path analysis
+│   │   ├── decision_service.py     # Ensemble Interview Decision Engine
+│   │   ├── email_service.py        # Interview invite email generation
 │   │   ├── ingest_queue.py         # File‑based persistent retry queue + dead‑letter monitoring
 │   │   ├── ingestion_service.py    # Candidate & job ingestion logic
 │   │   ├── ingestion_store.py      # Durable ingestion‑status file store
+│   │   ├── interview_service.py    # Bot injection, transcript grading, host/mask pipeline
+│   │   ├── interview_session_store.py # File-based interview session state persistence
 │   │   ├── jd_service.py           # JD generation & analysis
 │   │   ├── recommendation_service.py # Hybrid recommendation engine
 │   │   └── scoring_service.py      # LLM‑based fit‑score calculation
 │   └── utils/
 │       ├── __init__.py             # LLM JSON parser (parse_llm_json)
-│       └── ingestion.py            # CV fetch & parse, SSRF validation, prompt truncation
+│       ├── ingestion.py            # CV fetch & parse, SSRF validation, prompt truncation
+│       └── webhook_verification.py  # Svix signature verification for Recall.ai
 ├── nginx/
 │   └── nginx.conf                  # Reverse‑proxy config (TLS‑ready)
 ├── tests/
@@ -83,24 +97,39 @@ The HireRight AI Microservice adds semantic candidate‑to‑job matching, expla
 │       │   ├── __init__.py
 │       │   ├── test_cache.py
 │       │   ├── test_circuit_breaker.py
-│       │   └── test_llm_client.py
+│       │   ├── test_llm_client.py
+│       │   └── test_meeting_bot.py
 │       ├── routers/
 │       │   ├── __init__.py
+│       │   ├── test_decision_router.py
+│       │   ├── test_email_router.py
 │       │   ├── test_ingestion_router.py
+│       │   ├── test_interview_router.py
+│       │   ├── test_interview_webhook_router.py
 │       │   ├── test_rate_limit_keys.py
-│       │   └── test_rate_limits.py
-│       └── services/
+│       │   ├── test_rate_limits.py
+│       │   └── test_screening_router.py
+│       ├── services/
+│       │   ├── __init__.py
+│       │   ├── test_assessment_service.py
+│       │   ├── test_callback_client.py
+│       │   ├── test_career_service.py
+│       │   ├── test_decision_service.py
+│       │   ├── test_email_service.py
+│       │   ├── test_ingest_queue.py
+│       │   ├── test_ingestion_fetch.py
+│       │   ├── test_ingestion_service.py
+│       │   ├── test_ingestion_store.py
+│       │   ├── test_interview_service.py
+│       │   ├── test_interview_session_store.py
+│       │   ├── test_jd_service.py
+│       │   ├── test_recommendation_service.py
+│       │   ├── test_scoring_service.py
+│       │   ├── test_screening_service.py
+│       │   └── test_screening_store.py
+│       └── utils/
 │           ├── __init__.py
-│           ├── test_assessment_service.py
-│           ├── test_callback_client.py
-│           ├── test_career_service.py
-│           ├── test_ingest_queue.py
-│           ├── test_ingestion_fetch.py
-│           ├── test_ingestion_service.py
-│           ├── test_ingestion_store.py
-│           ├── test_jd_service.py
-│           ├── test_recommendation_service.py
-│           └── test_scoring_service.py
+│           └── test_bias_masking.py
 ├── .dockerignore
 ├── .env.example
 ├── .gitignore
@@ -149,7 +178,7 @@ Place your certificate (`fullchain.pem`) and private key (`privkey.pem`) in `ngi
 1. Clone the repo
 2. cp .env.example .env
 3. Fill in required values in .env:
-      API_KEY, LLM_API_KEY, CALLBACK_HMAC_SECRET, INGEST_STATUS_STORE_PATH
+      API_KEY, LLM_API_KEY, CALLBACK_HMAC_SECRET, INGEST_STATUS_STORE_PATH, RECALL_AI_API_KEY, RECALL_AI_WEBHOOK_SECRET, INTERVIEW_SESSION_STORE_PATH
 4. docker compose up --build
 5. Verify: curl http://localhost/health
    Expected: {"status": "ok"}
@@ -212,6 +241,12 @@ Full table sourced from [`.env.example`](.env.example):
 | `ENABLE_DOCS` | Optional | `False` | Set to `true` to enable Swagger UI at `/` and OpenAPI schema at `/openapi.json` |
 | `DOCS_USERNAME` | Optional | _(empty)_ | HTTP Basic Auth username for Swagger UI (only enforced when `ENABLE_DOCS=true` and both credentials are set) |
 | `DOCS_PASSWORD` | Optional | _(empty)_ | HTTP Basic Auth password for Swagger UI (only enforced when `ENABLE_DOCS=true` and both credentials are set) |
+| `DECISION_FIT_WEIGHT` | Optional | `0.40` | Weight applied to the fit score in the Decision Engine's combined score |
+| `DECISION_ASSESSMENT_WEIGHT` | Optional | `0.60` | Weight applied to the assessment score in the Decision Engine's combined score |
+| `RECALL_AI_API_KEY` | Required | _(none)_ | Recall.ai API key used by `RecallAIClient` for bot injection/transcript calls |
+| `RECALL_AI_REGION` | Optional | `us-east-1` | Recall.ai region — determines API host (`us-east-1`, `us-west-2`, `eu-central-1`, `ap-northeast-1`) |
+| `RECALL_AI_WEBHOOK_SECRET` | Required | _(none)_ | Svix secret used to verify Recall.ai webhook signatures |
+| `INTERVIEW_SESSION_STORE_PATH` | Required | _(none)_ | Path where interview session state files are persisted |
 
 ## Swagger / API Documentation
 
@@ -258,6 +293,12 @@ Rate limits are enforced **per API key** (SHA‑256 fingerprinted). Endpoints th
 | `POST /analyze-career-paths` | 500/day | 10/minute | 20/day per candidate | LLM‑cost (generation) |
 | `POST /generate-jd` | 500/day | 10/minute | 50/day per job | LLM‑cost (generation) |
 | `POST /analyze-jd` | 500/day | 10/minute | 50/day per job | LLM‑cost (generation) |
+| `POST /decision` | 500/hour | 20/minute | 100/hour per candidate | LLM‑cost (generation, 3-vote ensemble) |
+| `POST /generate-invite-email` | 500/hour | 20/minute | 100/hour per candidate | LLM‑cost (generation) |
+| `POST /interview/start` | 500/day | 10/minute | 20/day per candidate | Vendor bot injection (Recall.ai) |
+| `GET /interview/{session_id}` | — | — | — | **No rate limit** |
+| `DELETE /interview/{session_id}` | — | — | — | **No rate limit** |
+| `POST /interview/webhook` | — | — | — | **No rate limit** (Svix-verified vendor callback, not `X-API-Key`) |
 
 ### 429 Response Contract
 
@@ -357,14 +398,62 @@ The [`CallbackClient`](app/services/callback_client.py) delivers ingestion‑sta
 - **SSRF safety**: CV URLs are validated via `validate_ingest_url()` (HTTPS only). Callback URLs are validated via `validate_callback_url()` which allows both HTTP and HTTPS but still blocks private, loopback, link-local, reserved, multicast, and unspecified IP ranges.
 - **Replay protection**: PHP verifies the timestamp is within `CALLBACK_SIGNATURE_TTL_SECONDS` of the current time.
 
+## Recall.ai Interview Assist Integration
+
+The microservice integrates with **Recall.ai** to provide automated interview recording, transcription, and grading. This feature is fully async and event-driven.
+
+### Bot Injection
+
+When the PHP backend calls `POST /api/ai/interview/start`, the service uses [`RecallAIClient.inject_bot`](app/clients/meeting_bot.py) to inject a meeting bot into a live video interview:
+
+- Posts to Recall.ai's `/bot/` endpoint with `meeting_url`, `recording_config`, and `metadata` (`session_id`, `candidate_id`).
+- The target region (`us-east-1`, `us-west-2`, `eu-central-1`, `ap-northeast-1`) is determined by `RECALL_AI_REGION` and mapped to the appropriate API host.
+- Returns a `bot.id` and `session_id` (UUID), which is persisted via [`InterviewSessionStore`](app/services/interview_session_store.py).
+
+### Webhook-Driven Async Transcript
+
+Recall.ai sends async events to `POST /api/ai/interview/webhook` (Svix-verified, no `X-API-Key`):
+
+1. **`recording.done`** — Schedules a background task to call `create_transcript` (returns a transcript job id) and updates session status to `transcribing`.
+2. **`transcript.done`** — Schedules a background task that calls `fetch_transcript` (downloads the transcript via `download_url`), invokes grading, updates status to `completed`, and delivers a signed callback.
+3. **`transcript.failed`** — Marks session status as `failed` and sends a failure callback.
+
+### Grade-at-End Scoring
+
+The grading pipeline in [`interview_service.grade_transcript`](app/services/interview_service.py):
+
+1. **Normalize transcript turns** — `normalize_transcript_turns` excludes host speakers via `_is_host_speaker` and masks candidate names via `mask_transcript_turns`.
+2. **LLM call** — Invoked once at `temperature=0` to produce `per_criterion_scores`, `strengths`, `red_flags`, and `recommendation`.
+3. **Deterministic overall score** — Python computes `overall_score` as the rounded mean of `per_criterion_scores`, **overriding** any LLM-suggested overall value.
+
+### Delivery
+
+The final grading result is delivered to the PHP backend via [`CallbackClient.send`](app/services/callback_client.py) with an `extra_payload` containing `{"session_id": ..., "grading_result": ...}`, HMAC-signed exactly like ingestion callbacks.
+
+### Swappable Vendor Abstraction
+
+The [`MeetingBotClient`](app/clients/meeting_bot.py) abstract base class defines the injection interface. [`RecallAIClient`](app/clients/meeting_bot.py) is the concrete implementation; [`MeetingBaaSClient`](app/clients/meeting_bot.py) is an unimplemented stub proving the interface is vendor-swappable.
+
+### On-Demand GDPR Cascade
+
+When `DELETE /api/ai/candidates/{candidate_id}` is called, the endpoint also calls `InterviewSessionStore.get_all_by_candidate_id(candidate_id)` and deletes every matching interview session file — see the [API Reference](#delete-apiaicandidatescandidate_id) entry for details. This cascade is **on-demand only**, executed synchronously within the same request.
+
+### Out of Scope
+
+The following are **not** this microservice's responsibility:
+
+- **Calendar integration** — Booking/creating calendar events is handled elsewhere.
+- **Email delivery** — The service generates invite emails but does not send them.
+- **Recall.ai account/contract** — Vendor setup is managed by the platform team.
+
 ## API Reference
 
 ### `POST /api/ai/ingest‑candidate`
 - **Purpose:** Asynchronously ingest a candidate CV from a cloud URL into the vector store.
-- **Request:** `candidate_id` (int), `cv_url` (HTTPS URL to PDF), `profile_data` (`name`, `location`, `experience_level`, `industry`, `employment_type`, `candidate_version`), `callback_url` (HTTP or HTTPS)
+- **Request:** `candidate_id` (int), `cv_url` (HTTPS URL to PDF), `callback_url` (HTTP or HTTPS)
 - **Response:** `202 Accepted` — `{"event_id": "<uuid>"}`
 - **Rate limit:** 500/day, 10/minute, 20/day per candidate
-- **curl:** `curl -X POST http://localhost/api/ai/ingest-candidate -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"candidate_id": 123, "cv_url": "https://example.com/cv.pdf", "profile_data": {...}, "callback_url": "https://php-backend.example.com/callback"}'`
+- **curl:** `curl -X POST http://localhost/api/ai/ingest-candidate -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"candidate_id": 123, "cv_url": "https://example.com/cv.pdf", "callback_url": "https://php-backend.example.com/callback"}'`
   > `callback_url` accepts both `http://` and `https://`.
 
 ### `POST /api/ai/ingest‑job`
@@ -383,10 +472,11 @@ The [`CallbackClient`](app/services/callback_client.py) delivers ingestion‑sta
 - **curl:** `curl -X POST http://localhost/api/ai/cv-parse -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"cv_url": "https://example.com/cv.pdf"}'`
 
 ### `DELETE /api/ai/candidates/{candidate_id}`
-- **Purpose:** Remove a candidate's vector from Qdrant.
+- **Purpose:** Remove a candidate's vector from Qdrant and perform a **GDPR cascade** — after deleting from Qdrant and purging cache entries, calls `InterviewSessionStore.get_all_by_candidate_id(candidate_id)` and deletes every matching interview session file.
 - **Request:** Path param `candidate_id` (int)
 - **Response:** `200 OK` — `{"deleted": true}` or `404` if not found
 - **Rate limit:** None (no LLM call)
+- **Note:** This cascade is **on-demand only**, executed synchronously within the same request when the caller invokes this DELETE — there is no scheduled/automatic background purge job.
 - **curl:** `curl -X DELETE http://localhost/api/ai/candidates/123 -H "X-API-Key: $API_KEY"`
 
 ### `DELETE /api/ai/jobs/{job_id}`
@@ -550,6 +640,99 @@ If `job_id` is supplied but not found in Qdrant, the endpoint returns `404`.
 - **Rate limit:** 500/day, 10/minute, 50/day per job
 - **curl:** `curl -X POST http://localhost/api/ai/analyze-jd -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"jd_text": "..."}'`
 
+### `POST /api/ai/decision`
+- **Purpose:** Run the ensemble Interview Decision Engine combining fit score + assessment score.
+- **Request:** `candidate_id` (int), `candidate_version` (int), `job_id` (int), `job_version` (int), `assessment_score` (int, 0–100)
+- **Response:**
+  ```
+  {
+    "decision": "hire|no_hire|review",
+    "combined_score": 0–100,
+    "fit_score": 0–100,
+    "assessment_score": 0–100,
+    "rationale": "...",
+    "confidence": 0–100,
+    "votes": ["hire", "review", "hire"]
+  }
+  ```
+  The LLM is called 3 times at temperatures `[0.0, 0.3, 0.5]`; majority vote wins (>half); on tie, `TIEBREAK_ORDER` (`no_hire` < `review` < `hire`) breaks it; the first vote matching the winning label supplies rationale/confidence.
+- **Errors:** `404` (candidate/job not found or version mismatch), `503` (LLM unavailable/malformed vote)
+- **Rate limit:** 500/hour, 20/minute, 100/hour per candidate
+- **curl:**
+  ```bash
+  curl -X POST http://localhost/api/ai/decision \
+    -H "X-API-Key: $API_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "candidate_id": 123,
+      "candidate_version": 1,
+      "job_id": 456,
+      "job_version": 1,
+      "assessment_score": 75
+    }'
+  ```
+
+### `POST /api/ai/generate‑invite‑email`
+- **Purpose:** Generate a personalized interview-invite email.
+- **Request:** `candidate_id` (int), `candidate_version` (int), `job_id` (int), `job_version` (int)
+- **Response:** `{"subject": "...", "body": "..."}`
+- **Note:** The mandatory `{{CALENDAR_LINK}}` placeholder must be present in the generated body. If missing from the first generation, the service retries once at the same temperature (0.7); if still missing, raises `503`.
+- **Errors:** `404` (not found/version mismatch), `503`
+- **Rate limit:** 500/hour, 20/minute, 100/hour per candidate
+- **curl:**
+  ```bash
+  curl -X POST http://localhost/api/ai/generate-invite-email \
+    -H "X-API-Key: $API_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "candidate_id": 123,
+      "candidate_version": 1,
+      "job_id": 456,
+      "job_version": 1
+    }'
+  ```
+
+### `POST /api/ai/interview/start`
+- **Purpose:** Inject a meeting bot into a live interview for recording + later grading.
+- **Request:** `meeting_url` (URL), `job_id` (int), `candidate_id` (int), `rubric` (list[str]), `callback_url` (URL), `join_at` (optional string)
+- **Response:** `202 Accepted` — `{"session_id": "<uuid>"}`
+- **Note:** SSRF validation of `callback_url` via `validate_callback_url` returns `422` on failure. Returns `502` if `MeetingBotClient.inject_bot` fails.
+- **Rate limit:** 500/day, 10/minute, 20/day per candidate
+- **curl:**
+  ```bash
+  curl -X POST http://localhost/api/ai/interview/start \
+    -H "X-API-Key: $API_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "meeting_url": "https://meet.google.com/abc-defg-hij",
+      "job_id": 456,
+      "candidate_id": 123,
+      "rubric": ["Communication", "Technical Skills", "Problem Solving"],
+      "callback_url": "https://php-backend.example.com/callback"
+    }'
+  ```
+
+### `GET /api/ai/interview/{session_id}`
+- **Purpose:** Poll interview session status.
+- **Response:** `session_id`, `status` (`pending|recording|transcribing|grading|completed|failed`), `result` (nullable dict — grading result once completed), `candidate_id`, `job_id`
+- **Errors:** `404` if not found
+- **Rate limit:** None
+- **curl:** `curl http://localhost/api/ai/interview/550e8400-e29b-41d4-a716-446655440000 -H "X-API-Key: $API_KEY"`
+
+### `DELETE /api/ai/interview/{session_id}`
+- **Purpose:** Delete an interview session record.
+- **Response:** `{"deleted": true}`; `404` if not found
+- **Rate limit:** None
+- **curl:** `curl -X DELETE http://localhost/api/ai/interview/550e8400-e29b-41d4-a716-446655440000 -H "X-API-Key: $API_KEY"`
+
+### `POST /api/ai/interview/webhook`
+- **Purpose:** Recall.ai async event callback receiver (`recording.done`, `transcript.done`, `transcript.failed`).
+- **Authentication:** Uses **Svix-signature verification** via `verify_recall_webhook` (in [`app/utils/webhook_verification.py`](app/utils/webhook_verification.py)) against `RECALL_AI_WEBHOOK_SECRET` — **not** the `X-API-Key` scheme. Registered in [`app/main.py`](app/main.py) via `app.include_router(interview_webhook.router, ...)` **without** the `verify_api_key` dependency (unlike every other router).
+- **Flow:** Looks up the session by `bot.id` via `store.get_by_bot_id`; on `recording.done`, schedules a background task to call `create_transcript` and mark status `transcribing`; on `transcript.done`, schedules a background task that calls `fetch_transcript`, invokes `grade_transcript`, updates status to `completed`, and delivers a signed callback via `CallbackClient.send(..., extra_payload={"session_id": ..., "grading_result": ...})`; on `transcript.failed`, marks status `failed` and sends a failure callback.
+- **Response:** `204 No Content` (or `400` on invalid signature)
+- **Rate limit:** None (internal vendor callback, not a caller-facing/LLM-cost endpoint)
+- **curl:** _(Not callable externally — Recall.ai posts to this endpoint directly)_
+
 ### `GET /health`
 - **Purpose:** Health check — no authentication required.
 - **Response:** `{"status": "ok", "dead_letter_count": 0}` — normal operation
@@ -633,6 +816,19 @@ Unit tests mock all external dependencies (Qdrant, OpenAI) and run in CI on ever
 | [`tests/unit/clients/test_cache.py`](tests/unit/clients/test_cache.py) | TTL cache backend |
 | [`tests/unit/test_config.py`](tests/unit/test_config.py) | Settings loading |
 | [`tests/unit/test_utils.py`](tests/unit/test_utils.py) | Utility functions |
+| [`tests/unit/routers/test_screening_router.py`](tests/unit/routers/test_screening_router.py) | Screening question generation & JD analysis |
+| [`tests/unit/routers/test_decision_router.py`](tests/unit/routers/test_decision_router.py) | Decision endpoint wiring — ensemble voting/tiebreak |
+| [`tests/unit/routers/test_email_router.py`](tests/unit/routers/test_email_router.py) | Invite email generation endpoint — calendar-link retry |
+| [`tests/unit/routers/test_interview_router.py`](tests/unit/routers/test_interview_router.py) | Bot injection, SSRF validation, 202 flow |
+| [`tests/unit/routers/test_interview_webhook_router.py`](tests/unit/routers/test_interview_webhook_router.py) | Svix verification + event routing (recording.done, transcript.done/failed) |
+| [`tests/unit/services/test_screening_service.py`](tests/unit/services/test_screening_service.py) | Screening question generation & JD analysis |
+| [`tests/unit/services/test_screening_store.py`](tests/unit/services/test_screening_store.py) | Screening session state persistence |
+| [`tests/unit/services/test_decision_service.py`](tests/unit/services/test_decision_service.py) | Decision combined-score math, majority-vote tiebreak |
+| [`tests/unit/services/test_email_service.py`](tests/unit/services/test_email_service.py) | Email placeholder validation, {{CALENDAR_LINK}} retry logic |
+| [`tests/unit/services/test_interview_service.py`](tests/unit/services/test_interview_service.py) | Transcript grading, host-speaker exclusion, candidate-name masking |
+| [`tests/unit/services/test_interview_session_store.py`](tests/unit/services/test_interview_session_store.py) | Session CRUD, candidate cascade lookup |
+| [`tests/unit/clients/test_meeting_bot.py`](tests/unit/clients/test_meeting_bot.py) | Meeting bot injection & vendor abstraction |
+| [`tests/unit/utils/test_bias_masking.py`](tests/unit/utils/test_bias_masking.py) | Bias masking utilities |
 
 ## CI/CD
 

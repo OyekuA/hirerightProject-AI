@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, Any
+from typing import Any, Optional, Union
 
 import qdrant_client
 from qdrant_client import QdrantClient as QdrantSDKClient
@@ -11,8 +11,11 @@ from app.config import get_settings
 from app.constants import CANDIDATES_COLLECTION, JOBS_COLLECTION
 
 
+_MISSING = object()
+MISSING = _MISSING
+
+
 class QdrantClient:
-    """Wrapper around qdrant-client SDK with convenience methods."""
 
     def __init__(self, host: str, port: int):
         self._client: QdrantSDKClient = qdrant_client.QdrantClient(
@@ -102,23 +105,23 @@ class QdrantClient:
         point = models.PointStruct(id=point_id, vector=vector, payload=payload)
         self._client.upsert(collection_name=collection, points=[point])
 
-    def get(self, collection: str, point_id: int) -> Optional[dict[str, Any]]:
+    def get(self, collection: str, point_id: int) -> Union[dict[str, Any], object]:
         points = self._client.retrieve(
             collection_name=collection,
             ids=[point_id],
         )
         if not points:
-            return None
+            return _MISSING
         return points[0].payload or {}
 
-    def get_with_vector(self, collection: str, point_id: int) -> tuple[Optional[dict[str, Any]], Optional[list[float]]]:
+    def get_with_vector(self, collection: str, point_id: int) -> tuple[Union[dict[str, Any], object], Optional[list[float]]]:
         points = self._client.retrieve(
             collection_name=collection,
             ids=[point_id],
             with_vectors=True,
         )
         if not points:
-            return None, None
+            return _MISSING, None
         record = points[0]
         return record.payload or {}, record.vector
 

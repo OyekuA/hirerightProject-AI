@@ -20,7 +20,7 @@ COPY --from=builder /app/.venv /app/.venv
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /data/ingest_status && chown -R appuser:appuser /data/ingest_status
+RUN mkdir -p /data/ingest_status /data/interview_sessions && chown -R appuser:appuser /data/ingest_status /data/interview_sessions
 
 COPY --from=builder /app/app ./app/
 

@@ -1,7 +1,9 @@
+import io
 import ipaddress
 import socket
 import structlog
 import threading
+import docx
 import httpx
 import fitz
 from typing import Optional
@@ -104,9 +106,11 @@ def fetch_and_parse_cv(cv_url: str) -> str:
 
     allowed_content_types = {
         "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "text/plain",
         "application/octet-stream",
     }
-    allowed_extensions = {".pdf"}
+    allowed_extensions = {".pdf", ".docx", ".txt"}
 
     max_bytes = settings.MAX_INGEST_FILE_MB * 1024 * 1024
     timeout = httpx.Timeout(settings.INGEST_FETCH_TIMEOUT_SECONDS, connect=10.0)
@@ -149,7 +153,8 @@ def fetch_and_parse_cv(cv_url: str) -> str:
                         final_path = response.url.path
                         if not any(final_path.lower().endswith(ext) for ext in allowed_extensions):
                             raise ValueError(
-                                f"CV URL does not have a .pdf extension (final URL: {response.url})"
+                                f"CV URL does not have a supported extension (final URL: {response.url}); "
+                                f"supported: {allowed_extensions}"
                             )
 
                         content_type = response.headers.get("Content-Type", "").split(";")[0].strip()
@@ -179,9 +184,10 @@ def fetch_and_parse_cv(cv_url: str) -> str:
         _thread_host_to_ip.mapping = None
 
     if final_path:
-        is_pdf = final_path.lower().endswith('.pdf')
+        suffix = final_path.lower().rsplit('.', 1)[-1] if '.' in final_path else ''
         text = ""
-        if is_pdf:
+
+        if suffix == 'pdf':
             try:
                 doc = fitz.open(stream=content, filetype="pdf")
                 text = "\n".join(page.get_text() for page in doc)
@@ -192,9 +198,27 @@ def fetch_and_parse_cv(cv_url: str) -> str:
             except Exception as e:
                 logger.error("PDF parsing failed", url="[REDACTED]", error=str(e))
                 raise RuntimeError(f"PDF parsing failed: {e}") from e
+
+        elif suffix == 'docx':
+            try:
+                document = docx.Document(io.BytesIO(content))
+                text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+                if not text.strip():
+                    logger.warning("CV file appears to have no extractable text", url="[REDACTED]", path=final_path)
+                    raise RuntimeError("CV file appears to have no extractable text. Please upload a text-based docx file.")
+            except Exception as e:
+                logger.error("DOCX parsing failed", url="[REDACTED]", error=str(e))
+                raise RuntimeError(f"DOCX parsing failed: {e}") from e
+
+        elif suffix == 'txt':
+            text = content.decode("utf-8", errors="replace")
+            if not text.strip():
+                logger.warning("CV file appears to have no extractable text", url="[REDACTED]", path=final_path)
+                raise RuntimeError("CV file appears to have no extractable text. Please upload a text-based txt file.")
+
         else:
             logger.error("Unsupported file type for CV", url="[REDACTED]", path=final_path)
-            raise ValueError(f"Unsupported file type: only PDF is supported (file: {final_path})")
+            raise ValueError(f"Unsupported file type: only PDF, DOCX, and TXT are supported (file: {final_path})")
 
         logger.debug("CV parsed successfully", url="[REDACTED]", text_length=len(text))
         return text

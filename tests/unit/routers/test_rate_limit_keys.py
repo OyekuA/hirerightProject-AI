@@ -1,4 +1,4 @@
-"""Unit tests for rate‑limit key extraction functions."""
+
 
 import hashlib
 import json
@@ -15,12 +15,10 @@ from app.routers._rate_limit_keys import (
     candidate_or_job_id_key,
 )
 
-
 class TestFingerprint(unittest.TestCase):
-    """Test the internal _fingerprint helper."""
 
     def test_fingerprint_with_api_key(self):
-        """SHA‑256 fingerprint of API key."""
+
         request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret123"}
         with patch("app.routers._rate_limit_keys.get_remote_address") as mock_get:
@@ -30,7 +28,7 @@ class TestFingerprint(unittest.TestCase):
         self.assertEqual(fp, expected)
 
     def test_fingerprint_with_ip_fallback(self):
-        """Fall back to client IP when no API key."""
+
         request = MagicMock(spec=Request)
         request.headers = {}
         with patch("app.routers._rate_limit_keys.get_remote_address") as mock_get:
@@ -40,7 +38,7 @@ class TestFingerprint(unittest.TestCase):
         self.assertEqual(fp, expected)
 
     def test_fingerprint_with_entity_id(self):
-        """Entity ID is concatenated to the base bytes."""
+
         request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret123"}
         with patch("app.routers._rate_limit_keys.get_remote_address"):
@@ -49,7 +47,7 @@ class TestFingerprint(unittest.TestCase):
         self.assertEqual(fp, expected)
 
     def test_fingerprint_different_keys_give_different_hashes(self):
-        """Different API keys produce distinct fingerprints."""
+
         request1 = MagicMock(spec=Request)
         request1.headers = {"X-API-Key": "key1"}
         request2 = MagicMock(spec=Request)
@@ -60,7 +58,7 @@ class TestFingerprint(unittest.TestCase):
         self.assertNotEqual(fp1, fp2)
 
     def test_fingerprint_same_key_same_hash(self):
-        """Same API key yields identical fingerprint across requests."""
+
         request1 = MagicMock(spec=Request)
         request1.headers = {"X-API-Key": "same"}
         request2 = MagicMock(spec=Request)
@@ -70,12 +68,10 @@ class TestFingerprint(unittest.TestCase):
             fp2 = _fingerprint(request2)
         self.assertEqual(fp1, fp2)
 
-
 class TestCandidateIdKey(unittest.TestCase):
-    """Test candidate_id_key synchronous function."""
 
     def test_candidate_id_present(self):
-        """Key format: candidate:{fingerprint_with_entity_id}."""
+
         request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
         request.state.raw_body = json.dumps({"candidate_id": 123}).encode()
@@ -84,7 +80,7 @@ class TestCandidateIdKey(unittest.TestCase):
         self.assertEqual(key, f"candidate:{expected_fp}")
 
     def test_candidate_id_missing(self):
-        """Missing candidate_id yields unknown:{fingerprint}."""
+
         request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
         request.state.raw_body = json.dumps({}).encode()
@@ -93,7 +89,7 @@ class TestCandidateIdKey(unittest.TestCase):
         self.assertEqual(key, f"unknown:{expected_fp}")
 
     def test_candidate_id_non_dict_body(self):
-        """Non‑dict JSON body falls back to unknown."""
+
         request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
         request.state.raw_body = json.dumps([1, 2, 3]).encode()
@@ -102,7 +98,7 @@ class TestCandidateIdKey(unittest.TestCase):
         self.assertEqual(key, f"unknown:{expected_fp}")
 
     def test_candidate_id_json_decode_error(self):
-        """Malformed JSON raises exception, caught and returns unknown."""
+
         request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
         request.state.raw_body = b"not valid json"
@@ -111,7 +107,7 @@ class TestCandidateIdKey(unittest.TestCase):
         self.assertEqual(key, f"unknown:{expected_fp}")
 
     def test_candidate_id_body_empty(self):
-        """Empty raw_body bytes falls back to unknown."""
+
         request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
         request.state.raw_body = b""
@@ -120,7 +116,7 @@ class TestCandidateIdKey(unittest.TestCase):
         self.assertEqual(key, f"unknown:{expected_fp}")
 
     def test_candidate_id_body_none(self):
-        """raw_body set to None on request.state falls back to unknown."""
+
         request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
         request.state.raw_body = None
@@ -128,12 +124,10 @@ class TestCandidateIdKey(unittest.TestCase):
         expected_fp = hashlib.sha256(b"secret").hexdigest()
         self.assertEqual(key, f"unknown:{expected_fp}")
 
-
 class TestJobIdKey(unittest.TestCase):
-    """Test job_id_key synchronous function."""
 
     def test_job_id_present(self):
-        """Key format: job:{fingerprint_with_entity_id}."""
+
         request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
         request.state.raw_body = json.dumps({"job_id": 456}).encode()
@@ -142,7 +136,7 @@ class TestJobIdKey(unittest.TestCase):
         self.assertEqual(key, f"job:{expected_fp}")
 
     def test_job_id_missing(self):
-        """Missing job_id yields unknown:{fingerprint}."""
+
         request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
         request.state.raw_body = json.dumps({}).encode()
@@ -151,7 +145,7 @@ class TestJobIdKey(unittest.TestCase):
         self.assertEqual(key, f"unknown:{expected_fp}")
 
     def test_job_id_without_api_key(self):
-        """No API key falls back to IP fingerprint."""
+
         request = MagicMock(spec=Request)
         request.headers = {}
         request.state.raw_body = json.dumps({"job_id": 789}).encode()
@@ -162,7 +156,7 @@ class TestJobIdKey(unittest.TestCase):
         self.assertEqual(key, f"job:{expected_fp}")
 
     def test_job_id_body_empty(self):
-        """Empty raw_body bytes falls back to unknown."""
+
         request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
         request.state.raw_body = b""
@@ -171,7 +165,7 @@ class TestJobIdKey(unittest.TestCase):
         self.assertEqual(key, f"unknown:{expected_fp}")
 
     def test_job_id_body_none(self):
-        """raw_body set to None on request.state falls back to unknown."""
+
         request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
         request.state.raw_body = None
@@ -179,9 +173,7 @@ class TestJobIdKey(unittest.TestCase):
         expected_fp = hashlib.sha256(b"secret").hexdigest()
         self.assertEqual(key, f"unknown:{expected_fp}")
 
-
 class TestTargetIdKey(unittest.TestCase):
-    """Test target_id_key synchronous function."""
 
     def test_target_id_present(self):
         request = MagicMock(spec=Request)
@@ -192,7 +184,7 @@ class TestTargetIdKey(unittest.TestCase):
         self.assertEqual(key, f"target:{expected_fp}")
 
     def test_target_id_body_empty(self):
-        """Empty raw_body bytes falls back to unknown."""
+
         request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
         request.state.raw_body = b""
@@ -201,7 +193,7 @@ class TestTargetIdKey(unittest.TestCase):
         self.assertEqual(key, f"unknown:{expected_fp}")
 
     def test_target_id_body_none(self):
-        """raw_body set to None on request.state falls back to unknown."""
+
         request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
         request.state.raw_body = None
@@ -209,9 +201,7 @@ class TestTargetIdKey(unittest.TestCase):
         expected_fp = hashlib.sha256(b"secret").hexdigest()
         self.assertEqual(key, f"unknown:{expected_fp}")
 
-
 class TestCandidateOrJobIdKey(unittest.TestCase):
-    """Test candidate_or_job_id_key synchronous function."""
 
     def test_candidate_context_present(self):
         request = MagicMock(spec=Request)
@@ -247,7 +237,7 @@ class TestCandidateOrJobIdKey(unittest.TestCase):
         self.assertEqual(key, f"unknown:{expected_fp}")
 
     def test_body_empty(self):
-        """Empty raw_body bytes falls back to unknown."""
+
         request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
         request.state.raw_body = b""
@@ -256,14 +246,13 @@ class TestCandidateOrJobIdKey(unittest.TestCase):
         self.assertEqual(key, f"unknown:{expected_fp}")
 
     def test_body_none(self):
-        """raw_body set to None on request.state falls back to unknown."""
+
         request = MagicMock(spec=Request)
         request.headers = {"X-API-Key": "secret"}
         request.state.raw_body = None
         key = candidate_or_job_id_key(request)
         expected_fp = hashlib.sha256(b"secret").hexdigest()
         self.assertEqual(key, f"unknown:{expected_fp}")
-
 
 if __name__ == "__main__":
     unittest.main()

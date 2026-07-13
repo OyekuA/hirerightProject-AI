@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     LLM_EMBEDDING_TIMEOUT_SECONDS: int = 30
     LLM_MAX_RETRIES: int = 2
     LLM_RETRY_BACKOFF_BASE_SECONDS: float = 1.0
+    LLM_JSON_MODE_ENABLED: bool = True
+    LLM_GENERATION_MAX_TOKENS: int = 4096
+    LLM_SEED: Optional[int] = None
     MAX_PROMPT_CHARS: int = 50000
     INGEST_STATUS_STORE_PATH: str
     CALLBACK_HMAC_SECRET: str
@@ -36,6 +39,26 @@ class Settings(BaseSettings):
     ENABLE_DOCS: bool = False
     DOCS_USERNAME: Optional[str] = None
     DOCS_PASSWORD: Optional[str] = None
+
+    SCORING_WEIGHT_SKILLS: float = 0.35
+    SCORING_WEIGHT_ROLE: float = 0.25
+    SCORING_WEIGHT_EXPERIENCE: float = 0.20
+    SCORING_WEIGHT_LOCATION: float = 0.12
+    SCORING_WEIGHT_EMPLOYMENT: float = 0.08
+
+    DECISION_FIT_WEIGHT: float = 0.40
+    DECISION_ASSESSMENT_WEIGHT: float = 0.60
+
+    SCORING_STATUS_PASS_THRESHOLD: int = 75
+    SCORING_STATUS_WARNING_THRESHOLD: int = 50
+
+    SCREENING_MAX_BATCH_SIZE: int = 1000
+    SCREENING_CONCURRENCY: int = 10
+
+    RECALL_AI_API_KEY: Optional[str] = None
+    RECALL_AI_REGION: str = "eu-central-1"
+    RECALL_AI_WEBHOOK_SECRET: Optional[str] = None
+    INTERVIEW_SESSION_STORE_PATH: Optional[str] = None
 
 _settings_instance: Optional[Settings] = None
 

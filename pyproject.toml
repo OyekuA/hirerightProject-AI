@@ -16,6 +16,9 @@ dependencies = [
     "qdrant-client",
     "numpy",
     "pymupdf",
+    "python-docx",
+    "svix",
+    "starlette",
 ]
 
 [build-system]

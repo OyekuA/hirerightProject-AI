@@ -9,6 +9,8 @@ class ProfileData(BaseModel):
     industry: str
     employment_type: str
     candidate_version: int
+    data_source: Optional[str] = None
+    total_years_experience: Optional[float] = None
 
 
 class IngestCandidateRequest(BaseModel):
@@ -52,6 +54,7 @@ class CandidateExtraction(BaseModel):
     skills: List[str] = []
     past_roles: List[str] = []
     raw_profile_summary: Optional[str] = None
+    total_years_experience: Optional[float] = None
 
 
 class JobExtraction(BaseModel):

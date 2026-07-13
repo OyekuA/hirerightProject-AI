@@ -5,7 +5,8 @@ from typing import Optional, Union, Literal, List, Dict, Any
 
 from app.clients.dependencies import CANDIDATES_COLLECTION, JOBS_COLLECTION
 from app.clients.llm import LLMClient, LLMUnavailableError
-from app.clients.qdrant import QdrantClient
+from app.clients.qdrant import QdrantClient, MISSING
+from app.config import get_settings
 from app.utils import parse_llm_json
 from app.prompts import GENERATE_QUESTIONS_PROMPT_TEMPLATE, GRADE_ANSWERS_PROMPT_TEMPLATE
 from ..schemas.assessment import MultipleChoiceQuestion
@@ -54,7 +55,7 @@ ASSESSMENT_SITUATION_MODIFIERS = (
     "a tight deadline or high-pressure environment",
     "limited budget, headcount, or tooling",
     "a newly formed, distributed, or junior team",
-    "significant legacy systems or accumulated technical debt",
+    "significant legacy processes or accumulated organisational debt",
     "a period of rapid growth or a sudden spike in demand",
     "conflicting expectations from multiple stakeholders",
     "a regulated or low-tolerance-for-error context",
@@ -96,7 +97,7 @@ class AssessmentService:
         skills = []
         if candidate_id is not None:
             payload = self.qdrant.get(CANDIDATES_COLLECTION, candidate_id)
-            if payload is None:
+            if payload is MISSING or payload is None:
                 logger.warning("Candidate not found in vector store", candidate_id=candidate_id)
                 raise ValueError("Candidate not found in vector store")
             past_roles = payload.get("past_roles", [])
@@ -105,7 +106,7 @@ class AssessmentService:
         job_context = {}
         if job_id is not None:
             job_payload = self.qdrant.get(JOBS_COLLECTION, job_id)
-            if job_payload is None:
+            if job_payload is MISSING or job_payload is None:
                 logger.warning("Job not found in vector store", job_id=job_id)
                 raise ValueError("Job not found in vector store")
             job_context = {
@@ -285,8 +286,19 @@ ADDITIONAL RULES:
             intent_block=intent_block,
             instruction=instruction
         )
-        generated = self.llm.generate(prompt, temperature=0.9)
-        try:
+
+        settings = get_settings()
+        tokens_per_question = 200 if question_type == "multiple_choice" else 100
+        computed_max_tokens = min(clamped_n * tokens_per_question, settings.LLM_GENERATION_MAX_TOKENS)
+
+        def _attempt_generate(temp: float) -> list:
+            rf = LLMClient.get_response_format(self.llm._model, "array")
+            generated = self.llm.generate(
+                prompt,
+                temperature=temp,
+                response_format=rf,
+                max_tokens=computed_max_tokens,
+            )
             parsed = parse_llm_json(generated)
             if not isinstance(parsed, list):
                 raise ValueError("LLM response is not a list")
@@ -299,12 +311,12 @@ ADDITIONAL RULES:
                 )
                 questions = questions[:clamped_n]
             elif len(questions) < clamped_n:
-                logger.error(
-                    "LLM returned fewer questions than requested",
+                logger.warning(
+                    "LLM returned fewer questions than requested, retryable",
                     requested=clamped_n,
                     received=len(questions),
                 )
-                raise LLMUnavailableError(
+                raise ValueError(
                     f"LLM returned only {len(questions)} questions, expected {clamped_n}"
                 )
 
@@ -351,9 +363,22 @@ ADDITIONAL RULES:
                     })
                 questions = formatted_questions
             return questions
+
+        try:
+            return _attempt_generate(temp=0.9)
         except (json.JSONDecodeError, ValueError) as e:
-            logger.error("Failed to parse LLM response as JSON", error=str(e))
-            raise LLMUnavailableError(f"LLM returned malformed response: {e}")
+            logger.warning(
+                "First generate_questions parse failed, attempting repair retry",
+                error=str(e),
+            )
+            try:
+                return _attempt_generate(temp=0)
+            except (json.JSONDecodeError, ValueError) as e2:
+                logger.error(
+                    "Repair retry also failed for generate_questions",
+                    error=str(e2),
+                )
+                raise LLMUnavailableError(f"LLM returned malformed response: {e2}")
 
     @staticmethod
     def _is_multiple_choice(q: Union[str, dict, MultipleChoiceQuestion]) -> bool:
@@ -481,32 +506,49 @@ ADDITIONAL RULES:
         raise TypeError(f"Unsupported question type: {type(question)}")
 
     def _run_grading(self, prompt: str) -> dict:
-        generated = self.llm.generate(prompt, temperature=0)
-        result = parse_llm_json(generated)
+        def _attempt(temp: float) -> dict:
+            generated = self.llm.generate(prompt, temperature=temp, response_format={"type": "json_object"})
+            result = parse_llm_json(generated)
 
-        required_keys = {"overall_score", "skill_breakdown", "authenticity_flag", "grading_reasoning"}
-        if not all(k in result for k in required_keys):
-            raise ValueError("LLM response missing required keys")
-        if not isinstance(result["authenticity_flag"], dict):
-            raise ValueError("authenticity_flag must be a dict")
+            required_keys = {"overall_score", "skill_breakdown", "authenticity_flag", "grading_reasoning"}
+            if not all(k in result for k in required_keys):
+                raise ValueError("LLM response missing required keys")
+            if not isinstance(result["authenticity_flag"], dict):
+                raise ValueError("authenticity_flag must be a dict")
 
-        overall = int(result["overall_score"])
-        if not (0 <= overall <= 100):
-            raise ValueError(f"overall_score {overall} out of range 0‑100")
-        result["overall_score"] = overall
+            overall = int(result["overall_score"])
+            if not (0 <= overall <= 100):
+                raise ValueError(f"overall_score {overall} out of range 0‑100")
+            result["overall_score"] = overall
 
-        skill_breakdown = result["skill_breakdown"]
-        if not isinstance(skill_breakdown, list) or not (3 <= len(skill_breakdown) <= 5):
-            raise ValueError("skill_breakdown must be a list of 3‑5 items")
-        for item in skill_breakdown:
-            if not all(k in item for k in ("category", "score", "feedback")):
-                raise ValueError("skill_breakdown item missing required keys")
-            score = int(item["score"])
-            if not (0 <= score <= 100):
-                raise ValueError(f"Skill score {score} out of range 0‑100")
-            item["score"] = score
+            skill_breakdown = result["skill_breakdown"]
+            if not isinstance(skill_breakdown, list) or not (1 <= len(skill_breakdown) <= 5):
+                raise ValueError("skill_breakdown must be a list of 1-5 items")
+            for item in skill_breakdown:
+                if not all(k in item for k in ("category", "score", "feedback")):
+                    raise ValueError("skill_breakdown item missing required keys")
+                score = int(item["score"])
+                if not (0 <= score <= 100):
+                    raise ValueError(f"Skill score {score} out of range 0‑100")
+                item["score"] = score
 
-        return result
+            return result
+
+        try:
+            return _attempt(temp=0)
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(
+                "First grading parse failed, attempting repair retry",
+                error=str(e),
+            )
+            try:
+                return _attempt(temp=0.3)
+            except (json.JSONDecodeError, ValueError) as e2:
+                logger.error(
+                    "Repair retry also failed for grading",
+                    error=str(e2),
+                )
+                raise LLMUnavailableError(f"LLM returned malformed grading response: {e2}")
 
     def grade_answers(
         self,

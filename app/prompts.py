@@ -113,14 +113,14 @@ Return **only** a JSON object with the exact key order shown below:
   }},
   "skill_breakdown": [
     {{
-      "category": "System Design",
+      "category": "Domain Knowledge",
       "score": 75,
-      "feedback": "You demonstrated good knowledge of scalability but missed a key caching concept."
+      "feedback": "You demonstrated good understanding of core concepts but missed a key regulatory requirement."
     }},
     {{
-      "category": "Debugging",
+      "category": "Analytical Reasoning",
       "score": 100,
-      "feedback": "You correctly identified all troubleshooting steps for memory leaks."
+      "feedback": "You correctly identified all root causes and proposed evidence-backed solutions."
     }}
   ],
   "grading_reasoning": "Raw score 82 based on answer quality. Typing speed flagged suspicious; the system applies the authenticity penalty automatically.",
@@ -142,15 +142,25 @@ CANDIDATE PROFILE (ID {candidate_id}):
 Your task is to suggest exactly three career paths that would be a good fit for this candidate.
 For each path, produce a JSON object with the following keys:
 
-- "role": a string describing the job title or role (e.g., "Senior Data Engineer")
-- "core_skills": a JSON array of 3‑5 short skill strings drawn directly from the candidate's profile that make them suited for this role (e.g., ["Python", "Data Modelling", "ETL pipelines"])
-- "reasoning": a single concise sentence in **second‑person** voice explaining the fit (e.g., "Your 5 years of Python experience aligns well with the data engineering demands of this role.")
+- "role": a string describing the job title or role (e.g., "HR Operations Manager")
+- "core_skills": a JSON array of 3‑5 short skill strings drawn directly from the candidate's profile that make them suited for this role (e.g., ["Employee Relations", "HRIS", "Onboarding"])
+- "reasoning": a single concise sentence in **second‑person** voice explaining the fit (e.g., "Your experience in employee relations and HRIS administration aligns well with the demands of this role.")
 - "match_percentage": an integer between 0 and 100 indicating how well the candidate's profile matches this role
 
 Write `reasoning` in second‑person voice (use "You" / "Your"), never "the candidate" or "they".
 
 Additionally, provide a single overall profile summary at the top level:
-- "profile_summary": a 2‑3 sentence **second‑person** summary of the candidate's overall profile (not tied to a specific path). Example: "You bring a strong foundation in backend systems and have demonstrated ownership of end‑to‑end data pipelines. Your experience in fast‑paced startups positions you well for roles that require adaptability."
+- "profile_summary": a 2‑3 sentence **second‑person** summary of the candidate's overall profile (not tied to a specific path). Example: "You bring strong cross-functional coordination skills and have demonstrated ownership of end‑to‑end project workflows. Your experience in fast‑paced environments positions you well for roles that require adaptability."
+
+GROUNDING CONSTRAINT — CRITICAL:
+* Every `role` and each `core_skills` entry MUST be justified by the candidate's actual `skills`, `past_roles`, `industry`, and `raw_profile_summary`.
+* Roles outside the candidate's demonstrated field are forbidden unless a clear transferable-skill rationale is stated in `reasoning`.
+* Do NOT suggest generic or aspirational roles that cannot be supported by the candidate's profile data.
+
+BIAS GUARD — CRITICAL:
+* Ignore candidate name, location‑as‑identity, age, gender, nationality, or any other protected characteristic.
+* Base judgments solely on `skills`, `past_roles`, `industry`, and `raw_profile_summary` content.
+* The `name` field has been intentionally omitted from the candidate JSON; the `location` field (if present) contains only a country/region token for context — do not treat it as an identity signal.
 
 Return **only** a JSON object (not an array) with keys `profile_summary` and `paths`. The `paths` key must contain an array of exactly three objects, each with `role`, `core_skills`, `reasoning`, and `match_percentage` (in this exact order). Do not include `profile_summary` inside each path object.
 
@@ -184,43 +194,21 @@ JOB PROFILE (ID {job_id}, version {job_version}):
 
 ```
 
-Your task is to evaluate the candidate's fit for this job and produce a JSON object strictly following the rules below.
+Your task is to evaluate the candidate's fit for this job on two dimensions: skills and role_match.
+Produce a JSON object strictly following the rules below.
 
-CATEGORY EVALUATION RULES:
+BIAS GUARD — CRITICAL:
+* Ignore candidate name, location‑as‑identity, age, gender, nationality, or any other protected characteristic.
+* Base **skills** and **role_match** judgments solely on `skills`, `past_roles`, `industry`, and `raw_profile_summary` content.
+* The `name` field has been intentionally omitted from the candidate JSON; the `location` field (if present) contains only a country/region token for context — do not treat it as an identity signal.
 
-* **role_match**
-* "pass": Direct match OR strong transferable stack (e.g., Go/Java experience for a Python/FastAPI role).
-* "warning": Related domain, but stack differs WITHOUT direct paradigm overlap.
-* "fail": Entirely different domain (e.g., Designer for Engineering, Sales for Data Science).
+JUDGMENT DIMENSIONS:
 
+* **skills** (score: 0–100)
+  Compare candidate `skills` against job `required_skills`. Explicitly credit synonymous or transferable skills (e.g., clinical research experience credited toward patient trial management requirement, or budget forecasting experience credited toward financial planning requirement). Output a score and a short telegraphic reason explaining the assessment.
 
-* **experience**
-* "pass": Experience meets or exceeds the requirement.
-* "warning": Years of experience is within 1 year below the requirement.
-* "fail": Years of experience is more than 1 year below the requirement.
-
-
-* **location**
-* "pass": Candidate location matches job location, OR job is remote and candidate is open to remote.
-* "warning": Candidate location is in the same country but different city, and job does not explicitly require on-site.
-* "fail": Candidate location is in a different city AND job requires on-site presence, OR candidate is not open to the required employment arrangement.
-
-
-* **employment_type**
-* "pass": Employment type matches exactly (e.g., both full-time, both remote).
-* "warning": Minor mismatch that could be negotiated (e.g., candidate prefers hybrid, job is full on-site).
-* "fail": Fundamental mismatch.
-
-
-
-SCORING RUBRIC (STRICT & MUTUALLY EXCLUSIVE):
-Based on the 4 categories evaluated above, determine the score using EXACTLY this tier system:
-
-* **Tier 1 (85–100):** 4 "pass".
-* **Tier 2 (70–84):** 3 "pass", 1 "warning". (Use this tier if relying heavily on transferable skills).
-* **Tier 3 (50–69):** 0 "fail", but 2 or more "warning".
-* **Tier 4 (35–49):** EXACTLY 1 "fail" (regardless of passes).
-* **Tier 5 (0–34):** 2 or more "fail".
+* **role_match** (score: 0–100)
+  Domain/role fit judgment. Assess whether the candidate's background, past roles, and industry align with the job's domain. Output a score and a short telegraphic reason.
 
 STYLE RULES — STRICT:
 
@@ -234,15 +222,70 @@ STYLE RULES — STRICT:
 
 OUTPUT JSON STRUCTURE:
 {{
-"category_breakdown": {{
-"role_match":      {{"status": "pass|warning|fail", "short_reason": "1-2 sentences. Telegraphic style."}},
-"experience":      {{"status": "pass|warning|fail", "short_reason": "1-2 sentences. Telegraphic style."}},
-"location":        {{"status": "pass|warning|fail", "short_reason": "1-2 sentences. Telegraphic style."}},
-"employment_type": {{"status": "pass|warning|fail", "short_reason": "1-2 sentences. Telegraphic style."}}
-}},
-"skill_gap_analysis": "A concise, plain-text paragraph describing the most significant gaps. Telegraphic style. Highlight transferable skills if exact matches are missing.",
-"scoring_reasoning": "Briefly list the count of passes/warnings/fails, identify the matching Tier from the Rubric, and justify the final number. Telegraphic style.",
-"overall_score_percentage": <integer between 0 and 100>
+"skills":             {{"score": <int 0-100>, "short_reason": "1-2 sentences. Telegraphic style."}},
+"role_match":         {{"score": <int 0-100>, "short_reason": "1-2 sentences. Telegraphic style."}},
+"skill_gap_analysis": "A concise, plain-text paragraph describing the most significant gaps. Telegraphic style. Highlight transferable skills if exact matches are missing."
+}}
+"""
+
+INTERVIEW_RECOMMENDATION_PROMPT_TEMPLATE = """
+You are an elite senior recruiter writing a concise recommendation rationale based on structured evaluation data.
+
+DECISION: {decision}  (pre-computed: combined_score >= 80 AND assessment >= 75 -> hire, combined_score < 50 OR assessment < 40 -> no_hire, else review)
+COMBINED SCORE: {combined_score}/100
+ASSESSMENT SCORE: {assessment_score}/100
+
+CATEGORY BREAKDOWN:
+{category_breakdown_json}
+
+Your task is to produce a short rationale and a confidence level. Do NOT question, override, or re-evaluate the {decision} decision — it is pre-computed from the scores by deterministic rules.
+
+For the rationale: summarise the strongest and weakest dimensions from the CATEGORY BREAKDOWN. Do NOT fabricate or guess at specific missing qualifications, skills, or credentials. Only state which dimensions scored high and which scored low, using the category names and statuses shown.
+
+CRITICAL: If all or most dimensions are "pass" and the combined score is high, your rationale must reflect that the evaluation found the candidate well-qualified with no significant gaps. Do NOT invent missing items.
+
+For confidence: estimate how decisive the scores are. High confidence (85-100) when combined_score is far from thresholds. Medium (60-84) when near threshold boundaries. Low (<60) when scores are borderline.
+
+STYLE RULES -- STRICT:
+* **Telegraphic / Entity-Neutral Style:** NEVER use pronouns or possessives like "The candidate", "They", "Their", "You", or "Your". Start sentences directly with nouns or verbs.
+* **Format strictly:** Return only the JSON object, no markdown fences, no extra text.
+
+OUTPUT JSON STRUCTURE:
+{{
+  "rationale": "A concise telegraphic paragraph (2-4 sentences).",
+  "confidence": <int 0-100>
+}}
+"""
+
+EMAIL_GENERATION_PROMPT_TEMPLATE = """
+You are a professional recruiter composing a concise interview invitation email.
+
+CANDIDATE NAME: {candidate_name}
+CANDIDATE SKILLS: {candidate_skills}
+CANDIDATE PROFILE SUMMARY: {candidate_summary}
+
+JOB TITLE: {job_title}
+COMPANY: {company}
+
+Write a warm, professional invitation email (90-130 words). Keep it concise and direct.
+
+REQUIREMENTS:
+1. Open with "Dear {candidate_name}," and close with just "{company}" on its own line -- no signatures, titles, or contact info.
+2. Mention 1-2 specific skills or experiences from the candidate profile that make them a good fit.
+3. Include the literal placeholder {{{{CALENDAR_LINK}}}} exactly as shown (with double braces) where the scheduling link should go.
+4. Tone: warm but restrained. Avoid effusive language like "thrilled", "fantastic", "perfect fit", or "exciting opportunity".
+5. Subject line: format as "Interview: {job_title} at {company}".
+
+NON-FABRICATION GUARD -- CRITICAL:
+* Use ONLY the candidate and job fields supplied above (name, skills, profile summary, job title, company).
+* Do NOT invent or hallucinate additional personal details, employers, accomplishments, availability, or scheduling specifics.
+* Do NOT make assumptions about current employment status, salary expectations, or time zone.
+
+Return **only** a JSON object with the exact structure below, no markdown fences, no extra text:
+
+{{
+  "subject": "Interview: {job_title} at {company}",
+  "body": "The full email body text. Must contain the literal string {{{{CALENDAR_LINK}}}}."
 }}
 """
 
@@ -351,10 +394,11 @@ Return a valid JSON object with exactly these keys:
 - "industry": string
 - "employment_type": string
 - "skills": array of strings
-- "past_roles": array of strings
+- "past_roles": array of strings (each entry MUST embed an explicit date range, e.g. "Title at Company (Jan 2020 – Present)")
 - "raw_profile_summary": string (concise summary of the candidate's overall profile)
+- "total_years_experience": number or null (compute from dated roles; set to null when it cannot be determined)
 
-If a field cannot be found, set its value to null (for strings) or [] (for arrays). Never use placeholder strings like "Not Provided" or "N/A".
+If a field cannot be found, set its value to null (for strings), null (for numbers), or [] (for arrays). Never use placeholder strings like "Not Provided" or "N/A".
 
 CV content:
 {cv_text}
@@ -408,22 +452,22 @@ If a field cannot be found in the CV, set its value to null (for strings) or [] 
 Example structure:
 {{
   "name": "Jane Doe",
-  "bio": "I am a senior software engineer with 8+ years of experience building scalable backend systems. I specialise in Python, FastAPI, and cloud-native architectures.",
-  "email": "jane.doe@example.com",
+  "bio": "I am an experienced operations manager with 8+ years of experience leading cross-functional teams and improving organizational workflows. I specialise in process optimisation, stakeholder management, and strategic planning.",
+  "email": "[EMAIL]",
   "phone": "+1-555-0123",
-  "title": "Senior Software Engineer",
-  "address": "San Francisco, CA",
-  "website": "https://janedoe.dev",
+  "title": "Operations Manager",
+  "address": "Chicago, IL",
+  "website": "https://janedoe.com",
   "experience": [
-    {{"title": "Senior Software Engineer", "company": "Acme Corp", "duration": "2020–Present", "description": "Led the design and implementation of a microservices platform."}}
+    {{"title": "Operations Manager", "company": "Acme Corp", "duration": "2020-Present", "description": "Led a team of 12 across supply chain and facilities operations, reducing costs by 18%."}}
   ],
   "education": [
-    {{"degree": "BSc Computer Science", "institution": "University of Tech", "year": "2015"}}
+    {{"degree": "MBA", "institution": "University of Business", "year": "2014"}},
+    {{"degree": "BA Business Administration", "institution": "State University", "year": "2012"}}
   ],
-  "certifications": ["AWS Solutions Architect", "Certified Kubernetes Administrator"],
+  "certifications": ["PMP", "Six Sigma Green Belt"],
   "social_links": [
-    {{"platform": "linkedin", "url": "https://linkedin.com/in/janedoe"}},
-    {{"platform": "github",   "url": "https://github.com/janedoe"}}
+    {{"platform": "linkedin", "url": "https://linkedin.com/in/janedoe"}}
   ]
 }}
 
@@ -431,4 +475,44 @@ CV text:
 {cv_text}
 
 Return only the JSON object, no other text.
+"""
+
+TRANSCRIPT_SCORING_PROMPT_TEMPLATE = """
+You are an elite senior recruiter evaluating a candidate's interview transcript against a scoring rubric.
+
+RUBRIC:
+{rubric_json}
+
+TRANSCRIPT TURNS (candidate-only, names masked):
+{transcript_turns_json}
+
+BIAS GUARD — CRITICAL:
+* Ignore candidate name, age, gender, nationality, or any other protected characteristic.
+* Names in the transcript have been intentionally masked as "[REDACTED]" or "Candidate".
+* Base your scoring solely on the substantive content of the candidate's responses.
+
+SCORING INSTRUCTIONS:
+1. For each criterion in the RUBRIC, assign a score (0–100) based on the candidate's demonstrated performance in that area.
+2. Provide an overall_score (0–100) as a best-effort value for internal consistency — note that the system will recompute and override this value deterministically using the mean of per_criterion_scores, so focus on accurate per-criterion scoring.
+3. Identify 1–3 strengths from the candidate's responses.
+4. Identify 0–3 red flags (concerns or areas needing improvement).
+5. Provide a final recommendation: one of "strong_hire", "hire", "review", or "no_hire".
+
+STYLE RULES — STRICT:
+* **Telegraphic / Entity-Neutral Style:** NEVER use pronouns or possessives like "The candidate", "They", "Their", "You", or "Your". Start sentences directly with nouns or verbs.
+* BAD: "The candidate demonstrated strong problem-solving skills."
+* GOOD: "Demonstrated strong problem-solving skills through detailed technical explanations."
+* **Format strictly:** Return only the JSON object, no markdown fences, no extra text.
+
+OUTPUT JSON STRUCTURE:
+{{
+  "per_criterion_scores": {{
+    "<criterion_name>": <int 0-100>,
+    ...
+  }},
+  "overall_score": <int 0-100>,
+  "strengths": ["<strength 1>", "<strength 2>", "<strength 3>"],
+  "red_flags": ["<red flag 1>", ...],
+  "recommendation": "<hire|no_hire|review|strong_hire>"
+}}
 """

@@ -1,5 +1,3 @@
-"""Project infrastructure."""
-
 __all__ = [
     "qdrant",
     "llm",

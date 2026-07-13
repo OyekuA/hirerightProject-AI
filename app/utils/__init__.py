@@ -9,11 +9,15 @@ logger = structlog.get_logger()
 
 def parse_llm_json(generated: str) -> Union[dict, list]:
     payload_hash = hashlib.sha256(generated.encode()).hexdigest()[:8]
-    logger.debug("Parsing LLM response", length=len(generated), hash=payload_hash)
+    length = len(generated)
+    logger.debug("Parsing LLM response", length=length, hash=payload_hash)
     generated = generated.strip()
+    looked_fenced = False
     if generated.startswith('```json'):
+        looked_fenced = True
         generated = generated[7:].lstrip()
     if generated.startswith('```'):
+        looked_fenced = True
         generated = generated[3:].lstrip()
     if generated.endswith('```'):
         generated = generated[:-3].rstrip()
@@ -67,5 +71,20 @@ def parse_llm_json(generated: str) -> Union[dict, list]:
                             except json.JSONDecodeError:
                                 break
     payload_hash = hashlib.sha256(generated.encode()).hexdigest()[:8]
-    logger.error("Failed to extract JSON from LLM response", length=len(generated), hash=payload_hash)
-    raise json.JSONDecodeError("Could not parse JSON from LLM response", "[REDACTED]", 0)
+    length = len(generated)
+    stripped = generated.strip()
+    starts_with = stripped[:1] if stripped else ""
+    ends_with = stripped[-1:] if stripped else ""
+    logger.error(
+        "Failed to extract JSON from LLM response",
+        length=length,
+        hash=payload_hash,
+        starts_with=starts_with,
+        ends_with=ends_with,
+        looked_fenced=looked_fenced,
+    )
+    raise json.JSONDecodeError(
+        f"Could not parse JSON from LLM response (length={length}, hash={payload_hash})",
+        "[REDACTED]",
+        pos=max(0, length - 1),
+    )

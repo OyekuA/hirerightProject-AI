@@ -208,3 +208,6 @@ __marimo__/
 
 # Dev
 .tests/integration/
+
+# Live test CVs and jobs
+livetest/

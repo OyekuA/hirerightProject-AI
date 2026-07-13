@@ -22,6 +22,11 @@ from app.routers import (
     recommend,
     career,
     jd,
+    screening,
+    decision,
+    email,
+    interview,
+    interview_webhook,
 )
 from app.clients.dependencies import (
     get_qdrant_client,
@@ -405,6 +410,11 @@ def create_app() -> FastAPI:
     app.include_router(recommend.router, prefix="/api/ai", dependencies=[Depends(verify_api_key)])
     app.include_router(career.router, prefix="/api/ai", dependencies=[Depends(verify_api_key)])
     app.include_router(jd.router, prefix="/api/ai", dependencies=[Depends(verify_api_key)])
+    app.include_router(screening.router, prefix="/api/ai", dependencies=[Depends(verify_api_key)])
+    app.include_router(decision.router, prefix="/api/ai", dependencies=[Depends(verify_api_key)])
+    app.include_router(email.router, prefix="/api/ai", dependencies=[Depends(verify_api_key)])
+    app.include_router(interview.router, prefix="/api/ai", dependencies=[Depends(verify_api_key)])
+    app.include_router(interview_webhook.router, prefix="/api/ai")
 
     @app.get("/health")
     async def health():

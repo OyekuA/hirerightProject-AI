@@ -6,11 +6,10 @@ import structlog
 
 
 class LLMUnavailableError(Exception):
-    """Raised when an LLM call cannot be performed because a circuit breaker is open."""
+    pass
 
 
 class CircuitBreaker:
-    """Circuit breaker with CLOSED, OPEN, and HALF_OPEN states and single-probe recovery."""
 
     CLOSED = "closed"
     OPEN = "open"
@@ -105,7 +104,6 @@ class CircuitBreaker:
 
 
 class LLMClient:
-    """LLM API client with separate circuit breakers for generation and embedding."""
 
     def __init__(
         self,
@@ -138,19 +136,60 @@ class LLMClient:
         if api_key is not None:
             litellm.api_key = api_key
 
-    def generate(self, prompt: str, temperature: float = 0) -> str:
+    def generate(
+        self,
+        prompt: str,
+        temperature: float = 0,
+        response_format: Optional[dict] = None,
+        max_tokens: Optional[int] = None,
+        seed: Optional[int] = None,
+    ) -> str:
         if self._generation_breaker.is_open():
             self._log_token_usage(len(prompt), 0, "generation", outcome="breaker_open")
             raise LLMUnavailableError("Generation circuit breaker is open")
 
         for attempt in range(self._max_retries + 1):
             try:
-                response = litellm.completion(
-                    model=self._model,
-                    messages=[{"role": "user", "content": prompt}],
-                    timeout=self._generation_timeout,
-                    temperature=temperature,
-                )
+                kwargs = {
+                    "model": self._model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "timeout": self._generation_timeout,
+                    "temperature": temperature,
+                }
+
+                has_optional = False
+                if response_format is not None:
+                    supported = litellm.get_supported_openai_params(model=self._model)
+                    if "response_format" in supported:
+                        kwargs["response_format"] = response_format
+                        has_optional = True
+                        if response_format.get("type") == "json_schema":
+                            if litellm.supports_response_schema(model=self._model):
+                                kwargs["response_format"] = response_format
+                            else:
+                                kwargs["response_format"] = {"type": "json_object"}
+                    else:
+                        self._log.info(
+                            "response_format not supported by model, relying on prompt instruction",
+                            model=self._model,
+                        )
+                    self._log.info(
+                        "LLM response format mode",
+                        response_format=kwargs.get("response_format"),
+                        model=self._model,
+                    )
+
+                if max_tokens is not None:
+                    kwargs["max_tokens"] = max_tokens
+                    has_optional = True
+                if seed is not None:
+                    kwargs["seed"] = seed
+                    has_optional = True
+
+                if has_optional:
+                    kwargs["drop_params"] = True
+
+                response = litellm.completion(**kwargs)
                 text = response.choices[0].message.content
                 if not text or not text.strip():
                     raise ValueError("LLM returned an empty response")
@@ -158,10 +197,16 @@ class LLMClient:
                 self._log_token_usage(len(prompt), len(text), "generation", outcome="success")
                 return text
             except Exception as exc:
-                if attempt < self._max_retries:
+                retry_after = _extract_retry_after(exc)
+                if retry_after is not None and attempt < self._max_retries:
+                    self._log.warning(
+                        "Rate limit hit, sleeping Retry-After",
+                        retry_after=retry_after,
+                        attempt=attempt + 1,
+                    )
+                    time.sleep(retry_after)
+                elif attempt < self._max_retries:
                     backoff = self._retry_backoff_base * (2 ** attempt)
-                    # Intentional blocking sleep: this method runs inside asyncio.to_thread,
-                    # so sleeping here blocks only the thread-pool worker, not the event loop.
                     time.sleep(backoff)
                 else:
                     self._generation_breaker.record_failure()
@@ -193,8 +238,6 @@ class LLMClient:
             except Exception as exc:
                 if attempt < self._max_retries:
                     backoff = self._retry_backoff_base * (2 ** attempt)
-                    # Intentional blocking sleep: this method runs inside asyncio.to_thread,
-                    # so sleeping here blocks only the thread-pool worker, not the event loop.
                     time.sleep(backoff)
                 else:
                     self._embedding_breaker.record_failure()
@@ -202,6 +245,35 @@ class LLMClient:
                     raise LLMUnavailableError(
                         f"LLM embedding failed after {self._max_retries + 1} attempts: {exc}"
                     ) from exc
+
+    @staticmethod
+    def get_response_format(model: str, structure_type: str, item_schema: Optional[dict] = None) -> Optional[dict]:
+        supported = litellm.get_supported_openai_params(model=model)
+        if "response_format" not in supported:
+            return None
+
+        if structure_type == "object":
+            return {"type": "json_object"}
+
+        if structure_type == "array":
+            if litellm.supports_response_schema(model=model):
+                items = item_schema or {}
+                if not items:
+                    return None
+                schema = {
+                    "type": "array",
+                    "items": items,
+                }
+                return {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "response",
+                        "schema": schema,
+                    },
+                }
+            return None
+
+        return None
 
     def _log_token_usage(
         self, input_chars: int, output_chars: int, operation: str, outcome: str = "success"
@@ -216,3 +288,24 @@ class LLMClient:
             total_tokens_approx=input_tokens + output_tokens,
             outcome=outcome,
         )
+
+
+def _extract_retry_after(exc: Exception) -> Optional[float]:
+    _log = structlog.get_logger()
+    try:
+        if getattr(exc, "status_code", None) == 429:
+            headers = getattr(exc, "response_headers", None) or getattr(exc, "headers", None)
+            if headers:
+                raw = headers.get("Retry-After") or headers.get("retry-after")
+                if raw is not None:
+                    return float(raw)
+    except (ValueError, TypeError):
+        _log.debug("Failed to extract Retry-After from exception headers")
+    try:
+        if isinstance(exc, litellm.RateLimitError):
+            ra = getattr(exc, "retry_after", None)
+            if ra is not None:
+                return float(ra)
+    except (ValueError, TypeError):
+        _log.debug("Failed to extract retry_after from RateLimitError")
+    return None

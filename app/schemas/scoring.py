@@ -5,9 +5,11 @@ from typing import Literal
 class CategoryStatus(BaseModel):
     status: Literal["pass", "warning", "fail"]
     short_reason: str
+    score: int = Field(..., ge=0, le=100)
 
 
 class CategoryBreakdown(BaseModel):
+    skills: CategoryStatus
     role_match: CategoryStatus
     experience: CategoryStatus
     location: CategoryStatus
