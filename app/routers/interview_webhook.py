@@ -50,6 +50,34 @@ async def interview_webhook(
         logger.warning("Recall webhook: no session found for bot_id", bot_id=bot_id)
         return
 
+    if record.status in ("completed", "failed"):
+        logger.info(
+            "Ignoring Recall webhook for terminal session",
+            bot_id=bot_id,
+            session_id=record.session_id,
+            status=record.status,
+            webhook_event=event,
+        )
+        return
+
+    if event == "recording.done" and record.status in ("transcribing", "grading"):
+        logger.info(
+            "Ignoring duplicate recording.done event",
+            bot_id=bot_id,
+            session_id=record.session_id,
+            status=record.status,
+        )
+        return
+
+    if event == "transcript.done" and record.status == "grading":
+        logger.info(
+            "Ignoring duplicate transcript.done event",
+            bot_id=bot_id,
+            session_id=record.session_id,
+            status=record.status,
+        )
+        return
+
     if event == "recording.done":
         recording_obj = data.get("recording", {}) if isinstance(data, dict) else {}
         recording_id = recording_obj.get("id") if isinstance(recording_obj, dict) else None
@@ -60,7 +88,6 @@ async def interview_webhook(
         async def _handle_recording_done(sid: str, rid: str, rec):
             try:
                 transcript_id = await bot.create_transcript(rid)
-                store.update(sid, recording_id=rid, status="transcribing")
                 logger.info("Transcript creation scheduled", session_id=sid, transcript_id=transcript_id)
             except Exception as e:
                 logger.error("Transcript creation failed", session_id=sid, error=str(e))
@@ -77,6 +104,7 @@ async def interview_webhook(
                 except Exception as cb_err:
                     logger.error("Failed to send failure callback", session_id=sid, error=str(cb_err))
 
+        store.update(record.session_id, recording_id=recording_id, status="transcribing")
         background_tasks.add_task(_handle_recording_done, record.session_id, recording_id, record)
 
     elif event == "transcript.done":
@@ -87,7 +115,6 @@ async def interview_webhook(
             return
 
         async def _handle_transcript_done(sid: str, tid: str, rec):
-            store.update(sid, status="grading")
             try:
                 raw_turns = await bot.fetch_transcript(tid)
                 grading_result = grade_transcript(
@@ -120,6 +147,7 @@ async def interview_webhook(
                     error=str(e),
                 )
 
+        store.update(record.session_id, status="grading")
         background_tasks.add_task(_handle_transcript_done, record.session_id, transcript_id, record)
 
     elif event == "transcript.failed":

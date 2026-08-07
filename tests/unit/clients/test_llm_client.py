@@ -242,6 +242,44 @@ class TestLLMClientTimeout(unittest.TestCase):
             self.assertNotIn("response_format", call_kwargs)
             self.assertNotIn("drop_params", call_kwargs)
 
+    def test_get_response_format_array_without_item_schema_enables_json_schema(self):
+
+        with patch('app.clients.llm.litellm.get_supported_openai_params', return_value=["response_format"]), \
+             patch('app.clients.llm.litellm.supports_response_schema', return_value=True):
+            rf = LLMClient.get_response_format("openai/gpt-4o-mini", "array")
+            self.assertIsNotNone(rf)
+            self.assertEqual(rf["type"], "json_schema")
+            self.assertEqual(
+                rf["json_schema"]["schema"],
+                {"type": "array", "items": {}},
+            )
+
+    def test_get_response_format_array_with_item_schema_preserves_items(self):
+
+        with patch('app.clients.llm.litellm.get_supported_openai_params', return_value=["response_format"]), \
+             patch('app.clients.llm.litellm.supports_response_schema', return_value=True):
+            rf = LLMClient.get_response_format(
+                "openai/gpt-4o-mini", "array", item_schema={"type": "string"}
+            )
+            self.assertIsNotNone(rf)
+            self.assertEqual(
+                rf["json_schema"]["schema"],
+                {"type": "array", "items": {"type": "string"}},
+            )
+
+    def test_get_response_format_array_without_schema_support_returns_none(self):
+
+        with patch('app.clients.llm.litellm.get_supported_openai_params', return_value=["response_format"]), \
+             patch('app.clients.llm.litellm.supports_response_schema', return_value=False):
+            rf = LLMClient.get_response_format("some-model", "array")
+            self.assertIsNone(rf)
+
+    def test_get_response_format_object_returns_json_object(self):
+
+        with patch('app.clients.llm.litellm.get_supported_openai_params', return_value=["response_format"]):
+            rf = LLMClient.get_response_format("some-model", "object")
+            self.assertEqual(rf, {"type": "json_object"})
+
     def test_generate_default_call_no_drop_params(self):
 
         mock_response = MagicMock()

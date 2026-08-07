@@ -258,8 +258,6 @@ class LLMClient:
         if structure_type == "array":
             if litellm.supports_response_schema(model=model):
                 items = item_schema or {}
-                if not items:
-                    return None
                 schema = {
                     "type": "array",
                     "items": items,

@@ -225,3 +225,146 @@ class TestInterviewWebhookRouter:
         assert resp.status_code == 204
         mock_bot.create_transcript.assert_not_called()
         mock_bot.fetch_transcript.assert_not_called()
+
+    def test_duplicate_transcript_done_ignored_when_session_completed(
+        self, mock_bot, mock_store, mock_callback, mock_llm
+    ):
+        mock_store.get_by_bot_id.return_value.status = "completed"
+        payload = _make_recall_payload(
+            "transcript.done",
+            transcript={"id": "tr-456"},
+        )
+
+        app = _build_test_app(overrides={
+            get_meeting_bot_client: lambda: mock_bot,
+            get_interview_session_store: lambda: mock_store,
+            get_callback_client: lambda: mock_callback,
+            get_llm_client: lambda: mock_llm,
+        })
+
+        with patch("app.routers.interview_webhook.verify_recall_webhook", return_value=payload):
+            with TestClient(app) as tc:
+                resp = tc.post(
+                    "/api/ai/interview/webhook",
+                    content=json.dumps(payload),
+                    headers={"content-type": "application/json"},
+                )
+
+        assert resp.status_code == 204
+        mock_bot.fetch_transcript.assert_not_called()
+        mock_llm.generate.assert_not_called()
+        mock_callback.send.assert_not_awaited()
+        mock_store.update.assert_not_called()
+
+    def test_duplicate_transcript_done_ignored_when_session_failed(
+        self, mock_bot, mock_store, mock_callback, mock_llm
+    ):
+        mock_store.get_by_bot_id.return_value.status = "failed"
+        payload = _make_recall_payload(
+            "transcript.done",
+            transcript={"id": "tr-456"},
+        )
+
+        app = _build_test_app(overrides={
+            get_meeting_bot_client: lambda: mock_bot,
+            get_interview_session_store: lambda: mock_store,
+            get_callback_client: lambda: mock_callback,
+            get_llm_client: lambda: mock_llm,
+        })
+
+        with patch("app.routers.interview_webhook.verify_recall_webhook", return_value=payload):
+            with TestClient(app) as tc:
+                resp = tc.post(
+                    "/api/ai/interview/webhook",
+                    content=json.dumps(payload),
+                    headers={"content-type": "application/json"},
+                )
+
+        assert resp.status_code == 204
+        mock_bot.fetch_transcript.assert_not_called()
+        mock_callback.send.assert_not_awaited()
+
+    def test_duplicate_transcript_done_ignored_while_grading(
+        self, mock_bot, mock_store, mock_callback, mock_llm
+    ):
+        mock_store.get_by_bot_id.return_value.status = "grading"
+        payload = _make_recall_payload(
+            "transcript.done",
+            transcript={"id": "tr-456"},
+        )
+
+        app = _build_test_app(overrides={
+            get_meeting_bot_client: lambda: mock_bot,
+            get_interview_session_store: lambda: mock_store,
+            get_callback_client: lambda: mock_callback,
+            get_llm_client: lambda: mock_llm,
+        })
+
+        with patch("app.routers.interview_webhook.verify_recall_webhook", return_value=payload):
+            with TestClient(app) as tc:
+                resp = tc.post(
+                    "/api/ai/interview/webhook",
+                    content=json.dumps(payload),
+                    headers={"content-type": "application/json"},
+                )
+
+        assert resp.status_code == 204
+        mock_bot.fetch_transcript.assert_not_called()
+        mock_llm.generate.assert_not_called()
+        mock_callback.send.assert_not_awaited()
+
+    def test_duplicate_recording_done_ignored_while_transcribing(
+        self, mock_bot, mock_store, mock_callback, mock_llm
+    ):
+        mock_store.get_by_bot_id.return_value.status = "transcribing"
+        payload = _make_recall_payload(
+            "recording.done",
+            recording={"id": "rec-789"},
+        )
+
+        app = _build_test_app(overrides={
+            get_meeting_bot_client: lambda: mock_bot,
+            get_interview_session_store: lambda: mock_store,
+            get_callback_client: lambda: mock_callback,
+            get_llm_client: lambda: mock_llm,
+        })
+
+        with patch("app.routers.interview_webhook.verify_recall_webhook", return_value=payload):
+            with TestClient(app) as tc:
+                resp = tc.post(
+                    "/api/ai/interview/webhook",
+                    content=json.dumps(payload),
+                    headers={"content-type": "application/json"},
+                )
+
+        assert resp.status_code == 204
+        mock_bot.create_transcript.assert_not_called()
+        mock_callback.send.assert_not_awaited()
+
+    def test_duplicate_transcript_failed_ignored_when_session_completed(
+        self, mock_bot, mock_store, mock_callback, mock_llm
+    ):
+        mock_store.get_by_bot_id.return_value.status = "completed"
+        payload = _make_recall_payload(
+            "transcript.failed",
+            error="Transcription failed due to poor audio quality",
+        )
+
+        app = _build_test_app(overrides={
+            get_meeting_bot_client: lambda: mock_bot,
+            get_interview_session_store: lambda: mock_store,
+            get_callback_client: lambda: mock_callback,
+            get_llm_client: lambda: mock_llm,
+        })
+
+        with patch("app.routers.interview_webhook.verify_recall_webhook", return_value=payload):
+            with TestClient(app) as tc:
+                resp = tc.post(
+                    "/api/ai/interview/webhook",
+                    content=json.dumps(payload),
+                    headers={"content-type": "application/json"},
+                )
+
+        assert resp.status_code == 204
+        mock_store.update.assert_not_called()
+        mock_callback.send.assert_not_awaited()
