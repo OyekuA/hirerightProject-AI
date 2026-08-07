@@ -114,6 +114,27 @@ async def process_queue_entry(
                 )
     except Exception as e:
         logger.error("Queue entry processing error", event_id=entry.event_id, error=str(e))
+        try:
+            requeued = ingest_queue.requeue(
+                entry,
+                settings.INGEST_QUEUE_MAX_RETRIES,
+                settings.INGEST_QUEUE_BACKOFF_BASE_SECONDS,
+            )
+            if not requeued:
+                await callback_client.send(
+                    callback_url=entry.callback_url,
+                    event_id=entry.event_id,
+                    entity_type=entry.entity_type,
+                    entity_id=entry.entity_id,
+                    status="failed",
+                    error="processing_error_max_queue_retries",
+                )
+        except Exception as e2:
+            logger.error(
+                "Failed to requeue entry after processing error",
+                event_id=entry.event_id,
+                error=str(e2),
+            )
 
 
 async def queue_worker(ingest_queue, qdrant_client, llm_client, store, callback_client, settings):

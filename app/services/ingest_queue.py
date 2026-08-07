@@ -71,6 +71,14 @@ class IngestQueue:
                     file_path=str(p),
                     error=str(e),
                 )
+                try:
+                    p.unlink()
+                except OSError as unlink_err:
+                    _logger.warning(
+                        "Failed to remove corrupt processing entry",
+                        file_path=str(p),
+                        error=str(unlink_err),
+                    )
 
         self._lock = threading.Lock()
         _logger.info(
@@ -140,7 +148,17 @@ class IngestQueue:
                     )
                     continue
 
-                if datetime.fromisoformat(entry.next_retry_at) <= now:
+                try:
+                    is_due = datetime.fromisoformat(entry.next_retry_at) <= now
+                except (ValueError, TypeError):
+                    _logger.warning(
+                        "Malformed next_retry_at, treating entry as due",
+                        file_path=str(p),
+                        event_id=entry.event_id,
+                    )
+                    is_due = True
+
+                if is_due:
                     processing_path = self._processing_path_for(entry.event_id)
                     try:
                         os.rename(str(p), str(processing_path))

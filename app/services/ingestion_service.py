@@ -259,8 +259,18 @@ async def _run_ingestion_with_retry(
                 )
                 if ingest_queue is not None:
                     record = store.get_by_event_id(event_id)
-                    ingest_queue.enqueue(record, backoff_base=settings.INGEST_QUEUE_BACKOFF_BASE_SECONDS)
-                    _suppress_callback = True
+                    try:
+                        ingest_queue.enqueue(record, backoff_base=settings.INGEST_QUEUE_BACKOFF_BASE_SECONDS)
+                    except Exception as e:
+                        logger.error(
+                            "Failed to enqueue ingestion for retry",
+                            event_id=event_id,
+                            entity_type=entity_type,
+                            entity_id=entity_id,
+                            error=str(e),
+                        )
+                    else:
+                        _suppress_callback = True
                 logger.error("Ingestion failed after all retries", event_id=event_id, entity_type=entity_type)
             else:
                 backoff = backoff_base * (2 ** attempt)

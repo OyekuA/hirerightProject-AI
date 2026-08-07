@@ -176,6 +176,72 @@ class TestIngestQueue(unittest.TestCase):
         due = self.queue.get_due_entries()
         self.assertEqual(len(due), 0)
 
+    def test_get_due_entries_malformed_next_retry_at_treated_as_due(self):
+
+        record = _make_record()
+        self.queue.enqueue(record, backoff_base=0)
+
+        path = self.queue._path_for(record.event_id)
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data["next_retry_at"] = "not-a-date"
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        due = self.queue.get_due_entries()
+        due_event_ids = [e.event_id for e in due]
+        self.assertIn(record.event_id, due_event_ids)
+
+    def test_get_due_entries_malformed_next_retry_at_does_not_strand_other_entries(self):
+
+        good_record = _make_record(entity_id=1)
+        bad_record = _make_record(entity_id=2)
+        self.queue.enqueue(good_record, backoff_base=0)
+        self.queue.enqueue(bad_record, backoff_base=0)
+
+        bad_path = self.queue._path_for(bad_record.event_id)
+        with open(bad_path, "r", encoding="utf-8") as f:
+            bad_data = json.load(f)
+        bad_data["next_retry_at"] = "garbage"
+        with open(bad_path, "w", encoding="utf-8") as f:
+            json.dump(bad_data, f, ensure_ascii=False, indent=2)
+
+        due = self.queue.get_due_entries()
+        due_event_ids = [e.event_id for e in due]
+        self.assertIn(good_record.event_id, due_event_ids)
+        self.assertIn(bad_record.event_id, due_event_ids)
+
+    def test_startup_recovery_unlinks_corrupt_processing_files(self):
+
+        corrupt_path = self.queue._processing_path_for("corrupt-entry")
+        corrupt_path.parent.mkdir(parents=True, exist_ok=True)
+        corrupt_path.write_text("{ invalid json", encoding="utf-8")
+        self.assertTrue(corrupt_path.exists())
+
+        new_queue = IngestQueue(
+            queue_path=str(self.queue_path),
+            dead_letter_path=str(self.dead_letter_path),
+        )
+        self.assertFalse(corrupt_path.exists())
+
+    def test_startup_recovery_requeues_stranded_processing_entries(self):
+
+        record = _make_record()
+        self.queue.enqueue(record, backoff_base=0)
+        due = self.queue.get_due_entries()
+        self.assertEqual(len(due), 1)
+        self.assertTrue(self.queue._processing_path_for(record.event_id).exists())
+
+        new_queue = IngestQueue(
+            queue_path=str(self.queue_path),
+            dead_letter_path=str(self.dead_letter_path),
+        )
+        self.assertFalse(new_queue._processing_path_for(record.event_id).exists())
+        self.assertTrue(new_queue._path_for(record.event_id).exists())
+
+        due_after = new_queue.get_due_entries()
+        self.assertEqual([e.event_id for e in due_after], [record.event_id])
+
 class TestIngestQueueClaiming(unittest.TestCase):
 
     def setUp(self):
