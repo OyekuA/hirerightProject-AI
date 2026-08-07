@@ -144,27 +144,40 @@ class AssessmentService:
 
         normalized_past_roles = [normalize_role(r) for r in past_roles]
 
+        def _clean(value) -> str:
+            if not isinstance(value, str):
+                return ""
+            return value.strip()
+
         candidate_block = ""
         if candidate_id is not None:
+            _skill_text = ", ".join(
+                str(s).strip() for s in skills
+                if isinstance(s, str) and s.strip()
+            )
             candidate_block = f"""
 The candidate has the following background:
 - Previous roles: {', '.join(normalized_past_roles) if normalized_past_roles else 'No previous roles listed'}
-- Skills: {', '.join(skills) if skills else 'No skills listed'}"""
+- Skills: {_skill_text if _skill_text else 'No skills listed'}"""
         else:
             candidate_block = """
 The candidate background is not specified (generic assessment)."""
 
         job_block = ""
         if job_id is not None:
-            _title = job_context.get("title", "").strip()
-            _company_name = job_context.get("company_name", "").strip()
-            _location = job_context.get("location", "").strip()
-            _employment_type = job_context.get("employment_type", "").strip()
-            _experience_level = job_context.get("experience_level", "").strip()
-            _industry = job_context.get("industry", "").strip()
-            _required_skills = [s.strip() for s in job_context.get("required_skills", []) if s.strip()]
-            _raw_jd_summary = job_context.get("raw_jd_summary", "").strip()
-            _about = job_context.get("about", "").strip()
+            _title = _clean(job_context.get("title"))
+            _company_name = _clean(job_context.get("company_name"))
+            _location = _clean(job_context.get("location"))
+            _employment_type = _clean(job_context.get("employment_type"))
+            _experience_level = _clean(job_context.get("experience_level"))
+            _industry = _clean(job_context.get("industry"))
+            _required_skills = [
+                s.strip()
+                for s in job_context.get("required_skills", [])
+                if isinstance(s, str) and s.strip()
+            ]
+            _raw_jd_summary = _clean(job_context.get("raw_jd_summary"))
+            _about = _clean(job_context.get("about"))
 
             lines = ["The assessment is for the following role:"]
             if _title:

@@ -140,6 +140,68 @@ class TestAssessmentService(unittest.TestCase):
         prompt = self.gemini_mock.generate.call_args[0][0]
         self.assertIn("Senior DevOps Engineer", prompt)
 
+    def test_generate_questions_job_payload_none_fields_no_crash(self):
+
+        job_payload = {
+            "title": "Customer Service Representative",
+            "company_name": None,
+            "about": None,
+            "location": None,
+            "employment_type": None,
+            "experience_level": None,
+            "industry": None,
+            "required_skills": ["Communication", None, "", 42],
+            "raw_jd_summary": None,
+        }
+        self.qdrant_mock.get.return_value = job_payload
+        self.gemini_mock.generate.return_value = '["Q1", "Q2", "Q3"]'
+        result = self.service.generate_questions(
+            candidate_id=None,
+            target_role=None,
+            num_questions=3,
+            job_id=99,
+        )
+        self.assertEqual(result, ["Q1", "Q2", "Q3"])
+        prompt = self.gemini_mock.generate.call_args[0][0]
+        self.assertIn("Customer Service Representative", prompt)
+        self.assertIn("Communication", prompt)
+
+    def test_generate_questions_job_payload_title_none_no_crash(self):
+
+        job_payload = {
+            "title": None,
+            "required_skills": [],
+            "raw_jd_summary": None,
+        }
+        self.qdrant_mock.get.return_value = job_payload
+        self.gemini_mock.generate.return_value = '["Q1", "Q2", "Q3"]'
+        result = self.service.generate_questions(
+            candidate_id=None,
+            target_role="Explicit Role",
+            num_questions=3,
+            job_id=99,
+        )
+        self.assertEqual(result, ["Q1", "Q2", "Q3"])
+        self.gemini_mock.generate.assert_called_once()
+
+    def test_generate_questions_candidate_skills_none_entries_no_crash(self):
+
+        candidate_payload = {
+            "past_roles": ["Engineer at Acme"],
+            "skills": ["Python", None, "AWS", "", 42],
+        }
+        self.qdrant_mock.get.return_value = candidate_payload
+        self.gemini_mock.generate.return_value = '["Q1", "Q2", "Q3"]'
+        result = self.service.generate_questions(
+            candidate_id=42,
+            target_role="Software Engineer",
+            num_questions=3,
+        )
+        self.assertEqual(result, ["Q1", "Q2", "Q3"])
+        prompt = self.gemini_mock.generate.call_args[0][0]
+        self.assertIn("Python", prompt)
+        self.assertIn("AWS", prompt)
+
     def test_generate_questions_job_id_empty_title_raises(self):
 
         job_payload = {"title": "", "required_skills": [], "raw_jd_summary": ""}
