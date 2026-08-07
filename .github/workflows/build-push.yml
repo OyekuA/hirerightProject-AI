@@ -40,16 +40,16 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # - name: SSH and Pull on Deployment Server
-      #   env:
-      #     SSH_HOST: ${{ secrets.SSH_HOST }}
-      #     SSH_KEY: ${{ secrets.SSH_KEY }}
-      #   if: ${{ env.SSH_HOST!= '' && env.SSH_KEY!= '' }}
-      #   uses: appleboy/ssh-action@v1.0.0
-      #   with:
-      #     host: ${{ secrets.SSH_HOST }}
-      #     username: ${{ secrets.SSH_USERNAME }}
-      #     key: ${{ secrets.SSH_KEY }}
-      #     script: |
-      #       cd ~/project-HR
-      #       ./scripts/update.sh
+      - name: SSH and Pull on Deployment Server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+        if: ${{ env.SSH_HOST!= '' && env.SSH_KEY!= '' }}
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd ~/project-HR
+            ./scripts/update.sh
