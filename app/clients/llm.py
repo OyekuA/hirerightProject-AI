@@ -259,8 +259,15 @@ class LLMClient:
             if litellm.supports_response_schema(model=model):
                 items = item_schema or {}
                 schema = {
-                    "type": "array",
-                    "items": items,
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "items": items,
+                        },
+                    },
+                    "required": ["items"],
+                    "additionalProperties": False,
                 }
                 return {
                     "type": "json_schema",

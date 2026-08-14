@@ -7,6 +7,14 @@ import structlog
 logger = structlog.get_logger()
 
 
+def extract_list(payload) -> list:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict) and isinstance(payload.get("items"), list):
+        return payload["items"]
+    raise ValueError("LLM response is not a list")
+
+
 def parse_llm_json(generated: str) -> Union[dict, list]:
     payload_hash = hashlib.sha256(generated.encode()).hexdigest()[:8]
     length = len(generated)

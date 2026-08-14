@@ -251,7 +251,14 @@ class TestLLMClientTimeout(unittest.TestCase):
             self.assertEqual(rf["type"], "json_schema")
             self.assertEqual(
                 rf["json_schema"]["schema"],
-                {"type": "array", "items": {}},
+                {
+                    "type": "object",
+                    "properties": {
+                        "items": {"type": "array", "items": {}},
+                    },
+                    "required": ["items"],
+                    "additionalProperties": False,
+                },
             )
 
     def test_get_response_format_array_with_item_schema_preserves_items(self):
@@ -264,7 +271,14 @@ class TestLLMClientTimeout(unittest.TestCase):
             self.assertIsNotNone(rf)
             self.assertEqual(
                 rf["json_schema"]["schema"],
-                {"type": "array", "items": {"type": "string"}},
+                {
+                    "type": "object",
+                    "properties": {
+                        "items": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["items"],
+                    "additionalProperties": False,
+                },
             )
 
     def test_get_response_format_array_without_schema_support_returns_none(self):

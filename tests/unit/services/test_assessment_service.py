@@ -42,6 +42,19 @@ class TestAssessmentService(unittest.TestCase):
         self.assertIn("response_format", call_kwargs)
         self.assertIn("max_tokens", call_kwargs)
 
+    def test_generate_questions_wrapped_items_single_mode(self):
+
+        candidate_payload = {"past_roles": ["Engineer at Acme"], "skills": ["Python"]}
+        self.qdrant_mock.get.return_value = candidate_payload
+        self.gemini_mock.generate.return_value = '{"items": ["Q1", "Q2", "Q3"]}'
+        result = self.service.generate_questions(
+            candidate_id=42,
+            target_role="Software Engineer",
+            num_questions=3,
+        )
+        self.assertEqual(result, ["Q1", "Q2", "Q3"])
+        self.gemini_mock.generate.assert_called_once()
+
     def test_generate_questions_clamped_to_30(self):
 
         candidate_payload = {"past_roles": [], "skills": []}

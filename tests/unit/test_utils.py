@@ -1,7 +1,42 @@
 import json
 import unittest
 from unittest.mock import patch
-from app.utils import parse_llm_json
+from app.utils import parse_llm_json, extract_list
+
+class TestExtractList(unittest.TestCase):
+
+    def test_bare_list_passthrough(self):
+
+        payload = ["Point 1", "Point 2"]
+        self.assertEqual(extract_list(payload), ["Point 1", "Point 2"])
+
+    def test_wrapped_items_dict(self):
+
+        payload = {"items": ["Q1", "Q2"]}
+        self.assertEqual(extract_list(payload), ["Q1", "Q2"])
+
+    def test_wrapped_empty_items_dict(self):
+
+        payload = {"items": []}
+        self.assertEqual(extract_list(payload), [])
+
+    def test_plain_dict_raises(self):
+
+        with self.assertRaises(ValueError) as cm:
+            extract_list({"key": "value"})
+        self.assertIn("not a list", str(cm.exception))
+
+    def test_dict_with_non_list_items_raises(self):
+
+        with self.assertRaises(ValueError):
+            extract_list({"items": "not a list"})
+
+    def test_scalar_raises(self):
+
+        for payload in ("string", 42, None, True):
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValueError):
+                    extract_list(payload)
 
 class TestParseLLMJson(unittest.TestCase):
 

@@ -76,6 +76,15 @@ class TestJDService(unittest.TestCase):
 
     def test_analyze_jd_happy_path(self):
 
+        self.gemini_mock.generate.return_value = '{"items": ["Point 1", "Point 2"]}'
+        result = self.service.analyze_jd(
+            jd_text="Job description text",
+        )
+        self.assertEqual(result, ["Point 1", "Point 2"])
+        self.gemini_mock.generate.assert_called_once()
+
+    def test_analyze_jd_bare_list_tolerated(self):
+
         self.gemini_mock.generate.return_value = '["Point 1", "Point 2"]'
         result = self.service.analyze_jd(
             jd_text="Job description text",
@@ -100,7 +109,8 @@ class TestJDService(unittest.TestCase):
             self.service.analyze_jd(
                 jd_text="Job description text",
             )
-        self.gemini_mock.generate.assert_called_once()
+        self.assertIn("malformed", str(cm.exception).lower())
+        self.assertEqual(self.gemini_mock.generate.call_count, 2)  # original + repair retry
 
     def test_analyze_jd_non_string_item_raises_error(self):
 

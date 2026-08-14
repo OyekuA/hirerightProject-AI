@@ -5,7 +5,7 @@ from typing import Optional
 from app.clients.llm import LLMClient, LLMUnavailableError
 from app.clients.qdrant import QdrantClient, MISSING
 from app.clients.dependencies import JOBS_COLLECTION
-from app.utils import parse_llm_json
+from app.utils import parse_llm_json, extract_list
 from app.utils.ingestion import truncate_to_prompt_cap
 from app.prompts import JD_ANALYSIS_PROMPT_TEMPLATE, JD_GENERATION_PROMPT_TEMPLATE, JD_REFINEMENT_PROMPT_TEMPLATE
 
@@ -137,14 +137,7 @@ class JDService:
         def _attempt(temp: float) -> list[str]:
             rf = LLMClient.get_response_format(self.llm._model, "array")
             generated = self.llm.generate(prompt, temperature=temp, response_format=rf)
-            critiques = parse_llm_json(generated)
-
-            if not isinstance(critiques, list):
-                logger.error(
-                    "LLM response is not a list",
-                    response_type=type(critiques),
-                )
-                raise LLMUnavailableError("LLM response is not a list")
+            critiques = extract_list(parse_llm_json(generated))
 
             for i, item in enumerate(critiques):
                 if not isinstance(item, str):

@@ -7,7 +7,7 @@ from app.clients.dependencies import CANDIDATES_COLLECTION, JOBS_COLLECTION
 from app.clients.llm import LLMClient, LLMUnavailableError
 from app.clients.qdrant import QdrantClient, MISSING
 from app.config import get_settings
-from app.utils import parse_llm_json
+from app.utils import parse_llm_json, extract_list
 from app.prompts import GENERATE_QUESTIONS_PROMPT_TEMPLATE, GRADE_ANSWERS_PROMPT_TEMPLATE
 from ..schemas.assessment import MultipleChoiceQuestion
 
@@ -312,9 +312,7 @@ ADDITIONAL RULES:
                 response_format=rf,
                 max_tokens=computed_max_tokens,
             )
-            parsed = parse_llm_json(generated)
-            if not isinstance(parsed, list):
-                raise ValueError("LLM response is not a list")
+            parsed = extract_list(parse_llm_json(generated))
             questions = parsed
             if len(questions) > clamped_n:
                 logger.warning(
