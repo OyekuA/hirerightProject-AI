@@ -1,5 +1,27 @@
 from pydantic import BaseModel, Field, HttpUrl, field_validator
-from typing import Literal, Optional, List
+from typing import Optional, List
+
+from app.constants import EMPLOYMENT_TYPES, WORK_MODES
+
+
+def _validate_employment_type(v: str) -> str:
+    key = v.lower().strip()
+    if key == "":
+        return key
+    if key not in EMPLOYMENT_TYPES:
+        raise ValueError(
+            f"employment_type must be one of: {', '.join(EMPLOYMENT_TYPES)}"
+        )
+    return key
+
+
+def _validate_work_mode(v: str) -> str:
+    key = v.lower().strip()
+    if key == "":
+        return key
+    if key not in WORK_MODES:
+        raise ValueError(f"work_mode must be one of: {', '.join(WORK_MODES)}")
+    return key
 
 
 class ProfileData(BaseModel):
@@ -11,6 +33,19 @@ class ProfileData(BaseModel):
     candidate_version: int
     data_source: Optional[str] = None
     total_years_experience: Optional[float] = None
+    work_mode: Optional[str] = None
+
+    @field_validator("employment_type")
+    @classmethod
+    def normalize_employment(cls, v: str) -> str:
+        return _validate_employment_type(v)
+
+    @field_validator("work_mode")
+    @classmethod
+    def normalize_work_mode(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        return _validate_work_mode(v)
 
 
 class IngestCandidateRequest(BaseModel):
@@ -40,9 +75,30 @@ class JobMetadata(BaseModel):
     experience_level: str
     industry: str
     employment_type: str
-    job_version: int
+    job_version: Optional[int] = 1
     company_name: Optional[str] = None
     about: Optional[str] = None
+    description: Optional[str] = None
+    requirements: Optional[str] = None
+    responsibilities: Optional[str] = None
+    benefits: Optional[str] = None
+    salary_min: Optional[float] = None
+    salary_max: Optional[float] = None
+    salary_currency: Optional[str] = None
+    work_mode: Optional[str] = None
+    remote_regions: Optional[List[str]] = None
+
+    @field_validator("employment_type")
+    @classmethod
+    def normalize_employment(cls, v: str) -> str:
+        return _validate_employment_type(v)
+
+    @field_validator("work_mode")
+    @classmethod
+    def normalize_work_mode(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        return _validate_work_mode(v)
 
 
 class CandidateExtraction(BaseModel):
@@ -51,6 +107,7 @@ class CandidateExtraction(BaseModel):
     experience_level: Optional[str] = None
     industry: Optional[str] = None
     employment_type: Optional[str] = None
+    work_mode: Optional[str] = None
     skills: List[str] = []
     past_roles: List[str] = []
     raw_profile_summary: Optional[str] = None

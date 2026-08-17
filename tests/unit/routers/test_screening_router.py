@@ -178,7 +178,7 @@ class TestScreeningRouterXorValidation(IsolatedAsyncioTestCase):
                     "location": "Remote",
                     "experience_level": "Senior",
                     "industry": "Tech",
-                    "employment_type": "Full-time",
+                    "employment_type": "full_time",
                     "job_version": 1,
                 },
                 "candidates": [

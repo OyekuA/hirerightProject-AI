@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     LLM_GENERATION_MAX_TOKENS: int = 4096
     LLM_SEED: Optional[int] = None
     MAX_PROMPT_CHARS: int = 50000
+    EMBED_MAX_CHARS: int = 32000
     INGEST_STATUS_STORE_PATH: str
     CALLBACK_HMAC_SECRET: str
     CALLBACK_SIGNATURE_TTL_SECONDS: int = 300

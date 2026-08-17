@@ -8,6 +8,7 @@ class DecisionRequest(BaseModel):
     job_id: int
     job_version: int
     assessment_score: int = Field(..., ge=0, le=100)
+    needs_review: bool = False
 
 
 class DecisionResponse(BaseModel):

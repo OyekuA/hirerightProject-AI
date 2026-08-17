@@ -1,9 +1,12 @@
+import functools
 import logging
 from typing import Any, Optional, Union
 
+import httpx
 import qdrant_client
 from qdrant_client import QdrantClient as QdrantSDKClient
 from qdrant_client.http import models
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 from qdrant_client.models import Distance, VectorParams
 
 from app.config import get_settings
@@ -14,12 +17,29 @@ from app.constants import CANDIDATES_COLLECTION, JOBS_COLLECTION
 _MISSING = object()
 MISSING = _MISSING
 
+QDRANT_TIMEOUT_SECONDS = 15
+
+
+class QdrantUnavailableError(Exception):
+    """Vector store unreachable or failing at the transport level."""
+
+
+def _guarded(func):
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return func(self, *args, **kwargs)
+        except (ResponseHandlingException, UnexpectedResponse, httpx.HTTPError, ConnectionError) as exc:
+            self._log.warning("Qdrant transport error: %s", exc)
+            raise QdrantUnavailableError(f"Qdrant unavailable: {exc}") from exc
+    return wrapper
+
 
 class QdrantClient:
 
     def __init__(self, host: str, port: int):
         self._client: QdrantSDKClient = qdrant_client.QdrantClient(
-            host=host, port=port
+            host=host, port=port, timeout=QDRANT_TIMEOUT_SECONDS
         )
         self._log = logging.getLogger(__name__)
 
@@ -32,6 +52,7 @@ class QdrantClient:
             f"aborting startup."
         )
 
+    @_guarded
     def ensure_collections(self) -> None:
         settings = get_settings()
         collections = self._client.get_collections().collections
@@ -95,6 +116,7 @@ class QdrantClient:
                     field_name, e,
                 )
 
+    @_guarded
     def upsert(
         self,
         collection: str,
@@ -105,6 +127,7 @@ class QdrantClient:
         point = models.PointStruct(id=point_id, vector=vector, payload=payload)
         self._client.upsert(collection_name=collection, points=[point])
 
+    @_guarded
     def get(self, collection: str, point_id: int) -> Union[dict[str, Any], object]:
         points = self._client.retrieve(
             collection_name=collection,
@@ -114,6 +137,7 @@ class QdrantClient:
             return _MISSING
         return points[0].payload or {}
 
+    @_guarded
     def get_with_vector(self, collection: str, point_id: int) -> tuple[Union[dict[str, Any], object], Optional[list[float]]]:
         points = self._client.retrieve(
             collection_name=collection,
@@ -125,6 +149,7 @@ class QdrantClient:
         record = points[0]
         return record.payload or {}, record.vector
 
+    @_guarded
     def search(
         self,
         collection: str,
@@ -147,6 +172,7 @@ class QdrantClient:
             results.append(payload)
         return results
 
+    @_guarded
     def scroll(
         self,
         collection: str,
@@ -169,12 +195,14 @@ class QdrantClient:
             results.append(payload)
         return results
 
+    @_guarded
     def delete(self, collection: str, point_id: int) -> None:
         self._client.delete(
             collection_name=collection,
             points_selector=models.PointIdsList(points=[point_id]),
         )
 
+    @_guarded
     def update_payload(self, collection: str, point_id: int, fields: dict) -> None:
         self._client.set_payload(
             collection_name=collection,

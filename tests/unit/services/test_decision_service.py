@@ -128,3 +128,53 @@ class TestDecisionService(IsolatedAsyncioTestCase):
         service = self._make_service()
         with self.assertRaises(LLMUnavailableError):
             service.decide(candidate_id=1, candidate_version=1, job_id=10, job_version=1, assessment_score=80)
+
+    @patch("app.services.decision_service.ScoringService")
+    @patch("app.services.decision_service.get_settings")
+    def test_needs_review_forces_review_label(self, mock_settings, mock_scoring_cls):
+        mock_settings.return_value.DECISION_FIT_WEIGHT = 0.40
+        mock_settings.return_value.DECISION_ASSESSMENT_WEIGHT = 0.60
+        mock_settings.return_value.LLM_SEED = 7
+
+        mock_scoring = MagicMock()
+        mock_scoring.calculate_fit.return_value = {
+            "overall_score_percentage": 85,
+            "category_breakdown": {"skills": {"score": 90, "status": "pass", "short_reason": "ok"}},
+            "skill_gap_analysis": "None.",
+        }
+        mock_scoring_cls.return_value = mock_scoring
+
+        self.mock_llm.generate.return_value = json.dumps({"rationale": "Flagged for review.", "confidence": 80})
+
+        service = self._make_service()
+        result = service.decide(candidate_id=1, candidate_version=1, job_id=10, job_version=1, assessment_score=82, needs_review=True)
+
+        self.assertEqual(result["decision"], "review")
+        prompt = self.mock_llm.generate.call_args[0][0]
+        self.assertIn("needs_review", prompt)
+        self.assertIn("forced to review", prompt)
+        self.assertEqual(self.mock_llm.generate.call_args.kwargs.get("seed"), 7)
+
+    @patch("app.services.decision_service.ScoringService")
+    @patch("app.services.decision_service.get_settings")
+    def test_high_scores_still_hire_without_needs_review(self, mock_settings, mock_scoring_cls):
+        mock_settings.return_value.DECISION_FIT_WEIGHT = 0.40
+        mock_settings.return_value.DECISION_ASSESSMENT_WEIGHT = 0.60
+        mock_settings.return_value.LLM_SEED = 7
+
+        mock_scoring = MagicMock()
+        mock_scoring.calculate_fit.return_value = {
+            "overall_score_percentage": 85,
+            "category_breakdown": {"skills": {"score": 90, "status": "pass", "short_reason": "ok"}},
+            "skill_gap_analysis": "None.",
+        }
+        mock_scoring_cls.return_value = mock_scoring
+
+        self.mock_llm.generate.return_value = json.dumps({"rationale": "Strong.", "confidence": 92})
+
+        service = self._make_service()
+        result = service.decide(candidate_id=1, candidate_version=1, job_id=10, job_version=1, assessment_score=82, needs_review=False)
+
+        self.assertEqual(result["decision"], "hire")
+        prompt = self.mock_llm.generate.call_args[0][0]
+        self.assertNotIn("needs_review", prompt)

@@ -79,6 +79,15 @@ class BulkScreeningService:
             "job_version": validated_metadata.get("job_version", 1),
             "company_name": validated_metadata.get("company_name"),
             "about": validated_metadata.get("about"),
+            "description": validated_metadata.get("description"),
+            "requirements": validated_metadata.get("requirements"),
+            "responsibilities": validated_metadata.get("responsibilities"),
+            "benefits": validated_metadata.get("benefits"),
+            "salary_min": validated_metadata.get("salary_min"),
+            "salary_max": validated_metadata.get("salary_max"),
+            "salary_currency": validated_metadata.get("salary_currency"),
+            "work_mode": validated_metadata.get("work_mode"),
+            "remote_regions": validated_metadata.get("remote_regions"),
         }
 
         return job_payload

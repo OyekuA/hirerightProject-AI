@@ -64,6 +64,7 @@ class TestScoringService(unittest.TestCase):
             SCORING_WEIGHT_EMPLOYMENT=0.08,
             SCORING_STATUS_PASS_THRESHOLD=75,
             SCORING_STATUS_WARNING_THRESHOLD=50,
+            LLM_SEED=42,
         )
         self.settings_patcher = patch(
             "app.services.scoring_service.get_settings",
@@ -753,3 +754,282 @@ class TestScoringService(unittest.TestCase):
         loc = result["category_breakdown"]["location"]
         self.assertEqual(loc["score"], 100)
         self.assertEqual(loc["status"], "pass")
+
+    def test_scoring_llm_call_seeded(self):
+
+        self.cache_mock.get.return_value = None
+        self.qdrant_mock.get.side_effect = [
+            dict(CANDIDATE_PAYLOAD),
+            dict(JOB_PAYLOAD),
+        ]
+        self.gemini_mock.generate.return_value = json.dumps(LLM_RESPONSE)
+        self.service.calculate_fit(
+            candidate_id=1,
+            candidate_version=2,
+            job_id=3,
+            job_version=4,
+            force_refresh=False,
+        )
+        call_args = self.gemini_mock.generate.call_args
+        self.assertEqual(call_args.kwargs.get("seed"), 42)
+
+class TestResolveWorkMode(unittest.TestCase):
+
+    def setUp(self):
+        from app.services.scoring_service import resolve_work_mode
+        self.resolve = resolve_work_mode
+
+    def test_explicit_field_wins(self):
+        self.assertEqual(self.resolve({"work_mode": "hybrid", "employment_type": "remote"}), "hybrid")
+        self.assertEqual(self.resolve({"work_mode": "onsite", "employment_type": "hybrid"}), "onsite")
+        self.assertEqual(self.resolve({"work_mode": "remote", "employment_type": "full-time"}), "remote")
+
+    def test_explicit_onsite_canonicalizes_to_onsite(self):
+        self.assertEqual(self.resolve({"work_mode": "onsite"}), "onsite")
+        self.assertEqual(self.resolve({"work_mode": "onsite", "employment_type": "full-time remote"}), "onsite")
+
+    def test_explicit_work_mode_is_case_insensitive(self):
+        self.assertEqual(self.resolve({"work_mode": "Remote"}), "remote")
+        self.assertEqual(self.resolve({"work_mode": "Hybrid"}), "hybrid")
+        self.assertEqual(self.resolve({"work_mode": "Onsite"}), "onsite")
+        self.assertEqual(self.resolve({"work_mode": " ONSITE "}), "onsite")
+
+    def test_explicit_work_mode_accepts_hyphenated_spellings(self):
+        self.assertEqual(self.resolve({"work_mode": "on-site"}), "onsite")
+        self.assertEqual(self.resolve({"work_mode": "on site"}), "onsite")
+        self.assertEqual(self.resolve({"work_mode": "in-office"}), "onsite")
+
+    def test_legacy_sniff_fallback(self):
+        self.assertEqual(self.resolve({"employment_type": "full-time remote"}), "remote")
+        self.assertEqual(self.resolve({"employment_type": "hybrid"}), "hybrid")
+        self.assertEqual(self.resolve({"employment_type": "full-time"}), "onsite")
+
+    def test_missing_data_defaults_to_onsite(self):
+        self.assertEqual(self.resolve({}), "onsite")
+        self.assertEqual(self.resolve({"employment_type": ""}), "onsite")
+        self.assertEqual(self.resolve({"work_mode": None, "employment_type": None}), "onsite")
+
+    def test_invalid_explicit_value_falls_back_to_sniff(self):
+        self.assertEqual(self.resolve({"work_mode": "flexible", "employment_type": "remote"}), "remote")
+
+class TestWorkModeScoringDims(unittest.TestCase):
+
+    def setUp(self):
+        self.gemini_mock = MagicMock()
+        self.qdrant_mock = MagicMock()
+        self.cache_mock = MagicMock()
+        self.service = ScoringService(
+            llm=self.gemini_mock,
+            qdrant=self.qdrant_mock,
+            cache=self.cache_mock,
+        )
+        settings_mock = MagicMock(
+            CACHE_TTL_SECONDS=86400,
+            MAX_PROMPT_CHARS=50000,
+            SCORING_WEIGHT_SKILLS=0.35,
+            SCORING_WEIGHT_ROLE=0.25,
+            SCORING_WEIGHT_EXPERIENCE=0.20,
+            SCORING_WEIGHT_LOCATION=0.12,
+            SCORING_WEIGHT_EMPLOYMENT=0.08,
+            SCORING_STATUS_PASS_THRESHOLD=75,
+            SCORING_STATUS_WARNING_THRESHOLD=50,
+            LLM_SEED=42,
+        )
+        self.settings_patcher = patch(
+            "app.services.scoring_service.get_settings",
+            return_value=settings_mock,
+        )
+        self.settings_patcher.start()
+        self.truncate_patcher = patch(
+            "app.services.scoring_service.truncate_to_prompt_cap",
+            side_effect=lambda x: x,
+        )
+        self.truncate_patcher.start()
+
+    def tearDown(self):
+        self.settings_patcher.stop()
+        self.truncate_patcher.stop()
+
+    def _score(self, cand, job):
+        self.gemini_mock.generate.return_value = json.dumps(LLM_RESPONSE)
+        return self.service.score_from_payloads(
+            candidate_payload=cand,
+            job_payload=job,
+            candidate_id=1, candidate_version=2,
+            job_id=3, job_version=4,
+        )
+
+    def test_location_dim_uses_explicit_work_mode(self):
+        cand = dict(CANDIDATE_PAYLOAD)
+        cand["work_mode"] = "remote"
+        cand["location"] = ""
+        job = dict(JOB_PAYLOAD)
+        job["work_mode"] = "remote"
+        job["location"] = ""
+        loc = self._score(cand, job)["category_breakdown"]["location"]
+        self.assertEqual(loc["score"], 100)
+        self.assertEqual(loc["status"], "pass")
+
+    def test_location_dim_candidate_preference_hybrid(self):
+        cand = dict(CANDIDATE_PAYLOAD)
+        cand["work_mode"] = "hybrid"
+        cand["location"] = ""
+        job = dict(JOB_PAYLOAD)
+        job["work_mode"] = "remote"
+        job["location"] = ""
+        loc = self._score(cand, job)["category_breakdown"]["location"]
+        self.assertEqual(loc["score"], 100)
+        self.assertEqual(loc["status"], "pass")
+
+    def test_location_dim_explicit_onsite_mismatch(self):
+        cand = dict(CANDIDATE_PAYLOAD)
+        cand["work_mode"] = "onsite"
+        cand["location"] = ""
+        job = dict(JOB_PAYLOAD)
+        job["work_mode"] = "remote"
+        job["location"] = ""
+        loc = self._score(cand, job)["category_breakdown"]["location"]
+        self.assertLess(loc["score"], 100)
+
+    def test_employment_dim_arrangement_only_job_not_hard_fail(self):
+        cand = dict(CANDIDATE_PAYLOAD)
+        cand["employment_type"] = "full-time"
+        job = dict(JOB_PAYLOAD)
+        job["employment_type"] = "remote"
+        emp = self._score(cand, job)["category_breakdown"]["employment_type"]
+        self.assertEqual(emp["score"], 60)
+        self.assertEqual(emp["status"], "warning")
+
+    def test_employment_dim_arrangement_only_same_arrangement_passes(self):
+        cand = dict(CANDIDATE_PAYLOAD)
+        cand["employment_type"] = "remote"
+        job = dict(JOB_PAYLOAD)
+        job["employment_type"] = "remote"
+        emp = self._score(cand, job)["category_breakdown"]["employment_type"]
+        self.assertEqual(emp["score"], 100)
+        self.assertEqual(emp["status"], "pass")
+
+    def test_employment_dim_real_category_mismatch_still_fails(self):
+        cand = dict(CANDIDATE_PAYLOAD)
+        cand["employment_type"] = "full-time"
+        job = dict(JOB_PAYLOAD)
+        job["employment_type"] = "contract"
+        emp = self._score(cand, job)["category_breakdown"]["employment_type"]
+        self.assertEqual(emp["score"], 20)
+        self.assertEqual(emp["status"], "fail")
+
+    def test_employment_dim_canonical_categories_align(self):
+        cand = dict(CANDIDATE_PAYLOAD)
+        cand["employment_type"] = "Full-time"
+        job = dict(JOB_PAYLOAD)
+        job["employment_type"] = "full-time"
+        emp = self._score(cand, job)["category_breakdown"]["employment_type"]
+        self.assertEqual(emp["score"], 100)
+        self.assertEqual(emp["status"], "pass")
+
+    def test_employment_dim_explicit_onsite_versus_sniffed_on_site(self):
+        cand = dict(CANDIDATE_PAYLOAD)
+        cand["employment_type"] = "on-site"
+        job = dict(JOB_PAYLOAD)
+        job["work_mode"] = "onsite"
+        emp = self._score(cand, job)["category_breakdown"]["employment_type"]
+        self.assertEqual(emp["score"], 100)
+        self.assertEqual(emp["status"], "pass")
+
+    def test_employment_dim_sniffed_on_site_versus_explicit_onsite(self):
+        cand = dict(CANDIDATE_PAYLOAD)
+        cand["work_mode"] = "onsite"
+        job = dict(JOB_PAYLOAD)
+        job["employment_type"] = "on-site"
+        emp = self._score(cand, job)["category_breakdown"]["employment_type"]
+        self.assertEqual(emp["score"], 100)
+        self.assertEqual(emp["status"], "pass")
+
+class TestDeterminismFairness(unittest.TestCase):
+
+    def setUp(self):
+        self.gemini_mock = MagicMock()
+        self.qdrant_mock = MagicMock()
+        self.cache_mock = MagicMock()
+        self.service = ScoringService(
+            llm=self.gemini_mock,
+            qdrant=self.qdrant_mock,
+            cache=self.cache_mock,
+        )
+        settings_mock = MagicMock(
+            CACHE_TTL_SECONDS=86400,
+            MAX_PROMPT_CHARS=50000,
+            SCORING_WEIGHT_SKILLS=0.35,
+            SCORING_WEIGHT_ROLE=0.25,
+            SCORING_WEIGHT_EXPERIENCE=0.20,
+            SCORING_WEIGHT_LOCATION=0.12,
+            SCORING_WEIGHT_EMPLOYMENT=0.08,
+            SCORING_STATUS_PASS_THRESHOLD=75,
+            SCORING_STATUS_WARNING_THRESHOLD=50,
+            LLM_SEED=42,
+        )
+        self.settings_patcher = patch(
+            "app.services.scoring_service.get_settings",
+            return_value=settings_mock,
+        )
+        self.settings_patcher.start()
+        self.truncate_patcher = patch(
+            "app.services.scoring_service.truncate_to_prompt_cap",
+            side_effect=lambda x: x,
+        )
+        self.truncate_patcher.start()
+
+    def tearDown(self):
+        self.settings_patcher.stop()
+        self.truncate_patcher.stop()
+
+    def _score(self, cand, job):
+        self.gemini_mock.generate.return_value = json.dumps(LLM_RESPONSE)
+        return self.service.score_from_payloads(
+            candidate_payload=cand,
+            job_payload=job,
+            candidate_id=1, candidate_version=2,
+            job_id=3, job_version=4,
+        )
+
+    def test_unknown_but_equal_experience_levels_warn(self):
+        cand = dict(CANDIDATE_PAYLOAD)
+        cand["experience_level"] = "Mystic Wizard"
+        job = dict(JOB_PAYLOAD)
+        job["experience_level"] = "Mystic Wizard"
+        exp = self._score(cand, job)["category_breakdown"]["experience"]
+        self.assertEqual(exp["score"], 50)
+        self.assertEqual(exp["status"], "warning")
+        self.assertIn("cannot be verified", exp["short_reason"])
+
+    def test_known_equal_experience_levels_still_pass(self):
+        cand = dict(CANDIDATE_PAYLOAD)
+        cand["experience_level"] = "senior"
+        job = dict(JOB_PAYLOAD)
+        job["experience_level"] = "senior"
+        exp = self._score(cand, job)["category_breakdown"]["experience"]
+        self.assertEqual(exp["score"], 100)
+        self.assertEqual(exp["status"], "pass")
+
+    def test_unknown_different_experience_levels_warn(self):
+        cand = dict(CANDIDATE_PAYLOAD)
+        cand["experience_level"] = "Mystic Wizard"
+        job = dict(JOB_PAYLOAD)
+        job["experience_level"] = "Arcane Scholar"
+        exp = self._score(cand, job)["category_breakdown"]["experience"]
+        self.assertEqual(exp["score"], 50)
+        self.assertEqual(exp["status"], "warning")
+
+    def test_derive_status_reads_settings_thresholds(self):
+        from app.services.scoring_service import _derive_status
+        with patch(
+            "app.services.scoring_service.get_settings",
+            return_value=MagicMock(SCORING_STATUS_PASS_THRESHOLD=90, SCORING_STATUS_WARNING_THRESHOLD=60),
+        ):
+            self.assertEqual(_derive_status(95), "pass")
+            self.assertEqual(_derive_status(85), "warning")
+            self.assertEqual(_derive_status(50), "fail")
+
+    def test_derive_status_accepts_explicit_thresholds(self):
+        from app.services.scoring_service import _derive_status
+        self.assertEqual(_derive_status(85, pass_threshold=90, warning_threshold=60), "warning")

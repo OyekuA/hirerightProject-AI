@@ -12,7 +12,7 @@ from app.clients.llm import LLMClient, LLMUnavailableError
 from app.clients.qdrant import QdrantClient, MISSING
 from app.clients.cache import CacheBackend
 from app.constants import EXPERIENCE_LEVEL_LADDER, canonicalize_experience_level
-from app.services.scoring_service import ScoringService
+from app.services.scoring_service import ScoringService, resolve_work_mode, _extract_employment_category
 from app.utils.ingestion import truncate_to_prompt_cap
 
 logger = structlog.get_logger()
@@ -65,8 +65,8 @@ class RecommendationService:
         skill_overlap = self._jaccard_similarity(target_skills, result_skills)
         target_city = target_payload.get("location", "").split(",")[0].strip().lower()
         result_city = result.get("location", "").split(",")[0].strip().lower()
-        target_remote = "remote" in target_payload.get("employment_type", "").lower()
-        result_remote = "remote" in result.get("employment_type", "").lower()
+        target_remote = resolve_work_mode(target_payload) in ("remote", "hybrid")
+        result_remote = resolve_work_mode(result) in ("remote", "hybrid")
         location_match = 1.0 if (target_remote or result_remote) or (target_city and target_city == result_city) else 0.0
         target_level = target_payload.get("experience_level", "").lower().strip().replace("-", " ")
         result_level = result.get("experience_level", "").lower().strip().replace("-", " ")
@@ -81,7 +81,7 @@ class RecommendationService:
             level_match = 1.0
         else:
             level_match = 0.0
-        employment_match = 1.0 if target_payload.get("employment_type") == result.get("employment_type") else 0.0
+        employment_match = 1.0 if _extract_employment_category(target_payload.get("employment_type", "")) == _extract_employment_category(result.get("employment_type", "")) else 0.0
         return (
             0.60 * vector_score
             + 0.15 * skill_overlap

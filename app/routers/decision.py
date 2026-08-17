@@ -41,6 +41,7 @@ async def decision(
             job_id=req.job_id,
             job_version=req.job_version,
             assessment_score=req.assessment_score,
+            needs_review=req.needs_review,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

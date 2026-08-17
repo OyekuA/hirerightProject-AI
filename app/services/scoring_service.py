@@ -1,12 +1,13 @@
 import json
 import structlog
+from typing import Optional
 
 from app.clients.dependencies import CANDIDATES_COLLECTION, JOBS_COLLECTION
 from app.clients.llm import LLMClient, LLMUnavailableError
 from app.clients.qdrant import QdrantClient, MISSING
 from app.clients.cache import CacheBackend
 from app.config import get_settings
-from app.constants import EXPERIENCE_LEVEL_LADDER, canonicalize_experience_level
+from app.constants import EMPLOYMENT_TYPES, EXPERIENCE_LEVEL_LADDER, canonicalize_experience_level
 from app.utils.ingestion import truncate_to_prompt_cap
 from app.utils import parse_llm_json
 from app.utils.bias_masking import mask_candidate_for_scoring
@@ -15,7 +16,13 @@ from app.prompts import SCORING_FIT_PROMPT_TEMPLATE
 logger = structlog.get_logger()
 
 
-def _derive_status(score: int, pass_threshold: int = 75, warning_threshold: int = 50) -> str:
+def _derive_status(score: int, pass_threshold: Optional[int] = None, warning_threshold: Optional[int] = None) -> str:
+    if pass_threshold is None or warning_threshold is None:
+        settings = get_settings()
+        if pass_threshold is None:
+            pass_threshold = settings.SCORING_STATUS_PASS_THRESHOLD
+        if warning_threshold is None:
+            warning_threshold = settings.SCORING_STATUS_WARNING_THRESHOLD
     if score >= pass_threshold:
         return "pass"
     elif score >= warning_threshold:
@@ -24,35 +31,37 @@ def _derive_status(score: int, pass_threshold: int = 75, warning_threshold: int 
         return "fail"
 
 
-_EMPLOYMENT_CATEGORIES = {
-    "full-time", "part-time", "contract", "internship",
-    "freelance", "temporary", "volunteer", "apprenticeship",
-}
+_EMPLOYMENT_CATEGORIES = set(EMPLOYMENT_TYPES)
 
 _WORK_ARRANGEMENT_KEYWORDS = ["remote", "hybrid", "on-site", "onsite", "in-office", "in office"]
 
 
 def _extract_employment_category(raw: str) -> str:
     lowered = raw.lower().strip()
+    original = lowered
     for kw in _WORK_ARRANGEMENT_KEYWORDS:
         lowered = lowered.replace(kw.replace("-", " "), "").replace(kw, "").strip()
     for ch in ("/", ",", ";", "-"):
         lowered = lowered.replace(ch, " ")
-    lowered = lowered.replace("full time", "full-time")
-    lowered = lowered.replace("part time", "part-time")
+    lowered = lowered.replace("full time", "full_time")
+    lowered = lowered.replace("part time", "part_time")
     tokens = lowered.split()
     for token in tokens:
         token = token.strip()
         if token in ("ft", "fulltime"):
-            return "full-time"
+            return "full_time"
         if token in ("pt", "parttime"):
-            return "part-time"
+            return "part_time"
         if token == "intern":
             return "internship"
         if token == "freelance":
             return "freelance"
         if token in _EMPLOYMENT_CATEGORIES:
             return token
+    if not tokens:
+        if any(kw in original for kw in _WORK_ARRANGEMENT_KEYWORDS):
+            return _extract_work_arrangement(raw)
+        return ""
     return raw.lower().strip()
 
 
@@ -62,7 +71,16 @@ def _extract_work_arrangement(raw: str) -> str:
         return "remote"
     if "hybrid" in lowered:
         return "hybrid"
-    return "on-site"
+    return "onsite"
+
+
+def resolve_work_mode(payload: dict) -> Optional[str]:
+    explicit = (payload.get("work_mode") or "").strip().lower()
+    if explicit in ("onsite", "on-site", "on site", "in-office", "in office"):
+        return "onsite"
+    if explicit in ("remote", "hybrid"):
+        return explicit
+    return _extract_work_arrangement(payload.get("employment_type") or "")
 
 
 def _compute_deterministic_dimensions(candidate_payload: dict, job_payload: dict) -> dict:
@@ -82,19 +100,22 @@ def _compute_deterministic_dimensions(candidate_payload: dict, job_payload: dict
             idx_job = EXPERIENCE_LEVEL_LADDER.index(job_canon)
             distance = abs(idx_cand - idx_job)
             exp_score = max(0, 100 - distance * 25)
-        elif cand_canon == job_canon:
-            exp_score = 100
+            if exp_score >= pass_threshold:
+                exp_status = "pass"
+                exp_reason = f"Experience level '{cand_canon}' aligns with job requirement '{job_canon}'."
+            elif exp_score >= warning_threshold:
+                exp_status = "warning"
+                exp_reason = f"Experience level '{cand_canon}' partially aligns with '{job_canon}'."
+            else:
+                exp_status = "fail"
+                exp_reason = f"Experience level '{cand_canon}' insufficient for '{job_canon}'."
         else:
             exp_score = 50
-        if exp_score >= pass_threshold:
-            exp_status = "pass"
-            exp_reason = f"Experience level '{cand_canon}' aligns with job requirement '{job_canon}'."
-        elif exp_score >= warning_threshold:
             exp_status = "warning"
-            exp_reason = f"Experience level '{cand_canon}' partially aligns with '{job_canon}'."
-        else:
-            exp_status = "fail"
-            exp_reason = f"Experience level '{cand_canon}' insufficient for '{job_canon}'."
+            if cand_canon == job_canon:
+                exp_reason = f"Experience level '{cand_canon}' matches '{job_canon}' but level alignment cannot be verified against known levels."
+            else:
+                exp_reason = f"Experience level '{cand_canon}' partially aligns with '{job_canon}'."
     else:
         exp_score = 50
         exp_status = "warning"
@@ -102,11 +123,9 @@ def _compute_deterministic_dimensions(candidate_payload: dict, job_payload: dict
 
     cand_location = (candidate_payload.get("location") or "").strip()
     job_location = (job_payload.get("location") or "").strip()
-    cand_emp_raw = (candidate_payload.get("employment_type") or "").lower()
-    job_emp_raw = (job_payload.get("employment_type") or "").lower()
-    cand_arrangement = _extract_work_arrangement(cand_emp_raw)
-    job_arrangement = _extract_work_arrangement(job_emp_raw)
-    cand_remote_ok = cand_arrangement in ("remote", "hybrid") or "open to remote" in (candidate_payload.get("notes") or "").lower()
+    cand_arrangement = resolve_work_mode(candidate_payload)
+    job_arrangement = resolve_work_mode(job_payload)
+    cand_remote_ok = cand_arrangement in ("remote", "hybrid")
     job_is_remote = job_arrangement == "remote"
     job_is_hybrid = job_arrangement == "hybrid"
 
@@ -146,8 +165,8 @@ def _compute_deterministic_dimensions(candidate_payload: dict, job_payload: dict
     if cand_emp and job_emp:
         cand_category = _extract_employment_category(cand_emp)
         job_category = _extract_employment_category(job_emp)
-        cand_arr = _extract_work_arrangement(cand_emp)
-        job_arr = _extract_work_arrangement(job_emp)
+        cand_arr = resolve_work_mode(candidate_payload)
+        job_arr = resolve_work_mode(job_payload)
 
         if cand_category == job_category:
             if cand_arr == job_arr:
@@ -158,6 +177,15 @@ def _compute_deterministic_dimensions(candidate_payload: dict, job_payload: dict
                 emp_score = 60
                 emp_status = "warning"
                 emp_reason = f"Same category '{cand_category}' but arrangement '{cand_arr}' differs from '{job_arr}'."
+        elif cand_category in ("remote", "hybrid", "onsite") or job_category in ("remote", "hybrid", "onsite"):
+            if cand_arr == job_arr:
+                emp_score = 100
+                emp_status = "pass"
+                emp_reason = f"Employment arrangement '{cand_arr}' matches requirement."
+            else:
+                emp_score = 60
+                emp_status = "warning"
+                emp_reason = f"Employment category unspecified on one side; arrangement '{cand_arr}' differs from '{job_arr}'."
         else:
             emp_score = 20
             emp_status = "fail"
@@ -200,7 +228,8 @@ class ScoringService:
         self.cache = cache
 
     def _run_scoring(self, prompt: str) -> dict:
-        generated = self.llm.generate(prompt, temperature=0)
+        settings = get_settings()
+        generated = self.llm.generate(prompt, temperature=0, seed=settings.LLM_SEED)
         result = parse_llm_json(generated)
 
         if not isinstance(result, dict):

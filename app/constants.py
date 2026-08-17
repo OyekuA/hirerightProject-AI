@@ -3,6 +3,24 @@ import re
 CANDIDATES_COLLECTION = "candidates"
 JOBS_COLLECTION = "jobs"
 
+EMPLOYMENT_TYPES = (
+    "full_time",
+    "part_time",
+    "contract",
+    "freelance",
+    "internship",
+    "temporary",
+    "volunteer",
+    "apprenticeship",
+    "self_employed",
+)
+
+WORK_MODES = (
+    "remote",
+    "hybrid",
+    "onsite",
+)
+
 EXPERIENCE_LEVEL_LADDER = [
     "intern",
     "apprentice",

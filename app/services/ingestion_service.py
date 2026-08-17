@@ -10,7 +10,7 @@ from app.clients.dependencies import CANDIDATES_COLLECTION, JOBS_COLLECTION
 from app.clients.llm import LLMClient, LLMUnavailableError
 from app.clients.qdrant import QdrantClient, MISSING
 from app.services.ingestion_store import IngestionStatusStore
-from app.utils.ingestion import fetch_and_parse_cv, truncate_to_prompt_cap
+from app.utils.ingestion import fetch_and_parse_cv, truncate_to_prompt_cap, truncate_to_embed_cap
 from app.services.callback_client import CallbackClient
 from app.services.ingest_queue import IngestQueue
 from app.config import get_settings
@@ -42,6 +42,77 @@ _DATE_RANGE_PATTERN = re.compile(
     r"(?:(?P<end_month>[A-Za-z]+)\s+)?(?:(?P<end_year>\d{4})|Present|Current|Now)",
     re.IGNORECASE,
 )
+
+
+def _build_labeled_text(pairs: List[Tuple[str, object]]) -> str:
+    lines = []
+    for label, value in pairs:
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)):
+            value = ", ".join(str(item).strip() for item in value if str(item).strip())
+            if not value:
+                continue
+        elif isinstance(value, bool):
+            value = str(value)
+        elif isinstance(value, float):
+            value = str(int(value)) if value.is_integer() else str(value)
+        elif isinstance(value, (int, float)):
+            value = str(value)
+        else:
+            value = str(value).strip()
+        if not value:
+            continue
+        lines.append(f"{label}: {value}")
+    return "\n".join(lines)
+
+
+def _format_salary(min_value: Optional[float], max_value: Optional[float], currency: Optional[str]) -> Optional[str]:
+    if min_value is None and max_value is None:
+        return None
+    parts = []
+    if min_value is not None:
+        parts.append(str(int(min_value)) if min_value.is_integer() else str(min_value))
+    if max_value is not None:
+        parts.append(str(int(max_value)) if max_value.is_integer() else str(max_value))
+    text = " - ".join(parts)
+    if currency:
+        text = f"{text} {currency}"
+    return text
+
+
+def _build_job_embed_text(metadata: JobMetadata, extraction: JobExtraction, raw_jd_summary: str) -> str:
+    return _build_labeled_text([
+        ("Job Title", extraction.title or metadata.title),
+        ("Location", extraction.location or metadata.location),
+        ("Employment Type", extraction.employment_type or metadata.employment_type),
+        ("Work Mode", metadata.work_mode),
+        ("Remote Regions", metadata.remote_regions),
+        ("Required Skills", extraction.required_skills),
+        ("Summary", raw_jd_summary),
+        ("Description", metadata.description),
+        ("Requirements", metadata.requirements),
+        ("Responsibilities", metadata.responsibilities),
+        ("Benefits", metadata.benefits),
+        ("Salary", _format_salary(metadata.salary_min, metadata.salary_max, metadata.salary_currency)),
+    ])
+
+
+def _build_candidate_embed_text(
+    profile: ProfileData,
+    extraction: CandidateExtraction,
+    raw_profile_summary: str,
+) -> str:
+    return _build_labeled_text([
+        ("Industry", extraction.industry or profile.industry),
+        ("Location", extraction.location or profile.location),
+        ("Employment Type", extraction.employment_type or profile.employment_type),
+        ("Work Mode", extraction.work_mode or profile.work_mode),
+        ("Total Years Experience", extraction.total_years_experience),
+        ("Skills", extraction.skills),
+        ("Past Roles", extraction.past_roles),
+        ("Summary", raw_profile_summary),
+    ])
 
 
 def _compute_total_years_experience(past_roles: List[str]) -> Optional[float]:
@@ -331,7 +402,8 @@ async def run_candidate_ingestion(
                 "data_source": validated_profile.data_source,
                 "ingested_at": datetime.now(timezone.utc).isoformat(),
                 "cv_hash": new_hash,
-                "total_years_experience": existing_payload.get("total_years_experience"),
+                "work_mode": validated_profile.work_mode,
+                "total_years_experience": validated_profile.total_years_experience,
             })
             logger.info("Candidate ingestion skipped (hash match)", event_id=event_id, candidate_id=candidate_id)
             store.update(event_id, status="success", attempt_count=1)
@@ -348,7 +420,10 @@ async def run_candidate_ingestion(
             raw_profile_summary = validated_extraction.raw_profile_summary or ""
         raw_profile_summary = truncate_to_prompt_cap(raw_profile_summary)
 
-        vector = await asyncio.to_thread(llm.embed, raw_profile_summary)
+        embed_text = truncate_to_embed_cap(
+            _build_candidate_embed_text(validated_profile, validated_extraction, raw_profile_summary)
+        )
+        vector = await asyncio.to_thread(llm.embed, embed_text)
 
         payload = {
             "name": validated_extraction.name or validated_profile.name,
@@ -357,6 +432,7 @@ async def run_candidate_ingestion(
             "experience_level": validated_extraction.experience_level or validated_profile.experience_level,
             "industry": validated_extraction.industry or validated_profile.industry,
             "employment_type": validated_extraction.employment_type or validated_profile.employment_type,
+            "work_mode": validated_extraction.work_mode or validated_profile.work_mode,
             "skills": validated_extraction.skills,
             "past_roles": validated_extraction.past_roles,
             "raw_profile_summary": raw_profile_summary,
@@ -418,6 +494,15 @@ async def run_job_ingestion(
                 "job_version": validated_metadata.job_version,
                 "company_name": validated_metadata.company_name,
                 "about": validated_metadata.about,
+                "description": validated_metadata.description,
+                "requirements": validated_metadata.requirements,
+                "responsibilities": validated_metadata.responsibilities,
+                "benefits": validated_metadata.benefits,
+                "salary_min": validated_metadata.salary_min,
+                "salary_max": validated_metadata.salary_max,
+                "salary_currency": validated_metadata.salary_currency,
+                "work_mode": validated_metadata.work_mode,
+                "remote_regions": validated_metadata.remote_regions,
                 "ingested_at": datetime.now(timezone.utc).isoformat(),
                 "jd_hash": new_hash
             })
@@ -434,7 +519,10 @@ async def run_job_ingestion(
             raw_jd_summary = validated_extraction.raw_jd_summary or ""
         raw_jd_summary = truncate_to_prompt_cap(raw_jd_summary)
 
-        vector = await asyncio.to_thread(llm.embed, raw_jd_summary)
+        embed_text = truncate_to_embed_cap(
+            _build_job_embed_text(validated_metadata, validated_extraction, raw_jd_summary)
+        )
+        vector = await asyncio.to_thread(llm.embed, embed_text)
 
         payload = {
             "title": validated_extraction.title or validated_metadata.title,
@@ -448,6 +536,15 @@ async def run_job_ingestion(
             "job_version": validated_metadata.job_version,
             "company_name": validated_metadata.company_name,
             "about": validated_metadata.about,
+            "description": validated_metadata.description,
+            "requirements": validated_metadata.requirements,
+            "responsibilities": validated_metadata.responsibilities,
+            "benefits": validated_metadata.benefits,
+            "salary_min": validated_metadata.salary_min,
+            "salary_max": validated_metadata.salary_max,
+            "salary_currency": validated_metadata.salary_currency,
+            "work_mode": validated_metadata.work_mode,
+            "remote_regions": validated_metadata.remote_regions,
             "ingested_at": datetime.now(timezone.utc).isoformat(),
             "jd_hash": new_hash,
         }

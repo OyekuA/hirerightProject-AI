@@ -233,3 +233,12 @@ def truncate_to_prompt_cap(text: str) -> str:
         logger.warning("Prompt text truncated", original_length=len(text), cap=max_chars)
         return text[:max_chars]
     return text
+
+
+def truncate_to_embed_cap(text: str) -> str:
+    settings = get_settings()
+    max_chars = settings.EMBED_MAX_CHARS
+    if len(text) > max_chars:
+        logger.warning("Embed text truncated", original_length=len(text), cap=max_chars)
+        return text[:max_chars]
+    return text

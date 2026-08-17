@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch, AsyncMock, ANY
 
 from app.services.screening_service import BulkScreeningService
 from app.schemas.screening import ScreenBatchRequest, ScreeningCandidateInput
+from app.schemas.ingestion import JobMetadata
 
 def _make_mock_settings():
 
@@ -109,6 +110,60 @@ class TestBulkScreeningService(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(ValueError):
             await self.service.resolve_job_payload(req)
+
+    @patch("app.services.screening_service.get_settings")
+    @patch("app.services.screening_service.extract_job_entities")
+    async def test_resolve_job_payload_raw_jd_merges_metadata_addons(
+        self,
+        mock_extract,
+        mock_get_settings,
+    ):
+
+        mock_get_settings.return_value = _make_mock_settings()
+        mock_extraction = MagicMock()
+        mock_extraction.title = "Engineer"
+        mock_extraction.location = "Remote"
+        mock_extraction.experience_level = "Mid"
+        mock_extraction.industry = "Tech"
+        mock_extraction.employment_type = "Full-time"
+        mock_extraction.required_skills = ["Python"]
+        mock_extraction.raw_jd_summary = "Looking for an engineer"
+        mock_extract.return_value = mock_extraction
+
+        req = ScreenBatchRequest(
+            jd_text="We need a Python engineer.",
+            job_metadata=JobMetadata(
+                title="Engineer",
+                location="Remote",
+                experience_level="Mid",
+                industry="Tech",
+                employment_type="full_time",
+                description="We need a Python engineer.",
+                requirements="Python.",
+                responsibilities="Build.",
+                benefits="Health.",
+                salary_min=80000,
+                salary_max=110000,
+                salary_currency="USD",
+                work_mode="remote",
+                remote_regions=["EMEA"],
+            ),
+            candidates=[ScreeningCandidateInput(
+                candidate_ref="c1",
+                cv_url="https://example.com/cv.pdf",
+            )],
+        )
+
+        payload = await self.service.resolve_job_payload(req)
+        self.assertEqual(payload["work_mode"], "remote")
+        self.assertEqual(payload["salary_min"], 80000)
+        self.assertEqual(payload["salary_max"], 110000)
+        self.assertEqual(payload["salary_currency"], "USD")
+        self.assertEqual(payload["remote_regions"], ["EMEA"])
+        self.assertEqual(payload["description"], "We need a Python engineer.")
+        self.assertEqual(payload["requirements"], "Python.")
+        self.assertEqual(payload["responsibilities"], "Build.")
+        self.assertEqual(payload["benefits"], "Health.")
 
     @patch("app.services.screening_service.get_settings")
     @patch("app.services.screening_service.fetch_and_parse_cv")

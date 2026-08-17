@@ -24,7 +24,7 @@ class TestIngestionServicePayloads(unittest.IsolatedAsyncioTestCase):
             "location": "Remote",
             "experience_level": "Senior",
             "industry": "Tech",
-            "employment_type": "Full-time",
+            "employment_type": "full_time",
             "skills": ["Python", "ML"],
             "past_roles": ["Engineer at Acme (Jan 2020 – Present)"],
             "raw_profile_summary": "Experienced software engineer with ML background.",
@@ -48,7 +48,7 @@ class TestIngestionServicePayloads(unittest.IsolatedAsyncioTestCase):
                     "location": "Remote",
                     "experience_level": "Senior",
                     "industry": "Tech",
-                    "employment_type": "Full-time",
+                    "employment_type": "full_time",
                     "candidate_version": 1
                 },
                 callback_url="https://example.com/callback",
@@ -78,7 +78,7 @@ class TestIngestionServicePayloads(unittest.IsolatedAsyncioTestCase):
             "location": "Remote",
             "experience_level": "Mid",
             "industry": "Tech",
-            "employment_type": "Full-time",
+            "employment_type": "full_time",
             "required_skills": ["Python", "AWS"],
             "raw_jd_summary": "Looking for a software engineer with Python and AWS experience."
         }))
@@ -98,7 +98,7 @@ class TestIngestionServicePayloads(unittest.IsolatedAsyncioTestCase):
                     "location": "Remote",
                     "experience_level": "Mid",
                     "industry": "Tech",
-                    "employment_type": "Full-time",
+                    "employment_type": "full_time",
                     "job_version": 1,
                     "company_name": "ORACLE",
                     "about": "Nice",
@@ -153,7 +153,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                     "location": "Remote",
                     "experience_level": "Senior",
                     "industry": "Tech",
-                    "employment_type": "Full-time",
+                    "employment_type": "full_time",
                     "candidate_version": 2
                 },
                 callback_url="https://example.com/callback",
@@ -189,7 +189,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             "location": "Remote",
             "experience_level": "Senior",
             "industry": "Tech",
-            "employment_type": "Full-time",
+            "employment_type": "full_time",
             "skills": ["Python", "ML"],
             "past_roles": ["Engineer"],
             "raw_profile_summary": "Experienced software engineer with ML background."
@@ -217,7 +217,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                     "location": "Remote",
                     "experience_level": "Senior",
                     "industry": "Tech",
-                    "employment_type": "Full-time",
+                    "employment_type": "full_time",
                     "candidate_version": 2
                 },
                 callback_url="https://example.com/callback",
@@ -248,7 +248,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             "location": "Remote",
             "experience_level": "Senior",
             "industry": "Tech",
-            "employment_type": "Full-time",
+            "employment_type": "full_time",
             "skills": ["Python", "ML"],
             "past_roles": ["Engineer"],
             "raw_profile_summary": "Experienced software engineer with ML background."
@@ -275,7 +275,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                     "location": "Remote",
                     "experience_level": "Senior",
                     "industry": "Tech",
-                    "employment_type": "Full-time",
+                    "employment_type": "full_time",
                     "candidate_version": 2
                 },
                 callback_url="https://example.com/callback",
@@ -323,7 +323,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                     "location": "Remote",
                     "experience_level": "Mid",
                     "industry": "Tech",
-                    "employment_type": "Full-time",
+                    "employment_type": "full_time",
                     "job_version": 2,
                     "company_name": "ORACLE",
                     "about": "Nice",
@@ -363,7 +363,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             "location": "Remote",
             "experience_level": "Mid",
             "industry": "Tech",
-            "employment_type": "Full-time",
+            "employment_type": "full_time",
             "required_skills": ["Python", "AWS"],
             "raw_jd_summary": "Looking for a software engineer with Python and AWS experience."
         }))
@@ -388,7 +388,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                     "location": "Remote",
                     "experience_level": "Mid",
                     "industry": "Tech",
-                    "employment_type": "Full-time",
+                    "employment_type": "full_time",
                     "job_version": 2,
                     "company_name": "ORACLE",
                     "about": "Nice",
@@ -423,7 +423,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             "location": "Remote",
             "experience_level": "Mid",
             "industry": "Tech",
-            "employment_type": "Full-time",
+            "employment_type": "full_time",
             "required_skills": ["Python", "AWS"],
             "raw_jd_summary": "Looking for a software engineer with Python and AWS experience."
         }))
@@ -447,7 +447,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                     "location": "Remote",
                     "experience_level": "Mid",
                     "industry": "Tech",
-                    "employment_type": "Full-time",
+                    "employment_type": "full_time",
                     "job_version": 2,
                     "company_name": "ORACLE",
                     "about": "Nice",
@@ -482,7 +482,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             "location": "Remote",
             "experience_level": "Senior",
             "industry": "Tech",
-            "employment_type": "Full-time",
+            "employment_type": "full_time",
             "skills": ["Python", "ML"],
             "past_roles": ["Engineer"],
             "raw_profile_summary": "Experienced software engineer with ML background."
@@ -511,7 +511,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                     "location": "Remote",
                     "experience_level": "Senior",
                     "industry": "Tech",
-                    "employment_type": "Full-time",
+                    "employment_type": "full_time",
                     "candidate_version": 1
                 },
                 callback_url="https://example.com/callback",
@@ -542,7 +542,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             "location": "Remote",
             "experience_level": "Mid",
             "industry": "Tech",
-            "employment_type": "Full-time",
+            "employment_type": "full_time",
             "required_skills": ["Python", "AWS"],
             "raw_jd_summary": "Looking for a software engineer with Python and AWS experience."
         }))
@@ -568,7 +568,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                     "location": "Remote",
                     "experience_level": "Mid",
                     "industry": "Tech",
-                    "employment_type": "Full-time",
+                    "employment_type": "full_time",
                     "job_version": 1,
                     "company_name": "ORACLE",
                     "about": "Nice",
@@ -621,7 +621,7 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
                     "location": "Remote",
                     "experience_level": "Senior",
                     "industry": "Tech",
-                    "employment_type": "Full-time",
+                    "employment_type": "full_time",
                     "candidate_version": 1
                 },
                 callback_url="https://example.com/callback",
@@ -673,7 +673,7 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
                     "location": "Remote",
                     "experience_level": "Mid",
                     "industry": "Tech",
-                    "employment_type": "Full-time",
+                    "employment_type": "full_time",
                     "job_version": 1,
                     "company_name": "ORACLE",
                     "about": "Nice",
@@ -731,7 +731,7 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
                     "location": "Remote",
                     "experience_level": "Senior",
                     "industry": "Tech",
-                    "employment_type": "Full-time",
+                    "employment_type": "full_time",
                     "candidate_version": 1
                 },
                 callback_url="https://example.com/callback",
@@ -775,7 +775,7 @@ class TestIngestionRetry(unittest.IsolatedAsyncioTestCase):
                     "location": "Remote",
                     "experience_level": "Mid",
                     "industry": "Tech",
-                    "employment_type": "Full-time",
+                    "employment_type": "full_time",
                     "job_version": 1,
                     "company_name": "ORACLE",
                     "about": "Nice",
@@ -819,7 +819,7 @@ class TestIngestionCallbackSuppression(unittest.IsolatedAsyncioTestCase):
                 profile_data={
                     "name": "John", "location": "Remote",
                     "experience_level": "Senior", "industry": "Tech",
-                    "employment_type": "Full-time", "candidate_version": 1,
+                    "employment_type": "full_time", "candidate_version": 1,
                 },
                 callback_url="https://example.com/callback",
                 event_id="evt_suppress",
@@ -841,7 +841,7 @@ class TestIngestionCallbackSuppression(unittest.IsolatedAsyncioTestCase):
         mock_gemini.generate = MagicMock(return_value=json.dumps({
             "name": "John Doe", "location": "Remote",
             "experience_level": "Senior", "industry": "Tech",
-            "employment_type": "Full-time", "skills": ["Python"],
+            "employment_type": "full_time", "skills": ["Python"],
             "past_roles": ["Engineer"],
             "raw_profile_summary": "Experienced engineer."
         }))
@@ -862,7 +862,7 @@ class TestIngestionCallbackSuppression(unittest.IsolatedAsyncioTestCase):
                 profile_data={
                     "name": "John", "location": "Remote",
                     "experience_level": "Senior", "industry": "Tech",
-                    "employment_type": "Full-time", "candidate_version": 1,
+                    "employment_type": "full_time", "candidate_version": 1,
                 },
                 callback_url="https://example.com/callback",
                 event_id="evt_suppress_ok",
@@ -906,7 +906,7 @@ class TestIngestionCallbackSuppression(unittest.IsolatedAsyncioTestCase):
                 profile_data={
                     "name": "John", "location": "Remote",
                     "experience_level": "Senior", "industry": "Tech",
-                    "employment_type": "Full-time", "candidate_version": 1,
+                    "employment_type": "full_time", "candidate_version": 1,
                 },
                 callback_url="https://example.com/callback",
                 event_id="evt_enqueue",
@@ -942,7 +942,7 @@ class TestIngestionCallbackSuppression(unittest.IsolatedAsyncioTestCase):
                 metadata={
                     "title": "Engineer", "location": "Remote",
                     "experience_level": "Mid", "industry": "Tech",
-                    "employment_type": "Full-time", "job_version": 1,
+                    "employment_type": "full_time", "job_version": 1,
                     "company_name": "ACME", "about": "Nice",
                 },
                 callback_url="https://example.com/callback",
@@ -985,7 +985,7 @@ class TestIngestionCallbackSuppression(unittest.IsolatedAsyncioTestCase):
                 metadata={
                     "title": "Engineer", "location": "Remote",
                     "experience_level": "Mid", "industry": "Tech",
-                    "employment_type": "Full-time", "job_version": 1,
+                    "employment_type": "full_time", "job_version": 1,
                     "company_name": "ACME", "about": "Nice",
                 },
                 callback_url="https://example.com/callback",
@@ -1010,7 +1010,7 @@ class TestExtractionHelpers(unittest.IsolatedAsyncioTestCase):
             "location": "Remote",
             "experience_level": "Senior",
             "industry": "Tech",
-            "employment_type": "Full-time",
+            "employment_type": "full_time",
             "skills": ["Python", "ML"],
             "past_roles": ["Engineer at Acme (Jan 2020 – Present)"],
             "raw_profile_summary": "Experienced engineer.",
@@ -1051,7 +1051,7 @@ class TestExtractionHelpers(unittest.IsolatedAsyncioTestCase):
             "location": "NYC",
             "experience_level": "Mid",
             "industry": "Finance",
-            "employment_type": "Full-time",
+            "employment_type": "full_time",
             "skills": [],
             "past_roles": [],
             "raw_profile_summary": None,
@@ -1075,7 +1075,7 @@ class TestExtractionHelpers(unittest.IsolatedAsyncioTestCase):
             "location": "Remote",
             "experience_level": "Senior",
             "industry": "Tech",
-            "employment_type": "Full-time",
+            "employment_type": "full_time",
             "required_skills": ["Python", "AWS"],
             "raw_jd_summary": "Looking for an engineer.",
         })
@@ -1114,7 +1114,7 @@ class TestExtractionHelpers(unittest.IsolatedAsyncioTestCase):
             "location": "Remote",
             "experience_level": "Senior",
             "industry": "Tech",
-            "employment_type": "Full-time",
+            "employment_type": "full_time",
             "required_skills": ["Python"],
             "raw_jd_summary": None,
         })
@@ -1208,7 +1208,7 @@ class TestYearsOfExperienceComputation(unittest.TestCase):
             "location": "Remote",
             "experience_level": "Senior",
             "industry": "Tech",
-            "employment_type": "Full-time",
+            "employment_type": "full_time",
             "skills": ["Python"],
             "past_roles": ["Engineer at Acme (Jan 2020 – Dec 2023)"],
             "raw_profile_summary": "Engineer.",
@@ -1234,7 +1234,7 @@ class TestCandidateDataSource(unittest.IsolatedAsyncioTestCase):
             "location": "Remote",
             "experience_level": "Senior",
             "industry": "Tech",
-            "employment_type": "Full-time",
+            "employment_type": "full_time",
             "skills": ["Python", "ML"],
             "past_roles": ["Engineer"],
             "raw_profile_summary": "Experienced software engineer with ML background."
@@ -1257,7 +1257,7 @@ class TestCandidateDataSource(unittest.IsolatedAsyncioTestCase):
                     "location": "Remote",
                     "experience_level": "Senior",
                     "industry": "Tech",
-                    "employment_type": "Full-time",
+                    "employment_type": "full_time",
                     "candidate_version": 1,
                     "data_source": "indeed",
                 },
@@ -1306,7 +1306,7 @@ class TestCandidateDataSource(unittest.IsolatedAsyncioTestCase):
                     "location": "Remote",
                     "experience_level": "Senior",
                     "industry": "Tech",
-                    "employment_type": "Full-time",
+                    "employment_type": "full_time",
                     "candidate_version": 2,
                     "data_source": "linkedin",
                 },
@@ -1323,3 +1323,597 @@ class TestCandidateDataSource(unittest.IsolatedAsyncioTestCase):
         self.assertIn("data_source", payload_fields)
         self.assertEqual(payload_fields["data_source"], "linkedin")
         self.assertEqual(payload_fields["candidate_version"], 2)
+
+class TestEmploymentTypeAndWorkModeValidation(unittest.TestCase):
+
+    def test_work_mode_constants(self):
+        from app.constants import WORK_MODES
+        self.assertEqual(WORK_MODES, ("remote", "hybrid", "onsite"))
+
+    def test_employment_type_constants(self):
+        from app.constants import EMPLOYMENT_TYPES
+        self.assertIn("full_time", EMPLOYMENT_TYPES)
+        self.assertIn("part_time", EMPLOYMENT_TYPES)
+        self.assertIn("contract", EMPLOYMENT_TYPES)
+        self.assertIn("self_employed", EMPLOYMENT_TYPES)
+
+    def test_validate_employment_type_accepts_canonical(self):
+        from app.schemas.ingestion import _validate_employment_type
+        self.assertEqual(_validate_employment_type("full_time"), "full_time")
+        self.assertEqual(_validate_employment_type("Full_Time"), "full_time")
+        self.assertEqual(_validate_employment_type(" contract "), "contract")
+        self.assertEqual(_validate_employment_type("self_employed"), "self_employed")
+
+    def test_validate_employment_type_rejects_non_canonical(self):
+        from pydantic import ValidationError
+        from app.schemas.ingestion import ProfileData
+        with self.assertRaises(ValidationError) as ctx:
+            ProfileData(
+                name="A", location="Lagos", experience_level="Senior",
+                industry="fintech", employment_type="full-time",
+                candidate_version=1,
+            )
+        self.assertIn("full-time", str(ctx.exception))
+        with self.assertRaises(ValidationError):
+            ProfileData(
+                name="A", location="Lagos", experience_level="Senior",
+                industry="fintech", employment_type="FT",
+                candidate_version=1,
+            )
+
+    def test_validate_work_mode_accepts_canonical(self):
+        from app.schemas.ingestion import _validate_work_mode
+        self.assertEqual(_validate_work_mode("remote"), "remote")
+        self.assertEqual(_validate_work_mode("Hybrid"), "hybrid")
+
+    def test_job_metadata_rejects_hyphen_employment_type(self):
+        from pydantic import ValidationError
+        from app.schemas.ingestion import JobMetadata
+        with self.assertRaises(ValidationError):
+            JobMetadata(
+                title="Engineer",
+                location="Remote",
+                experience_level="Senior",
+                industry="Tech",
+                employment_type="full-time",
+            )
+
+    def test_job_metadata_accepts_addon_fields(self):
+        from app.schemas.ingestion import JobMetadata
+        meta = JobMetadata(
+            title="Engineer",
+            location="Remote",
+            experience_level="Senior",
+            industry="Tech",
+            employment_type="full_time",
+            description="desc",
+            requirements="req",
+            responsibilities="resp",
+            benefits="ben",
+            salary_min=50000,
+            salary_max=90000,
+            salary_currency="USD",
+            work_mode="hybrid",
+            remote_regions=["EMEA"],
+        )
+        self.assertEqual(meta.salary_min, 50000)
+        self.assertEqual(meta.salary_max, 90000)
+        self.assertEqual(meta.salary_currency, "USD")
+        self.assertEqual(meta.work_mode, "hybrid")
+        self.assertEqual(meta.remote_regions, ["EMEA"])
+        self.assertEqual(meta.description, "desc")
+
+    def test_profile_data_accepts_canonical_employment_type_and_work_mode(self):
+        from app.schemas.ingestion import ProfileData
+        profile = ProfileData(
+            name="A",
+            location="X",
+            experience_level="Senior",
+            industry="Tech",
+            employment_type="part_time",
+            candidate_version=1,
+            work_mode="remote",
+        )
+        self.assertEqual(profile.employment_type, "part_time")
+        self.assertEqual(profile.work_mode, "remote")
+
+    def test_profile_data_rejects_non_canonical_employment_type(self):
+        from app.schemas.ingestion import ProfileData
+        from pydantic import ValidationError
+        with self.assertRaises(ValidationError):
+            ProfileData(
+                name="A",
+                location="X",
+                experience_level="Senior",
+                industry="Tech",
+                employment_type="part-time",
+                candidate_version=1,
+            )
+
+    def test_profile_data_rejects_invalid_work_mode(self):
+        from app.schemas.ingestion import ProfileData
+        from pydantic import ValidationError
+        with self.assertRaises(ValidationError):
+            ProfileData(
+                name="A",
+                location="X",
+                experience_level="Senior",
+                industry="Tech",
+                employment_type="full_time",
+                candidate_version=1,
+                work_mode="in-office",
+            )
+
+class TestJobMetadataPersistence(unittest.IsolatedAsyncioTestCase):
+
+    _FULL_METADATA = {
+        "title": "Software Engineer",
+        "location": "Remote",
+        "experience_level": "Mid",
+        "industry": "Tech",
+        "employment_type": "full_time",
+        "job_version": 1,
+        "company_name": "ORACLE",
+        "about": "Nice",
+        "description": "We need a Python engineer.",
+        "requirements": "Python and AWS.",
+        "responsibilities": "Build APIs.",
+        "benefits": "Health and 401k.",
+        "salary_min": 90000,
+        "salary_max": 120000,
+        "salary_currency": "USD",
+        "work_mode": "remote",
+        "remote_regions": ["EMEA", "Americas"],
+    }
+
+    _ADDON_KEYS = [
+        "description", "requirements", "responsibilities", "benefits",
+        "salary_min", "salary_max", "salary_currency", "work_mode", "remote_regions",
+    ]
+
+    def _job_mocks(self, existing_payload=None):
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=existing_payload)
+        mock_qdrant.upsert = MagicMock()
+        mock_qdrant.update_payload = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "title": "Software Engineer",
+            "location": "Remote",
+            "experience_level": "Mid",
+            "industry": "Tech",
+            "employment_type": "full_time",
+            "required_skills": ["Python", "AWS"],
+            "raw_jd_summary": "Looking for a software engineer with Python and AWS experience."
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = AsyncMock(return_value=True)
+        return mock_qdrant, mock_gemini, mock_store, mock_callback
+
+    async def test_job_fresh_ingest_persists_addon_keys(self):
+        mock_qdrant, mock_gemini, mock_store, mock_callback = self._job_mocks(existing_payload=None)
+        with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_truncate.side_effect = lambda x: x
+            await run_job_ingestion(
+                job_id=456,
+                jd_text="Job description text",
+                metadata=dict(self._FULL_METADATA),
+                callback_url="https://example.com/callback",
+                event_id="evt_456",
+                qdrant=mock_qdrant,
+                llm=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+        mock_qdrant.upsert.assert_called_once()
+        payload = mock_qdrant.upsert.call_args[0][3]
+        for key in self._ADDON_KEYS:
+            self.assertIn(key, payload)
+        self.assertEqual(payload["work_mode"], "remote")
+        self.assertEqual(payload["salary_min"], 90000)
+        self.assertEqual(payload["salary_max"], 120000)
+        self.assertEqual(payload["salary_currency"], "USD")
+        self.assertEqual(payload["remote_regions"], ["EMEA", "Americas"])
+        self.assertEqual(payload["description"], "We need a Python engineer.")
+
+    async def test_job_hash_match_updates_addon_keys(self):
+        jd_text = "Job description text"
+        import hashlib
+        new_hash = hashlib.sha256(jd_text.encode()).hexdigest()
+        mock_qdrant, mock_gemini, mock_store, mock_callback = self._job_mocks(
+            existing_payload={"jd_hash": new_hash}
+        )
+        with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_truncate.side_effect = lambda x: x
+            await run_job_ingestion(
+                job_id=456,
+                jd_text=jd_text,
+                metadata=dict(self._FULL_METADATA),
+                callback_url="https://example.com/callback",
+                event_id="evt_456",
+                qdrant=mock_qdrant,
+                llm=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+        mock_qdrant.update_payload.assert_called_once()
+        payload_fields = mock_qdrant.update_payload.call_args[0][2]
+        for key in self._ADDON_KEYS:
+            self.assertIn(key, payload_fields)
+        self.assertEqual(payload_fields["work_mode"], "remote")
+        self.assertEqual(payload_fields["salary_min"], 90000)
+        self.assertEqual(payload_fields["remote_regions"], ["EMEA", "Americas"])
+
+    async def test_job_fresh_ingest_none_safe_addons(self):
+        mock_qdrant, mock_gemini, mock_store, mock_callback = self._job_mocks(existing_payload=None)
+        with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_truncate.side_effect = lambda x: x
+            await run_job_ingestion(
+                job_id=456,
+                jd_text="Job description text",
+                metadata={
+                    "title": "Software Engineer",
+                    "location": "Remote",
+                    "experience_level": "Mid",
+                    "industry": "Tech",
+                    "employment_type": "full_time",
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_456",
+                qdrant=mock_qdrant,
+                llm=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+        payload = mock_qdrant.upsert.call_args[0][3]
+        for key in self._ADDON_KEYS:
+            self.assertIn(key, payload)
+        self.assertIsNone(payload["work_mode"])
+        self.assertIsNone(payload["salary_min"])
+        self.assertIsNone(payload["remote_regions"])
+
+class TestCandidateWorkModePersistence(unittest.IsolatedAsyncioTestCase):
+
+    def _candidate_mocks(self, existing_payload=None):
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=existing_payload)
+        mock_qdrant.upsert = MagicMock()
+        mock_qdrant.update_payload = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "name": "John Doe",
+            "location": "Remote",
+            "experience_level": "Senior",
+            "industry": "Tech",
+            "employment_type": "full_time",
+            "skills": ["Python", "ML"],
+            "past_roles": ["Engineer"],
+            "raw_profile_summary": "Experienced software engineer with ML background.",
+            "total_years_experience": None
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = AsyncMock(return_value=True)
+        return mock_qdrant, mock_gemini, mock_store, mock_callback
+
+    async def test_candidate_fresh_ingest_persists_profile_work_mode(self):
+        mock_qdrant, mock_gemini, mock_store, mock_callback = self._candidate_mocks(existing_payload=None)
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_fetch.return_value = "CV text"
+            mock_truncate.side_effect = lambda x: x
+            await run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={
+                    "name": "John",
+                    "location": "Remote",
+                    "experience_level": "Senior",
+                    "industry": "Tech",
+                    "employment_type": "full_time",
+                    "candidate_version": 1,
+                    "work_mode": "hybrid",
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_123",
+                qdrant=mock_qdrant,
+                llm=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+        payload = mock_qdrant.upsert.call_args[0][3]
+        self.assertEqual(payload["work_mode"], "hybrid")
+
+    async def test_candidate_fresh_ingest_extraction_work_mode_wins(self):
+        mock_qdrant, mock_gemini, mock_store, mock_callback = self._candidate_mocks(existing_payload=None)
+        mock_gemini.generate.return_value = json.dumps({
+            "name": "John Doe",
+            "location": "Remote",
+            "experience_level": "Senior",
+            "industry": "Tech",
+            "employment_type": "full_time",
+            "work_mode": "remote",
+            "skills": ["Python"],
+            "past_roles": ["Engineer"],
+            "raw_profile_summary": "Experienced engineer.",
+            "total_years_experience": None
+        })
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_fetch.return_value = "CV text"
+            mock_truncate.side_effect = lambda x: x
+            await run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={
+                    "name": "John",
+                    "location": "Remote",
+                    "experience_level": "Senior",
+                    "industry": "Tech",
+                    "employment_type": "full_time",
+                    "candidate_version": 1,
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_123",
+                qdrant=mock_qdrant,
+                llm=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+        payload = mock_qdrant.upsert.call_args[0][3]
+        self.assertEqual(payload["work_mode"], "remote")
+
+    async def test_candidate_hash_match_persists_work_mode_and_fresh_total_years(self):
+        cv_text = "CV text"
+        import hashlib
+        new_hash = hashlib.sha256(cv_text.encode()).hexdigest()
+        mock_qdrant, mock_gemini, mock_store, mock_callback = self._candidate_mocks(
+            existing_payload={"cv_hash": new_hash, "total_years_experience": 2.0}
+        )
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_fetch.return_value = cv_text
+            mock_truncate.side_effect = lambda x: x
+            await run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={
+                    "name": "John",
+                    "location": "Remote",
+                    "experience_level": "Senior",
+                    "industry": "Tech",
+                    "employment_type": "full_time",
+                    "candidate_version": 2,
+                    "work_mode": "hybrid",
+                    "total_years_experience": 8.5,
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_123",
+                qdrant=mock_qdrant,
+                llm=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+        mock_qdrant.upsert.assert_not_called()
+        mock_qdrant.update_payload.assert_called_once()
+        payload_fields = mock_qdrant.update_payload.call_args[0][2]
+        self.assertEqual(payload_fields["work_mode"], "hybrid")
+        self.assertEqual(payload_fields["total_years_experience"], 8.5)
+
+class TestEmbedTextEnrichment(unittest.IsolatedAsyncioTestCase):
+
+    async def test_job_embed_text_enriched_and_labeled(self):
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=None)
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "title": "Software Engineer",
+            "location": "Remote",
+            "experience_level": "Mid",
+            "industry": "Tech",
+            "employment_type": "full_time",
+            "required_skills": ["Python", "AWS"],
+            "raw_jd_summary": "Looking for a software engineer with Python and AWS experience."
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = AsyncMock(return_value=True)
+
+        with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_truncate.side_effect = lambda x: x
+            await run_job_ingestion(
+                job_id=456,
+                jd_text="Job description text",
+                metadata={
+                    "title": "Software Engineer",
+                    "location": "Remote",
+                    "experience_level": "Mid",
+                    "industry": "Tech",
+                    "employment_type": "full_time",
+                    "work_mode": "remote",
+                    "remote_regions": ["EMEA"],
+                    "description": "We need a Python engineer.",
+                    "requirements": "Python and AWS.",
+                    "responsibilities": "Build APIs.",
+                    "benefits": "Health and 401k.",
+                    "salary_min": 90000,
+                    "salary_max": 120000,
+                    "salary_currency": "USD",
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_456",
+                qdrant=mock_qdrant,
+                llm=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        mock_gemini.embed.assert_called_once()
+        text = mock_gemini.embed.call_args[0][0]
+        self.assertIn("Job Title: Software Engineer", text)
+        self.assertIn("Location: Remote", text)
+        self.assertIn("Employment Type: full_time", text)
+        self.assertIn("Work Mode: remote", text)
+        self.assertIn("Remote Regions: EMEA", text)
+        self.assertIn("Required Skills: Python, AWS", text)
+        self.assertIn("Summary: Looking for a software engineer", text)
+        self.assertIn("Description: We need a Python engineer.", text)
+        self.assertIn("Requirements: Python and AWS.", text)
+        self.assertIn("Responsibilities: Build APIs.", text)
+        self.assertIn("Benefits: Health and 401k.", text)
+        self.assertIn("Salary: 90000 - 120000 USD", text)
+
+    async def test_job_embed_text_none_safe_skips_missing_values(self):
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=None)
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "title": "Software Engineer",
+            "location": "Remote",
+            "experience_level": "Mid",
+            "industry": "Tech",
+            "employment_type": "full_time",
+            "required_skills": ["Python", "AWS"],
+            "raw_jd_summary": "Looking for a software engineer."
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = AsyncMock(return_value=True)
+
+        with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_truncate.side_effect = lambda x: x
+            await run_job_ingestion(
+                job_id=456,
+                jd_text="Job description text",
+                metadata={
+                    "title": "Software Engineer",
+                    "location": "Remote",
+                    "experience_level": "Mid",
+                    "industry": "Tech",
+                    "employment_type": "full_time",
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_456",
+                qdrant=mock_qdrant,
+                llm=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        text = mock_gemini.embed.call_args[0][0]
+        self.assertNotIn("Salary:", text)
+        self.assertNotIn("Work Mode:", text)
+        self.assertNotIn("Benefits:", text)
+        self.assertNotIn("Description:", text)
+        self.assertIn("Summary: Looking for a software engineer.", text)
+
+    async def test_candidate_embed_text_excludes_name(self):
+        mock_qdrant = MagicMock()
+        mock_qdrant.get = MagicMock(return_value=None)
+        mock_qdrant.upsert = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "name": "John Doe",
+            "location": "Remote",
+            "experience_level": "Senior",
+            "industry": "Tech",
+            "employment_type": "full_time",
+            "work_mode": "hybrid",
+            "skills": ["Python", "ML"],
+            "past_roles": ["Engineer at Acme"],
+            "raw_profile_summary": "Experienced software engineer with ML background.",
+            "total_years_experience": 5
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        mock_store = MagicMock()
+        mock_store.update = MagicMock()
+        mock_callback = MagicMock()
+        mock_callback.send = AsyncMock(return_value=True)
+
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_fetch.return_value = "CV text"
+            mock_truncate.side_effect = lambda x: x
+            await run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={
+                    "name": "Alice",
+                    "location": "Remote",
+                    "experience_level": "Senior",
+                    "industry": "Tech",
+                    "employment_type": "full_time",
+                    "candidate_version": 1,
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_123",
+                qdrant=mock_qdrant,
+                llm=mock_gemini,
+                store=mock_store,
+                callback_client=mock_callback,
+            )
+
+        mock_gemini.embed.assert_called_once()
+        text = mock_gemini.embed.call_args[0][0]
+        self.assertNotIn("Alice", text)
+        self.assertNotIn("John Doe", text)
+        self.assertIn("Industry: Tech", text)
+        self.assertIn("Location: Remote", text)
+        self.assertIn("Employment Type: full_time", text)
+        self.assertIn("Work Mode: hybrid", text)
+        self.assertIn("Total Years Experience: 5", text)
+        self.assertIn("Skills: Python, ML", text)
+        self.assertIn("Past Roles: Engineer at Acme", text)
+        self.assertIn("Summary: Experienced software engineer", text)
+
+    def test_truncate_to_embed_cap_applies_embed_limit(self):
+        from app.utils.ingestion import truncate_to_embed_cap
+        long_text = "x" * 50000
+        result = truncate_to_embed_cap(long_text)
+        self.assertEqual(len(result), 32000)
+
+class TestJobMetadataAddonSchemaXor(unittest.TestCase):
+
+    def test_generate_jd_request_both_job_id_and_metadata_raises(self):
+        from pydantic import ValidationError
+        from app.schemas.jd import GenerateJDRequest
+        from app.schemas.ingestion import JobMetadata
+        with self.assertRaises(ValidationError):
+            GenerateJDRequest(
+                prompt="Create a JD",
+                job_id=1,
+                job_metadata=JobMetadata(
+                    title="Engineer",
+                    location="Remote",
+                    experience_level="Mid",
+                    industry="Tech",
+                    employment_type="full_time",
+                ),
+            )
+
+    def test_generate_jd_request_accepts_metadata_only(self):
+        from app.schemas.jd import GenerateJDRequest
+        from app.schemas.ingestion import JobMetadata
+        req = GenerateJDRequest(
+            prompt="Create a JD",
+            job_metadata=JobMetadata(
+                title="Engineer",
+                location="Remote",
+                experience_level="Mid",
+                industry="Tech",
+                employment_type="full_time",
+            ),
+        )
+        self.assertIsNotNone(req.job_metadata)
+        self.assertIsNone(req.job_id)

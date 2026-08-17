@@ -232,7 +232,7 @@ INTERVIEW_RECOMMENDATION_PROMPT_TEMPLATE = """
 You are an elite senior recruiter writing a concise recommendation rationale based on structured evaluation data.
 
 DECISION: {decision}  (pre-computed: combined_score >= 80 AND assessment >= 75 -> hire, combined_score < 50 OR assessment < 40 -> no_hire, else review)
-COMBINED SCORE: {combined_score}/100
+{needs_review_note}COMBINED SCORE: {combined_score}/100
 ASSESSMENT SCORE: {assessment_score}/100
 
 CATEGORY BREAKDOWN:
@@ -324,6 +324,7 @@ Location: {location}
 Required Skills: {skills}
 About the Company: {about}
 Role Summary: {summary}
+{comp_block}{benefits_block}{work_mode_block}
 
 Use the KNOWN CONTEXT values verbatim where applicable. Only use a `[placeholder]` for fields that are genuinely unknown.
 
@@ -362,6 +363,7 @@ Location: {location}
 Required Skills: {skills}
 About the Company: {about}
 Role Summary: {summary}
+{comp_block}{benefits_block}{work_mode_block}
 
 Use the KNOWN CONTEXT values verbatim where applicable. Only use a `[placeholder]` for fields that are genuinely unknown.
 
@@ -393,6 +395,7 @@ Return a valid JSON object with exactly these keys:
 - "experience_level": string
 - "industry": string
 - "employment_type": string
+- "work_mode": string or null (only when the CV states a work preference, e.g. "open to remote work"; else null)
 - "skills": array of strings
 - "past_roles": array of strings (each entry MUST embed an explicit date range, e.g. "Title at Company (Jan 2020 – Present)")
 - "raw_profile_summary": string (concise summary of the candidate's overall profile)

@@ -1152,5 +1152,67 @@ class TestRecommendationServiceVersionValidation(unittest.TestCase):
         self.mock_qdrant.search.assert_not_called()
         self.mock_qdrant.scroll.assert_not_called()
 
+class TestRecommendationCanonicalMatch(unittest.TestCase):
+
+    def setUp(self):
+        self.mock_gemini = MagicMock()
+        self.mock_qdrant = MagicMock()
+        self.mock_cache = MagicMock()
+        self.service = RecommendationService(
+            llm=self.mock_gemini,
+            qdrant=self.mock_qdrant,
+            cache=self.mock_cache,
+        )
+
+    def test_employment_match_canonical_case_insensitive(self):
+        target = {
+            "location": "Berlin",
+            "experience_level": "senior",
+            "employment_type": "Full-time",
+            "skills": [],
+        }
+        result = {
+            "location": "Berlin",
+            "experience_level": "senior",
+            "employment_type": "full-time",
+            "skills": [],
+        }
+        score = self.service._compute_composite_score(target, result, [], 0.0, None)
+        self.assertAlmostEqual(score, 0.25)  # 0.10 location + 0.10 level + 0.05 employment
+
+    def test_employment_match_category_mismatch_zero(self):
+        target = {
+            "location": "Berlin",
+            "experience_level": "senior",
+            "employment_type": "full-time",
+            "skills": [],
+        }
+        result = {
+            "location": "Berlin",
+            "experience_level": "senior",
+            "employment_type": "contract",
+            "skills": [],
+        }
+        score = self.service._compute_composite_score(target, result, [], 0.0, None)
+        self.assertAlmostEqual(score, 0.20)  # no employment match
+
+    def test_location_match_uses_work_mode_resolver(self):
+        target = {
+            "location": "Berlin",
+            "experience_level": "senior",
+            "employment_type": "full-time",
+            "work_mode": "remote",
+            "skills": [],
+        }
+        result = {
+            "location": "Munich",
+            "experience_level": "senior",
+            "employment_type": "full-time",
+            "work_mode": "remote",
+            "skills": [],
+        }
+        score = self.service._compute_composite_score(target, result, [], 0.0, None)
+        self.assertAlmostEqual(score, 0.25)  # remote match grants location despite different city
+
 if __name__ == "__main__":
     unittest.main()

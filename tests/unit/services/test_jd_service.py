@@ -279,3 +279,104 @@ class TestJDService(unittest.TestCase):
         self.assertIn("Nice", prompt)
         self.assertNotIn("[Company Name]", prompt)
         self.assertNotIn("[About the Company]", prompt)
+
+class TestJDServiceInline(unittest.TestCase):
+
+    def setUp(self):
+        self.gemini_mock = MagicMock()
+        self.truncate_patcher = patch(
+            "app.services.jd_service.truncate_to_prompt_cap",
+            side_effect=lambda x: x,
+        )
+        self.truncate_patcher.start()
+
+    def tearDown(self):
+        self.truncate_patcher.stop()
+
+    def _metadata(self, **overrides):
+        from app.schemas.ingestion import JobMetadata
+        base = dict(
+            title="Software Engineer",
+            location="Remote",
+            experience_level="Mid",
+            industry="Tech",
+            employment_type="full_time",
+        )
+        base.update(overrides)
+        return JobMetadata(**base)
+
+    def test_generate_jd_inline_never_touches_qdrant(self):
+        qdrant_mock = MagicMock()
+        service = JDService(llm=self.gemini_mock, qdrant=qdrant_mock)
+        self.gemini_mock.generate.return_value = "Generated JD"
+        result = service.generate_jd(
+            prompt="Create a JD",
+            job_metadata=self._metadata(),
+        )
+        self.assertEqual(result, "Generated JD")
+        qdrant_mock.get.assert_not_called()
+        qdrant_mock.upsert.assert_not_called()
+        qdrant_mock.update_payload.assert_not_called()
+
+    def test_generate_jd_inline_without_description_uses_placeholders(self):
+        service = JDService(llm=self.gemini_mock)
+        self.gemini_mock.generate.return_value = "Generated JD"
+        service.generate_jd(
+            prompt="Create a JD",
+            job_metadata=self._metadata(),
+        )
+        prompt = self.gemini_mock.generate.call_args[0][0]
+        self.assertIn("Job Title: Software Engineer", prompt)
+        self.assertIn("[Required Skills]", prompt)
+        self.assertNotIn("Compensation Range:", prompt)
+        self.assertNotIn("Benefits:", prompt)
+        self.assertNotIn("Work Mode:", prompt)
+
+    def test_generate_jd_inline_with_description_runs_extraction(self):
+        from app.services.ingestion_service import JobExtraction
+        service = JDService(llm=self.gemini_mock)
+        self.gemini_mock.generate.return_value = "Generated JD"
+        with patch(
+            "app.services.jd_service.extract_job_entities",
+            return_value=JobExtraction(required_skills=["Python"], raw_jd_summary="Inline summary."),
+        ) as mock_extract:
+            service.generate_jd(
+                prompt="Create a JD",
+                job_metadata=self._metadata(description="We need Python engineers."),
+            )
+        mock_extract.assert_called_once()
+        prompt = self.gemini_mock.generate.call_args[0][0]
+        self.assertIn("Python", prompt)
+        self.assertIn("Inline summary.", prompt)
+        self.assertNotIn("[Required Skills]", prompt)
+
+    def test_generate_jd_inline_renders_context_blocks(self):
+        service = JDService(llm=self.gemini_mock)
+        self.gemini_mock.generate.return_value = "Generated JD"
+        service.generate_jd(
+            prompt="Create a JD",
+            job_metadata=self._metadata(
+                work_mode="remote",
+                remote_regions=["EMEA", "Americas"],
+                benefits="Health and 401k.",
+                salary_min=80000,
+                salary_max=120000,
+                salary_currency="USD",
+            ),
+        )
+        prompt = self.gemini_mock.generate.call_args[0][0]
+        self.assertIn("Compensation Range: 80000 - 120000 USD", prompt)
+        self.assertIn("Benefits: Health and 401k.", prompt)
+        self.assertIn("Work Mode: remote (EMEA, Americas)", prompt)
+
+    def test_generate_jd_refinement_inline_passes_context_blocks(self):
+        service = JDService(llm=self.gemini_mock)
+        self.gemini_mock.generate.return_value = "Generated JD"
+        service.generate_jd(
+            prompt="Make it more detailed.",
+            existing_draft="Some draft",
+            job_metadata=self._metadata(work_mode="hybrid"),
+        )
+        prompt = self.gemini_mock.generate.call_args[0][0]
+        self.assertIn("Work Mode: hybrid", prompt)
+        self.assertNotIn("Compensation Range:", prompt)

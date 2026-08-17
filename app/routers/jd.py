@@ -39,6 +39,7 @@ async def generate_jd(
             prompt=req.prompt,
             existing_draft=req.existing_draft,
             job_id=req.job_id,
+            job_metadata=req.job_metadata,
         )
     except LLMUnavailableError:
         raise HTTPException(

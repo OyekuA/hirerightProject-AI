@@ -14,6 +14,7 @@ from app.logging_config import configure_logging
 from app.config import get_settings
 from app.middleware.correlation import CorrelationIdMiddleware
 from app.clients.llm import LLMUnavailableError
+from app.clients.qdrant import QdrantUnavailableError
 from app.auth import verify_api_key
 from app.routers import (
     ingestion,
@@ -452,6 +453,14 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=503,
             content={"detail": "AI service temporarily unavailable"},
+        )
+
+    @app.exception_handler(QdrantUnavailableError)
+    async def qdrant_unavailable_handler(request: Request, exc: QdrantUnavailableError):
+        logger.error("Vector store unavailable", exc_info=exc)
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Vector store temporarily unavailable"},
         )
 
     @app.exception_handler(Exception)

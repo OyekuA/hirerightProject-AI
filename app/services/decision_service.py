@@ -61,12 +61,14 @@ class DecisionService:
         job_id: int,
         job_version: int,
         assessment_score: int,
+        needs_review: bool = False,
     ) -> dict:
         logger.info(
             "Running decision engine",
             candidate_id=candidate_id,
             job_id=job_id,
             assessment_score=assessment_score,
+            needs_review=needs_review,
         )
 
         fit_result = self._scoring_service.calculate_fit(
@@ -85,16 +87,23 @@ class DecisionService:
         combined_score = max(0, min(100, combined_score))
 
         decision = self._compute_label(combined_score, assessment_score)
+        needs_review_note = ""
+        if needs_review:
+            decision = "review"
+            needs_review_note = (
+                "NOTE: candidate flagged for review (needs_review=true); decision forced to review regardless of scores. "
+            )
 
         prompt = INTERVIEW_RECOMMENDATION_PROMPT_TEMPLATE.format(
             decision=decision,
             combined_score=combined_score,
             assessment_score=assessment_score,
             category_breakdown_json=json.dumps(fit_result["category_breakdown"], indent=2),
+            needs_review_note=needs_review_note,
         )
         prompt = truncate_to_prompt_cap(prompt)
 
-        raw = self.llm.generate(prompt, temperature=0)
+        raw = self.llm.generate(prompt, temperature=0, seed=settings.LLM_SEED)
         rationale = self._parse_rationale(raw)
 
         return {

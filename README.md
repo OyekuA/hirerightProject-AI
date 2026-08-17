@@ -28,7 +28,7 @@ The HireRight AI Microservice adds semantic candidate‑to‑job matching, expla
 │   ├── main.py                     # FastAPI app factory, lifespan, background workers
 │   ├── config.py                   # Pydantic Settings (env‑var loading)
 │   ├── auth.py                     # API‑key verification dependency
-│   ├── constants.py                # Collection names, experience level ladder
+│   ├── constants.py                # Collection names, EMPLOYMENT_TYPES & WORK_MODES vocabularies, experience level ladder
 │   ├── logging_config.py           # structlog configuration
 │   ├── prompts.py                  # LLM prompt templates (generation, grading, extraction)
 │   ├── clients/
@@ -98,6 +98,7 @@ The HireRight AI Microservice adds semantic candidate‑to‑job matching, expla
 │       │   ├── test_cache.py
 │       │   ├── test_circuit_breaker.py
 │       │   ├── test_llm_client.py
+│       │   ├── test_qdrant_client.py
 │       │   └── test_meeting_bot.py
 │       ├── routers/
 │       │   ├── __init__.py
@@ -224,6 +225,7 @@ Full table sourced from [`.env.example`](.env.example):
 | `LLM_MAX_RETRIES` | Optional | `2` | Maximum retries for transient failures before recording a circuit breaker failure |
 | `LLM_RETRY_BACKOFF_BASE_SECONDS` | Optional | `1.0` | Base backoff seconds for retry exponential backoff |
 | `MAX_PROMPT_CHARS` | Optional | `50000` | Maximum prompt characters — inputs are truncated at this limit |
+| `EMBED_MAX_CHARS` | Optional | `32000` | Maximum characters for texts sent to the embedding model (≈8k tokens, within `text-embedding-3-small`'s context) — prompt cap is separate |
 | `INGEST_STATUS_STORE_PATH` | Required | `/data/ingest_status` | Path where ingestion status files are permanently stored (mounted named volume) |
 | `CALLBACK_HMAC_SECRET` | Required | `change-me-in-production` | Shared secret used to sign callback payloads |
 | `CALLBACK_SIGNATURE_TTL_SECONDS` | Optional | `300` | Max allowed callback timestamp age for replay protection (seconds) |
@@ -446,22 +448,49 @@ The following are **not** this microservice's responsibility:
 - **Email delivery** — The service generates invite emails but does not send them.
 - **Recall.ai account/contract** — Vendor setup is managed by the platform team.
 
+## Canonical Enum Values (Contract)
+
+The PHP backend must send these exact values (lowercase). Anything else is rejected with a `422` that lists the allowed values. Empty string / `null` is allowed where a field is optional and means "unspecified".
+
+**`employment_type`** (ingest-job `metadata`, ingest-candidate `profile_data`):
+
+```
+full_time | part_time | contract | freelance | internship | temporary | volunteer | apprenticeship | self_employed
+```
+
+**`work_mode`** (ingest-job `metadata`, ingest-candidate `profile_data`):
+
+```
+remote | hybrid | onsite
+```
+
+- Job `work_mode` = the role's requirement; candidate `work_mode` = the candidate's preference.
+- `work_mode` and `employment_type` are orthogonal: a job is `full_time` **and** `remote`, `part_time` **and** `onsite`, etc.
+- Candidates declaring `remote`/`hybrid` are scored as remote-capable for the location dimension (no harsh location-mismatch fail across cities). Jobs declaring `remote`/`hybrid` never hard-fail a remote-capable candidate on location.
+
 ## API Reference
 
 ### `POST /api/ai/ingest‑candidate`
 - **Purpose:** Asynchronously ingest a candidate CV from a cloud URL into the vector store.
-- **Request:** `candidate_id` (int), `cv_url` (HTTPS URL to PDF), `callback_url` (HTTP or HTTPS)
+- **Request:** `candidate_id` (int), `cv_url` (HTTPS URL to PDF), `callback_url` (HTTP or HTTPS), `profile_data` (object):
+  - `name`, `location`, `experience_level`, `industry`, `employment_type` (canonical values — see [Canonical Enum Values](#canonical-enum-values-contract)), `candidate_version` (int)
+  - `work_mode` (optional, canonical: `remote|hybrid|onsite`) — the candidate's preference
+  - `total_years_experience` (optional float), `data_source` (optional string)
 - **Response:** `202 Accepted` — `{"event_id": "<uuid>"}`
 - **Rate limit:** 500/day, 10/minute, 20/day per candidate
-- **curl:** `curl -X POST http://localhost/api/ai/ingest-candidate -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"candidate_id": 123, "cv_url": "https://example.com/cv.pdf", "callback_url": "https://php-backend.example.com/callback"}'`
+- **curl:** `curl -X POST http://localhost/api/ai/ingest-candidate -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"candidate_id": 123, "cv_url": "https://example.com/cv.pdf", "profile_data": {"name": "A", "location": "Lagos, Nigeria", "experience_level": "Senior Level", "industry": "fintech", "employment_type": "full_time", "candidate_version": 1, "work_mode": "remote"}, "callback_url": "https://php-backend.example.com/callback"}'`
   > `callback_url` accepts both `http://` and `https://`.
 
 ### `POST /api/ai/ingest‑job`
 - **Purpose:** Asynchronously ingest a job description text into the vector store.
-- **Request:** `job_id` (int), `jd_text` (string), `metadata` (`title`, `location`, `experience_level`, `industry`, `employment_type`, `job_version`), `callback_url` (HTTP or HTTPS)
+- **Request:** `job_id` (int), `jd_text` (string), `metadata` (object), `callback_url` (HTTP or HTTPS)
+- **`metadata` fields:**
+  - Required: `title`, `location`, `experience_level`, `industry`, `employment_type` (canonical values)
+  - Optional: `company_name`, `about`, `work_mode` (canonical), `remote_regions` (array of strings, e.g. `["Worldwide", "EMEA"]`), `description`, `requirements`, `responsibilities`, `benefits`, `salary_min` (number), `salary_max` (number), `salary_currency` (string, e.g. `"NGN"`), `job_version` (int, **defaults to 1**)
+  - The optional content fields (description/requirements/responsibilities/benefits/salary/work_mode/remote_regions) are stored in the vector payload, enrich the job's embedding, and feed JD generation and scoring context.
 - **Response:** `202 Accepted` — `{"event_id": "<uuid>"}`
 - **Rate limit:** 200/day, 10/minute, 20/day per job
-- **curl:** `curl -X POST http://localhost/api/ai/ingest-job -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"job_id": 456, "jd_text": "...", "metadata": {...}, "callback_url": "http://php-backend.internal/callback"}'`
+- **curl:** `curl -X POST http://localhost/api/ai/ingest-job -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"job_id": 456, "jd_text": "...", "metadata": {"title": "...", "location": "...", "experience_level": "Senior Level", "industry": "...", "employment_type": "full_time", "work_mode": "hybrid", "salary_min": 8000000, "salary_max": 12000000, "salary_currency": "NGN", "benefits": "Health insurance"}, "callback_url": "http://php-backend.internal/callback"}'`
   > `callback_url` accepts both `http://` and `https://`.
 
 ### `POST /api/ai/cv‑parse`
@@ -563,8 +592,10 @@ The following are **not** this microservice's responsibility:
 ### `POST /api/ai/calculate‑fit`
 - **Purpose:** Calculate an explainable fit score between a candidate and a job.
 - **Request:** `candidate_id`, `candidate_version`, `job_id`, `job_version` (all int), `force_refresh` (bool, optional)
-- **Response:** `overall_score_percentage` (0–100), `category_breakdown` (`role_match`, `experience`, `location`, `employment_type` — each with `status` and `short_reason`), `skill_gap_analysis` (string)
+- **Response:** `overall_score_percentage` (0–100), `category_breakdown` (`skills`, `role_match`, `experience`, `location`, `employment_type` — each with `score`, `status`, and `short_reason`), `skill_gap_analysis` (string)
+- **Note:** `skills` and `role_match` are LLM-judged; `experience`, `location`, and `employment_type` are deterministic and `work_mode`-aware (explicit `work_mode` wins, legacy employment-type strings are sniffed as fallback). Neutral "insufficient data" messages appear only when the underlying payload field is missing on either side.
 - **Note:** `skill_gap_analysis` and each `short_reason` are written in neutral, pronoun‑free language — no "the candidate", "you", or "they". Language describes the match between the profile and the role factually.
+- **Errors:** `404` (candidate/job not found or version mismatch), `503` (LLM or vector store unavailable)
 - **Rate limit:** 1000/hour, 30/minute, 100/hour per candidate
 - **curl:** `curl -X POST http://localhost/api/ai/calculate-fit -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"candidate_id": 123, "candidate_version": 1, "job_id": 456, "job_version": 1}'`
 
@@ -616,7 +647,8 @@ The following are **not** this microservice's responsibility:
 |---|---|---|---|
 | `prompt` | string | Yes | Textual guidance for the desired JD |
 | `existing_draft` | string | No | Existing JD text to refine instead of generating from scratch |
-| `job_id` | int | No | ID of an already-ingested job — fetches `title`, `location`, `required_skills`, `raw_jd_summary`, and company context (if available) from Qdrant to enrich the prompt; explicit `company_name` and `about` fields are no longer accepted |
+| `job_id` | int | No | ID of an already-ingested job — fetches `title`, `location`, `required_skills`, `raw_jd_summary`, and company context (if available) from Qdrant to enrich the prompt |
+| `job_metadata` | object | No | Full `JobMetadata` object (same shape as `ingest-job.metadata`) to generate from an **unsaved** job — supports all the new optional fields (description, requirements, responsibilities, benefits, salary, work_mode, remote_regions). **XOR with `job_id`** — providing both returns `422`. Inline mode never writes to the vector store |
 
 If `job_id` is supplied but not found in Qdrant, the endpoint returns `404`.
 - **Response:** `{"jd_text": "..."}`
@@ -641,8 +673,8 @@ If `job_id` is supplied but not found in Qdrant, the endpoint returns `404`.
 - **curl:** `curl -X POST http://localhost/api/ai/analyze-jd -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"jd_text": "..."}'`
 
 ### `POST /api/ai/decision`
-- **Purpose:** Run the ensemble Interview Decision Engine combining fit score + assessment score.
-- **Request:** `candidate_id` (int), `candidate_version` (int), `job_id` (int), `job_version` (int), `assessment_score` (int, 0–100)
+- **Purpose:** Run the Interview Decision Engine combining fit score + assessment score.
+- **Request:** `candidate_id` (int), `candidate_version` (int), `job_id` (int), `job_version` (int), `assessment_score` (int, 0–100), `needs_review` (bool, optional, default `false`)
 - **Response:**
   ```
   {
@@ -651,12 +683,13 @@ If `job_id` is supplied but not found in Qdrant, the endpoint returns `404`.
     "fit_score": 0–100,
     "assessment_score": 0–100,
     "rationale": "...",
-    "confidence": 0–100,
-    "votes": ["hire", "review", "hire"]
+    "confidence": 0–100
   }
   ```
-  The LLM is called 3 times at temperatures `[0.0, 0.3, 0.5]`; majority vote wins (>half); on tie, `TIEBREAK_ORDER` (`no_hire` < `review` < `hire`) breaks it; the first vote matching the winning label supplies rationale/confidence.
-- **Errors:** `404` (candidate/job not found or version mismatch), `503` (LLM unavailable/malformed vote)
+- **Decision rules (deterministic):** `hire` when `combined_score >= 80 AND assessment_score >= 75`; `no_hire` when `combined_score < 50 OR assessment_score < 40`; otherwise `review`. `combined_score = 0.40 * fit_score + 0.60 * assessment_score`.
+- **`needs_review`:** pass the assessment's `needs_review` flag through — when `true`, the decision is **forced to `review`** regardless of scores (a flagged candidate can never be returned as `hire`).
+- **Note:** `rationale` and `confidence` are LLM-generated (temperature 0, seeded) from the pre-computed decision — the LLM does not re-judge the outcome.
+- **Errors:** `404` (candidate/job not found or version mismatch), `503` (LLM or vector store unavailable)
 - **Rate limit:** 500/hour, 20/minute, 100/hour per candidate
 - **curl:**
   ```bash
@@ -668,9 +701,20 @@ If `job_id` is supplied but not found in Qdrant, the endpoint returns `404`.
       "candidate_version": 1,
       "job_id": 456,
       "job_version": 1,
-      "assessment_score": 75
+      "assessment_score": 75,
+      "needs_review": false
     }'
   ```
+
+### `POST /api/ai/screen-batch`
+- **Purpose:** Screen a batch of CVs against a job in one call — each candidate is CV-extracted and fit-scored. Supports an existing ingested job **or** a raw JD supplied inline.
+- **Request:**
+  - Existing job: `job_id` (int) + `job_version` (int) — **XOR** with raw mode
+  - Raw mode: `jd_text` (string) + `job_metadata` (object, same shape as `ingest-job.metadata`, incl. all new optional fields)
+  - `candidates` (array of `{"candidate_ref": string, "cv_url": HTTPS URL}`), `callback_url` (optional)
+- **Response:** `202 Accepted` — `{"batch_id": "<uuid>"}`; poll `GET /api/ai/screen-batch/{batch_id}` for per-candidate `fit_score`, `category_breakdown`, `skill_gap_analysis`, or `error`
+- **Rate limit:** 20/day, 5/minute
+- **Errors:** `404` (job not found/version mismatch), `422` (invalid CV URL, dual job source)
 
 ### `POST /api/ai/generate‑invite‑email`
 - **Purpose:** Generate a personalized interview-invite email.
@@ -813,6 +857,7 @@ Unit tests mock all external dependencies (Qdrant, OpenAI) and run in CI on ever
 | [`tests/unit/services/test_scoring_service.py`](tests/unit/services/test_scoring_service.py) | Fit‑score calculation |
 | [`tests/unit/clients/test_circuit_breaker.py`](tests/unit/clients/test_circuit_breaker.py) | Circuit breaker state transitions |
 | [`tests/unit/clients/test_llm_client.py`](tests/unit/clients/test_llm_client.py) | LLM client generation & embedding |
+| [`tests/unit/clients/test_qdrant_client.py`](tests/unit/clients/test_qdrant_client.py) | Qdrant transport-error guarding (QdrantUnavailableError → 503) |
 | [`tests/unit/clients/test_cache.py`](tests/unit/clients/test_cache.py) | TTL cache backend |
 | [`tests/unit/test_config.py`](tests/unit/test_config.py) | Settings loading |
 | [`tests/unit/test_utils.py`](tests/unit/test_utils.py) | Utility functions |
