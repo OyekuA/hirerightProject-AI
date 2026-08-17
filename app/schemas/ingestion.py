@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, HttpUrl, field_validator
-from typing import Optional, List
+from typing import Literal, Optional, List
 
 from app.constants import EMPLOYMENT_TYPES, WORK_MODES
 
