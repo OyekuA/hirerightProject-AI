@@ -295,7 +295,7 @@ Rate limits are enforced **per API key** (SHA‑256 fingerprinted). Endpoints th
 | `POST /analyze-career-paths` | 500/day | 10/minute | 20/day per candidate | LLM‑cost (generation) |
 | `POST /generate-jd` | 500/day | 10/minute | 50/day per job | LLM‑cost (generation) |
 | `POST /analyze-jd` | 500/day | 10/minute | 50/day per job | LLM‑cost (generation) |
-| `POST /decision` | 500/hour | 20/minute | 100/hour per candidate | LLM‑cost (generation, 3-vote ensemble) |
+| `POST /decision` | 500/hour | 20/minute | 100/hour per candidate | LLM‑cost (generation, seeded rationale) |
 | `POST /generate-invite-email` | 500/hour | 20/minute | 100/hour per candidate | LLM‑cost (generation) |
 | `POST /interview/start` | 500/day | 10/minute | 20/day per candidate | Vendor bot injection (Recall.ai) |
 | `GET /interview/{session_id}` | — | — | — | **No rate limit** |
@@ -593,7 +593,7 @@ remote | hybrid | onsite
 - **Purpose:** Calculate an explainable fit score between a candidate and a job.
 - **Request:** `candidate_id`, `candidate_version`, `job_id`, `job_version` (all int), `force_refresh` (bool, optional)
 - **Response:** `overall_score_percentage` (0–100), `category_breakdown` (`skills`, `role_match`, `experience`, `location`, `employment_type` — each with `score`, `status`, and `short_reason`), `skill_gap_analysis` (string)
-- **Note:** `skills` and `role_match` are LLM-judged; `experience`, `location`, and `employment_type` are deterministic and `work_mode`-aware (explicit `work_mode` wins, legacy employment-type strings are sniffed as fallback). Neutral "insufficient data" messages appear only when the underlying payload field is missing on either side.
+- **Note:** `skills` and `role_match` are LLM-judged; `experience`, `location`, and `employment_type` are deterministic and `work_mode`-aware (explicit `work_mode` wins, legacy employment-type strings are sniffed as fallback). Arrangement compatibility is **directional**: onsite/hybrid candidates satisfy any job arrangement; only a remote-only candidate conflicts with a hybrid or onsite job (warning, not fail). Neutral "insufficient data" messages appear only when the underlying payload field is missing on either side.
 - **Note:** `skill_gap_analysis` and each `short_reason` are written in neutral, pronoun‑free language — no "the candidate", "you", or "they". Language describes the match between the profile and the role factually.
 - **Errors:** `404` (candidate/job not found or version mismatch), `503` (LLM or vector store unavailable)
 - **Rate limit:** 1000/hour, 30/minute, 100/hour per candidate
@@ -603,6 +603,7 @@ remote | hybrid | onsite
 - **Purpose:** Return a ranked list of job or candidate recommendations for a target profile.
 - **Request:** `type` (`"jobs"|"candidates"`), `target_id` (int), `target_version` (int), `behavioral_signals` (object — `recent_searches` (list[str]), `recent_clicks` (list[`{id: int, dwell_time_seconds: int}`]), `recent_saves` (list[int]), `recent_positive_outcomes` (list[int])), `hard_filters` (dict), `force_refresh` (bool), `limit` (int, max 50)
 - **Response:** `{"results": [{"id": int, "similarity_score": float, "llm_score": int|null}, ...]}`
+- **Note:** Results below a composite `similarity_score` floor of **0.45** (`RECOMMEND_MIN_SIMILARITY` in `recommendation_service.py`) are dropped — calibrated against live data (good matches 0.44–0.62, noise tail below ~0.44). The floor applies only to the vector path; the cold-start path (missing target vector) is exempt because its metadata-only composite is capped at 0.40 by construction. `llm_score` is a lazy cache read of a previously computed fit score — it is `null` unless `calculate-fit` ran for that pair; ranking always uses `similarity_score`.
 - **Rate limit:** 500/day, 20/minute, 50/hour per target
 - **curl:** `curl -X POST http://localhost/api/ai/recommend -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"type": "jobs", "target_id": 123, "target_version": 1, "behavioral_signals": {"recent_searches": ["python engineer"], "recent_clicks": [{"id": 456, "dwell_time_seconds": 30}], "recent_saves": [789], "recent_positive_outcomes": []}, "limit": 10}'`
 
@@ -862,7 +863,7 @@ Unit tests mock all external dependencies (Qdrant, OpenAI) and run in CI on ever
 | [`tests/unit/test_config.py`](tests/unit/test_config.py) | Settings loading |
 | [`tests/unit/test_utils.py`](tests/unit/test_utils.py) | Utility functions |
 | [`tests/unit/routers/test_screening_router.py`](tests/unit/routers/test_screening_router.py) | Screening question generation & JD analysis |
-| [`tests/unit/routers/test_decision_router.py`](tests/unit/routers/test_decision_router.py) | Decision endpoint wiring — ensemble voting/tiebreak |
+| [`tests/unit/routers/test_decision_router.py`](tests/unit/routers/test_decision_router.py) | Decision endpoint wiring — threshold rules, `needs_review` force-review |
 | [`tests/unit/routers/test_email_router.py`](tests/unit/routers/test_email_router.py) | Invite email generation endpoint — calendar-link retry |
 | [`tests/unit/routers/test_interview_router.py`](tests/unit/routers/test_interview_router.py) | Bot injection, SSRF validation, 202 flow |
 | [`tests/unit/routers/test_interview_webhook_router.py`](tests/unit/routers/test_interview_webhook_router.py) | Svix verification + event routing (recording.done, transcript.done/failed) |
