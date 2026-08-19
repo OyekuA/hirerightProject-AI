@@ -1214,5 +1214,122 @@ class TestRecommendationCanonicalMatch(unittest.TestCase):
         score = self.service._compute_composite_score(target, result, [], 0.0, None)
         self.assertAlmostEqual(score, 0.25)  # remote match grants location despite different city
 
+class TestRecommendMinSimilarity(unittest.TestCase):
+
+    def setUp(self):
+        self.mock_gemini = MagicMock()
+        self.mock_qdrant = MagicMock()
+        self.mock_cache = MagicMock()
+        self.service = RecommendationService(
+            llm=self.mock_gemini,
+            qdrant=self.mock_qdrant,
+            cache=self.mock_cache,
+        )
+
+    def _signals(self):
+        return {"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}
+
+    def _base_result(self, pid, vector_score):
+        return {
+            "_point_id": pid,
+            "score": vector_score,
+            "required_skills": ["python"],
+            "location": "New York",
+            "experience_level": "mid level",
+            "employment_type": "full_time",
+            "job_version": 1,
+            "title": f"Job {pid}",
+        }
+
+    def test_vector_path_drops_results_below_floor(self):
+        target = {
+            "skills": ["python"],
+            "experience_level": "mid level",
+            "location": "New York",
+            "employment_type": "full_time",
+        }
+        self.mock_qdrant.get_with_vector.return_value = (target, [0.1] * 768)
+        # composite = 0.6 * vector + 0.40 metadata (skills 0.15 + loc 0.10 + level 0.10 + emp 0.05)
+        # 1001: 0.76 (keep) | 1002: 0.52 (keep) | 1003: 0.43 (drop below 0.45)
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [
+                self._base_result(1001, 0.6),
+                self._base_result(1002, 0.2),
+                self._base_result(1003, 0.05),
+            ],
+        ]
+        self.mock_cache.get.return_value = None
+
+        results = self.service.recommend(
+            rec_type="jobs",
+            target_id=1,
+            target_version=1,
+            behavioral_signals=self._signals(),
+            hard_filters={},
+            force_refresh=True,
+            limit=10,
+        )
+        ids = [r["id"] for r in results]
+        self.assertIn(1001, ids)
+        self.assertIn(1002, ids)
+        self.assertNotIn(1003, ids)
+
+    def test_all_below_floor_returns_empty(self):
+        target = {
+            "skills": ["python"],
+            "experience_level": "mid level",
+            "location": "New York",
+            "employment_type": "full_time",
+        }
+        self.mock_qdrant.get_with_vector.return_value = (target, [0.1] * 768)
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [self._base_result(1001, 0.05)],  # composite 0.43 -> dropped
+        ]
+        self.mock_cache.get.return_value = None
+
+        results = self.service.recommend(
+            rec_type="jobs",
+            target_id=1,
+            target_version=1,
+            behavioral_signals=self._signals(),
+            hard_filters={},
+            force_refresh=True,
+            limit=10,
+        )
+        self.assertEqual(results, [])
+
+    def test_cold_start_not_filtered_despite_sub_floor_composite(self):
+        # Cold-start composite is metadata-only (capped at 0.40 by construction),
+        # so the floor must not apply — 0.325 stays.
+        self.mock_qdrant.get_with_vector.return_value = (
+            {"skills": ["python", "java"], "experience_level": "mid level", "location": "New York", "employment_type": "full_time"},
+            None,
+        )
+        self.mock_qdrant.scroll.return_value = [
+            {
+                "_point_id": 1001,
+                "required_skills": ["python"],
+                "location": "New York",
+                "experience_level": "mid level",
+                "employment_type": "full_time",
+                "job_version": 1,
+            },
+        ]
+        self.mock_cache.get.return_value = None
+
+        results = self.service.recommend(
+            rec_type="jobs",
+            target_id=123,
+            target_version=1,
+            behavioral_signals=self._signals(),
+            hard_filters={},
+            force_refresh=False,
+            limit=10,
+        )
+        self.assertEqual(len(results), 1)
+        self.assertAlmostEqual(results[0]["similarity_score"], 0.325)
+
 if __name__ == "__main__":
     unittest.main()

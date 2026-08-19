@@ -21,6 +21,8 @@ POOL_RANK_CONCURRENCY = 5
 POOL_RANK_TIMEOUT_SECONDS = 30
 POOL_RANK_DEFAULT_FIT_SCORE = 0
 
+RECOMMEND_MIN_SIMILARITY = 0.45
+
 
 class RecommendationService:
 
@@ -340,6 +342,7 @@ class RecommendationService:
             result["final_score"] = final_score
 
         raw_results.sort(key=lambda r: r["final_score"], reverse=True)
+        raw_results = [r for r in raw_results if r["final_score"] >= RECOMMEND_MIN_SIMILARITY]
 
         def cluster_key(result):
             if rec_type == "jobs":
