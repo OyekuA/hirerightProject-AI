@@ -83,6 +83,12 @@ def resolve_work_mode(payload: dict) -> Optional[str]:
     return _extract_work_arrangement(payload.get("employment_type") or "")
 
 
+def _arrangement_compatible(cand_arr: str, job_arr: str) -> bool:
+    if cand_arr in ("onsite", "hybrid"):
+        return True
+    return cand_arr == "remote" and job_arr == "remote"
+
+
 def _compute_deterministic_dimensions(candidate_payload: dict, job_payload: dict) -> dict:
     settings = get_settings()
     pass_threshold = settings.SCORING_STATUS_PASS_THRESHOLD
@@ -169,23 +175,23 @@ def _compute_deterministic_dimensions(candidate_payload: dict, job_payload: dict
         job_arr = resolve_work_mode(job_payload)
 
         if cand_category == job_category:
-            if cand_arr == job_arr:
+            if _arrangement_compatible(cand_arr, job_arr):
                 emp_score = 100
                 emp_status = "pass"
                 emp_reason = f"Employment type '{cand_emp}' matches requirement."
             else:
                 emp_score = 60
                 emp_status = "warning"
-                emp_reason = f"Same category '{cand_category}' but arrangement '{cand_arr}' differs from '{job_arr}'."
+                emp_reason = f"Candidate arrangement '{cand_arr}' cannot satisfy job arrangement '{job_arr}'."
         elif cand_category in ("remote", "hybrid", "onsite") or job_category in ("remote", "hybrid", "onsite"):
-            if cand_arr == job_arr:
+            if _arrangement_compatible(cand_arr, job_arr):
                 emp_score = 100
                 emp_status = "pass"
-                emp_reason = f"Employment arrangement '{cand_arr}' matches requirement."
+                emp_reason = f"Employment arrangement '{cand_arr}' satisfies requirement."
             else:
                 emp_score = 60
                 emp_status = "warning"
-                emp_reason = f"Employment category unspecified on one side; arrangement '{cand_arr}' differs from '{job_arr}'."
+                emp_reason = f"Employment category unspecified on one side; arrangement '{cand_arr}' cannot satisfy '{job_arr}'."
         else:
             emp_score = 20
             emp_status = "fail"

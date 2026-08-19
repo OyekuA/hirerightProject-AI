@@ -891,11 +891,38 @@ class TestWorkModeScoringDims(unittest.TestCase):
         loc = self._score(cand, job)["category_breakdown"]["location"]
         self.assertLess(loc["score"], 100)
 
-    def test_employment_dim_arrangement_only_job_not_hard_fail(self):
+    def test_employment_dim_onsite_candidate_satisfies_remote_job(self):
         cand = dict(CANDIDATE_PAYLOAD)
         cand["employment_type"] = "full-time"
         job = dict(JOB_PAYLOAD)
         job["employment_type"] = "remote"
+        emp = self._score(cand, job)["category_breakdown"]["employment_type"]
+        self.assertEqual(emp["score"], 100)
+        self.assertEqual(emp["status"], "pass")
+
+    def test_employment_dim_onsite_candidate_satisfies_hybrid_job(self):
+        cand = dict(CANDIDATE_PAYLOAD)
+        cand["work_mode"] = "onsite"
+        job = dict(JOB_PAYLOAD)
+        job["work_mode"] = "hybrid"
+        emp = self._score(cand, job)["category_breakdown"]["employment_type"]
+        self.assertEqual(emp["score"], 100)
+        self.assertEqual(emp["status"], "pass")
+
+    def test_employment_dim_remote_only_candidate_warns_on_hybrid_job(self):
+        cand = dict(CANDIDATE_PAYLOAD)
+        cand["work_mode"] = "remote"
+        job = dict(JOB_PAYLOAD)
+        job["work_mode"] = "hybrid"
+        emp = self._score(cand, job)["category_breakdown"]["employment_type"]
+        self.assertEqual(emp["score"], 60)
+        self.assertEqual(emp["status"], "warning")
+
+    def test_employment_dim_remote_only_candidate_warns_on_onsite_job(self):
+        cand = dict(CANDIDATE_PAYLOAD)
+        cand["work_mode"] = "remote"
+        job = dict(JOB_PAYLOAD)
+        job["work_mode"] = "onsite"
         emp = self._score(cand, job)["category_breakdown"]["employment_type"]
         self.assertEqual(emp["score"], 60)
         self.assertEqual(emp["status"], "warning")
