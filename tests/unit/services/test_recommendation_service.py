@@ -1233,7 +1233,7 @@ class TestRecommendMinSimilarity(unittest.TestCase):
         return {
             "_point_id": pid,
             "score": vector_score,
-            "required_skills": ["python"],
+            "required_skills": ["ruby"],
             "location": "New York",
             "experience_level": "mid level",
             "employment_type": "full_time",
@@ -1249,14 +1249,14 @@ class TestRecommendMinSimilarity(unittest.TestCase):
             "employment_type": "full_time",
         }
         self.mock_qdrant.get_with_vector.return_value = (target, [0.1] * 768)
-        # composite = 0.6 * vector + 0.40 metadata (skills 0.15 + loc 0.10 + level 0.10 + emp 0.05)
-        # 1001: 0.76 (keep) | 1002: 0.52 (keep) | 1003: 0.43 (drop below 0.45)
+        # composite = 0.6 * vector + 0.25 metadata (skills 0 + loc 0.10 + level 0.10 + emp 0.05)
+        # 1001: 0.61 (keep) | 1002: 0.41 (keep, above floor) | 1003: 0.31 (drop below 0.40)
         self.mock_qdrant.search.side_effect = [
             [],
             [
                 self._base_result(1001, 0.6),
-                self._base_result(1002, 0.2),
-                self._base_result(1003, 0.05),
+                self._base_result(1002, 0.26),
+                self._base_result(1003, 0.1),
             ],
         ]
         self.mock_cache.get.return_value = None
@@ -1285,7 +1285,7 @@ class TestRecommendMinSimilarity(unittest.TestCase):
         self.mock_qdrant.get_with_vector.return_value = (target, [0.1] * 768)
         self.mock_qdrant.search.side_effect = [
             [],
-            [self._base_result(1001, 0.05)],  # composite 0.43 -> dropped
+            [self._base_result(1001, 0.1)],  # composite 0.31 -> dropped
         ]
         self.mock_cache.get.return_value = None
 
