@@ -8,7 +8,7 @@ from typing import Literal
 import qdrant_client.http.models as qdrant_models
 
 from app.clients.dependencies import CANDIDATES_COLLECTION, JOBS_COLLECTION
-from app.clients.llm import LLMClient, LLMUnavailableError
+from app.clients.llm import LLMClient
 from app.clients.qdrant import QdrantClient, MISSING
 from app.clients.cache import CacheBackend
 from app.constants import EXPERIENCE_LEVEL_LADDER, canonicalize_experience_level
@@ -21,7 +21,7 @@ POOL_RANK_CONCURRENCY = 5
 POOL_RANK_TIMEOUT_SECONDS = 30
 POOL_RANK_DEFAULT_FIT_SCORE = 0
 
-RECOMMEND_MIN_SIMILARITY = 0.40
+RECOMMEND_MIN_SIMILARITY = 0.35
 
 
 class RecommendationService:
@@ -57,6 +57,44 @@ class RecommendationService:
             if k in hard_filters
         ]
         return qdrant_models.Filter(must=conditions) if conditions else None
+
+    def _search_with_filter_retry(self, collection, query_vector, limit, filter_obj, hard_filters):
+        results = self.qdrant.search(
+            collection=collection,
+            query_vector=query_vector,
+            limit=limit,
+            query_filter=filter_obj,
+        )
+        if not results and filter_obj is not None:
+            logger.warning(
+                "Hard filters excluded all candidates; retrying unfiltered",
+                hard_filters=hard_filters,
+            )
+            results = self.qdrant.search(
+                collection=collection,
+                query_vector=query_vector,
+                limit=limit,
+                query_filter=None,
+            )
+        return results
+
+    def _scroll_with_filter_retry(self, collection, limit, filter_obj, hard_filters):
+        results = self.qdrant.scroll(
+            collection=collection,
+            query_filter=filter_obj,
+            limit=limit,
+        )
+        if not results and filter_obj is not None:
+            logger.warning(
+                "Hard filters excluded all candidates; retrying unfiltered",
+                hard_filters=hard_filters,
+            )
+            results = self.qdrant.scroll(
+                collection=collection,
+                query_filter=None,
+                limit=limit,
+            )
+        return results
 
     def _compute_composite_score(self, target_payload, result, target_skills, vector_score, collection=None):
         if collection is not None:
@@ -123,8 +161,9 @@ class RecommendationService:
 
     def _compute_weights(self, recent_searches, recent_clicks, recent_saves, recent_positive_outcomes):
         intent_signals = len(recent_searches) + len(recent_clicks) + len(recent_saves) + len(recent_positive_outcomes)
-        intent_weight = min(0.45, 0.10 + 0.05 * intent_signals) if len(recent_searches) >= 3 else 0.0
-        cooccurrence_weight = min(0.20, 0.05 * (len(recent_saves) + len(recent_positive_outcomes))) if (len(recent_saves) + len(recent_positive_outcomes)) >= 2 else 0.0
+        intent_weight = min(0.45, 0.10 + 0.05 * intent_signals) if len(recent_searches) >= 1 else 0.0
+        cooccurrence_signals = len(recent_saves) + len(recent_positive_outcomes) + len(recent_clicks)
+        cooccurrence_weight = min(0.20, 0.05 * cooccurrence_signals) if cooccurrence_signals >= 1 else 0.0
         peer_weight = 0.10
         profile_weight = 1.0 - intent_weight - cooccurrence_weight - peer_weight
         profile_weight = max(0.0, profile_weight)
@@ -211,14 +250,34 @@ class RecommendationService:
             filter_obj = self._build_filter(hard_filters)
 
             effective_limit = min(limit, 50)
-            scroll_results = self.qdrant.scroll(
-                collection=search_collection,
-                query_filter=filter_obj,
-                limit=effective_limit,
-            )
+
+            intent_vec = None
+            if len(recent_searches) >= 1:
+                intent_embeddings = []
+                with concurrent.futures.ThreadPoolExecutor(max_workers=POOL_RANK_CONCURRENCY) as executor:
+                    fut_to_search = {
+                        executor.submit(self.llm.embed, truncate_to_prompt_cap(search)): search
+                        for search in recent_searches
+                    }
+                    for future in concurrent.futures.as_completed(fut_to_search):
+                        try:
+                            intent_embeddings.append(future.result())
+                        except Exception as e:
+                            logger.warning("Intent embedding failed", error=str(e))
+                if intent_embeddings:
+                    intent_vec = np.mean(intent_embeddings, axis=0)
+
+            if intent_vec is not None:
+                raw_results = self._search_with_filter_retry(
+                    search_collection, intent_vec.tolist(), effective_limit * 5, filter_obj, hard_filters
+                )
+            else:
+                raw_results = self._scroll_with_filter_retry(
+                    search_collection, effective_limit, filter_obj, hard_filters
+                )
 
             scored_results = []
-            for result in scroll_results:
+            for result in raw_results:
                 result_id = result["_point_id"]
                 result_version = result.get(version_field)
 
@@ -226,7 +285,9 @@ class RecommendationService:
                     rec_type, target_id, target_version, result_id, result_version
                 )
 
-                similarity_score = self._compute_composite_score(target_payload, result, target_skills, 0.0, search_collection)
+                similarity_score = self._compute_composite_score(
+                    target_payload, result, target_skills, result.get("score", 0.0), search_collection
+                )
 
                 llm_score = self._lookup_llm_score(
                     candidate_id_for_key, candidate_version_for_key,
@@ -258,7 +319,7 @@ class RecommendationService:
 
         profile_vec_np = np.array(profile_vec)
 
-        if len(recent_searches) >= 3:
+        if len(recent_searches) >= 1:
             intent_embeddings = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=POOL_RANK_CONCURRENCY) as executor:
                 fut_to_search = {
@@ -277,7 +338,7 @@ class RecommendationService:
         else:
             intent_vec = zero_vec
 
-        if len(recent_saves) + len(recent_positive_outcomes) >= 2:
+        if len(recent_saves) + len(recent_positive_outcomes) + len(recent_clicks) >= 1:
             cooc_ids = []
             for click in recent_clicks:
                 cooc_ids.append(click["id"])
@@ -329,11 +390,8 @@ class RecommendationService:
         filter_obj = self._build_filter(hard_filters)
 
         effective_limit = min(limit, 50)
-        raw_results = self.qdrant.search(
-            collection=search_collection,
-            query_vector=query_vec,
-            limit=effective_limit * 3,
-            query_filter=filter_obj,
+        raw_results = self._search_with_filter_retry(
+            search_collection, query_vec, effective_limit * 5, filter_obj, hard_filters
         )
 
 
@@ -341,8 +399,17 @@ class RecommendationService:
             final_score = self._compute_composite_score(target_payload, result, target_skills, result["score"], search_collection)
             result["final_score"] = final_score
 
-        raw_results.sort(key=lambda r: r["final_score"], reverse=True)
-        raw_results = [r for r in raw_results if r["final_score"] >= RECOMMEND_MIN_SIMILARITY]
+        raw_results.sort(
+            key=lambda r: (r["final_score"] >= RECOMMEND_MIN_SIMILARITY, r["final_score"]),
+            reverse=True,
+        )
+        below_floor_count = sum(1 for r in raw_results if r["final_score"] < RECOMMEND_MIN_SIMILARITY)
+        if below_floor_count:
+            logger.info(
+                "Returning below-floor recommendations",
+                below_floor_count=below_floor_count,
+                floor=RECOMMEND_MIN_SIMILARITY,
+            )
 
         def cluster_key(result):
             if rec_type == "jobs":
@@ -500,10 +567,6 @@ class RecommendationService:
                         "fit_score": fit_result["overall_score_percentage"],
                         "status": "scored",
                     })
-                except LLMUnavailableError:
-                    for f in not_done:
-                        f.cancel()
-                    raise
                 except Exception as e:
                     logger.warning(
                         "Candidate scoring failed",

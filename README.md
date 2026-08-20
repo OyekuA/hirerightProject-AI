@@ -603,7 +603,7 @@ remote | hybrid | onsite
 - **Purpose:** Return a ranked list of job or candidate recommendations for a target profile.
 - **Request:** `type` (`"jobs"|"candidates"`), `target_id` (int), `target_version` (int), `behavioral_signals` (object — `recent_searches` (list[str]), `recent_clicks` (list[`{id: int, dwell_time_seconds: int}`]), `recent_saves` (list[int]), `recent_positive_outcomes` (list[int])), `hard_filters` (dict), `force_refresh` (bool), `limit` (int, max 50)
 - **Response:** `{"results": [{"id": int, "similarity_score": float, "llm_score": int|null}, ...]}`
-- **Note:** Results below a composite `similarity_score` floor of **0.40** (`RECOMMEND_MIN_SIMILARITY` in `recommendation_service.py`) are dropped — set for recall: live data showed good matches at 0.44–0.62 and a weak tail below ~0.40. The floor applies only to the vector path; the cold-start path (missing target vector) is exempt because its metadata-only composite is capped at 0.40 by construction. `llm_score` is a lazy cache read of a previously computed fit score — it is `null` unless `calculate-fit` ran for that pair; ranking always uses `similarity_score`.
+- **Note:** Results are ordered so candidates at or above a composite `similarity_score` floor of **0.35** (`RECOMMEND_MIN_SIMILARITY` in `recommendation_service.py`) rank first, followed by below-floor candidates as a top-up — the floor is a **preference, not a hard drop** (calibrated on live data: good matches 0.44–0.62, weak tail below ~0.35), so the response is never empty while the search returned matches. The cold-start path (missing target vector) is exempt from the floor by construction. Behavioral signals activate at low levels: intent blends in from a single recent search, co-occurrence from a single save or click. Hard filters (`hard_filters`) are exact-match; if they exclude every candidate the request **retries once unfiltered**. Vector search fetches **5×** the requested limit (`min(limit, 50) × 5`, up to 250 points) for recall. `llm_score` is a lazy cache read of a previously computed fit score — it is `null` unless `calculate-fit` ran for that pair; ranking always uses `similarity_score`.
 - **Rate limit:** 500/day, 20/minute, 50/hour per target
 - **curl:** `curl -X POST http://localhost/api/ai/recommend -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"type": "jobs", "target_id": 123, "target_version": 1, "behavioral_signals": {"recent_searches": ["python engineer"], "recent_clicks": [{"id": 456, "dwell_time_seconds": 30}], "recent_saves": [789], "recent_positive_outcomes": []}, "limit": 10}'`
 
@@ -611,7 +611,7 @@ remote | hybrid | onsite
 - **Purpose:** Rank a pre-filtered candidate pool by fit score (uses `ScoringService.calculate_fit` internally; cache hits are free).
 - **Rate limit:** 100/hour, 10/minute.
 - **Request:** `job_id` (int), `job_version` (int), `candidate_ids` (list[int], 1–100 items).
-- **Response:** `{"results": [{"candidate_id": int, "fit_score": int}]}` — sorted descending by `fit_score`.
+- **Response:** `{"results": [{"candidate_id": int, "fit_score": int, "status": "scored"|"failed"|"timeout"}]}` — sorted descending by `fit_score`. LLM errors are isolated per candidate: a scoring failure marks only that entry `failed` (fit_score 0) while the rest still rank; only missing candidates/jobs or version mismatches reject the whole request.
 - **curl example:**
   ```bash
   curl -X POST http://localhost/api/ai/recommend/pool \

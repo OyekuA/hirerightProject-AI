@@ -518,7 +518,7 @@ class TestAdaptiveWeights(unittest.TestCase):
             recent_positive_outcomes=[],
         )
         self.assertAlmostEqual(intent_weight, 0.45)
-        self.assertAlmostEqual(cooccurrence_weight, 0.0)
+        self.assertAlmostEqual(cooccurrence_weight, 0.20)
 
     def test_intent_weight_includes_clicks(self):
 
@@ -529,7 +529,7 @@ class TestAdaptiveWeights(unittest.TestCase):
             recent_positive_outcomes=[],
         )
         self.assertAlmostEqual(intent_weight, 0.35)
-        self.assertAlmostEqual(cooccurrence_weight, 0.0)
+        self.assertAlmostEqual(cooccurrence_weight, 0.10)
         baseline_weight, _, _, _ = self.service._compute_weights(
             recent_searches=["x", "y", "z"],
             recent_clicks=[],
@@ -965,7 +965,7 @@ class TestRankPool(unittest.TestCase):
         self.assertIn("stored 5", str(cm.exception))
 
     @patch('app.services.recommendation_service.ScoringService')
-    def test_rank_pool_llm_unavailable_error_propagates(self, mock_scoring_cls):
+    def test_rank_pool_llm_unavailable_error_is_isolated(self, mock_scoring_cls):
 
         self.mock_qdrant.get.side_effect = [
             {"job_version": 5},
@@ -975,12 +975,46 @@ class TestRankPool(unittest.TestCase):
         mock_scoring.calculate_fit.side_effect = LLMUnavailableError("circuit open")
         mock_scoring_cls.return_value = mock_scoring
 
-        with self.assertRaises(LLMUnavailableError):
-            self.service.rank_pool(
-                job_id=999,
-                job_version=5,
-                candidate_ids=[101],
-            )
+        results = self.service.rank_pool(
+            job_id=999,
+            job_version=5,
+            candidate_ids=[101],
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["candidate_id"], 101)
+        self.assertEqual(results[0]["fit_score"], 0)
+        self.assertEqual(results[0]["status"], "failed")
+
+    @patch('app.services.recommendation_service.ScoringService')
+    def test_rank_pool_llm_unavailable_isolated_per_candidate(self, mock_scoring_cls):
+
+        self.mock_qdrant.get.side_effect = [
+            {"job_version": 5},
+            {"candidate_version": 1},
+            {"candidate_version": 2},
+        ]
+        mock_scoring = MagicMock()
+        def mixed_fit(*args, **kwargs):
+            if args[0] == 101:
+                raise LLMUnavailableError("circuit open")
+            return {"overall_score_percentage": 92}
+        mock_scoring.calculate_fit.side_effect = mixed_fit
+        mock_scoring_cls.return_value = mock_scoring
+
+        results = self.service.rank_pool(
+            job_id=999,
+            job_version=5,
+            candidate_ids=[101, 102],
+        )
+
+        self.assertEqual(len(results), 2)
+        result_map = {r["candidate_id"]: r for r in results}
+        self.assertEqual(result_map[101]["status"], "failed")
+        self.assertEqual(result_map[101]["fit_score"], 0)
+        self.assertEqual(result_map[102]["status"], "scored")
+        self.assertEqual(result_map[102]["fit_score"], 92)
+        self.assertGreater(result_map[102]["fit_score"], result_map[101]["fit_score"])
 
     @patch('app.services.recommendation_service.ScoringService')
     def test_rank_pool_calls_scoring_service_with_correct_versions(self, mock_scoring_cls):
@@ -1241,7 +1275,7 @@ class TestRecommendMinSimilarity(unittest.TestCase):
             "title": f"Job {pid}",
         }
 
-    def test_vector_path_drops_results_below_floor(self):
+    def test_vector_path_prefers_above_floor(self):
         target = {
             "skills": ["python"],
             "experience_level": "mid level",
@@ -1250,7 +1284,7 @@ class TestRecommendMinSimilarity(unittest.TestCase):
         }
         self.mock_qdrant.get_with_vector.return_value = (target, [0.1] * 768)
         # composite = 0.6 * vector + 0.25 metadata (skills 0 + loc 0.10 + level 0.10 + emp 0.05)
-        # 1001: 0.61 (keep) | 1002: 0.41 (keep, above floor) | 1003: 0.31 (drop below 0.40)
+        # 1001: 0.61 (above) | 1002: 0.41 (above) | 1003: 0.31 (below floor 0.35)
         self.mock_qdrant.search.side_effect = [
             [],
             [
@@ -1271,11 +1305,10 @@ class TestRecommendMinSimilarity(unittest.TestCase):
             limit=10,
         )
         ids = [r["id"] for r in results]
-        self.assertIn(1001, ids)
-        self.assertIn(1002, ids)
-        self.assertNotIn(1003, ids)
+        self.assertEqual(ids, [1001, 1002, 1003])
+        self.assertGreater(results[1]["similarity_score"], results[2]["similarity_score"])
 
-    def test_all_below_floor_returns_empty(self):
+    def test_all_below_floor_returns_best_available(self):
         target = {
             "skills": ["python"],
             "experience_level": "mid level",
@@ -1285,7 +1318,7 @@ class TestRecommendMinSimilarity(unittest.TestCase):
         self.mock_qdrant.get_with_vector.return_value = (target, [0.1] * 768)
         self.mock_qdrant.search.side_effect = [
             [],
-            [self._base_result(1001, 0.1)],  # composite 0.31 -> dropped
+            [self._base_result(1001, 0.1)],  # composite 0.31 -> below floor but still returned
         ]
         self.mock_cache.get.return_value = None
 
@@ -1298,7 +1331,9 @@ class TestRecommendMinSimilarity(unittest.TestCase):
             force_refresh=True,
             limit=10,
         )
-        self.assertEqual(results, [])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], 1001)
+        self.assertAlmostEqual(results[0]["similarity_score"], 0.31)
 
     def test_cold_start_not_filtered_despite_sub_floor_composite(self):
         # Cold-start composite is metadata-only (capped at 0.40 by construction),
@@ -1330,6 +1365,392 @@ class TestRecommendMinSimilarity(unittest.TestCase):
         )
         self.assertEqual(len(results), 1)
         self.assertAlmostEqual(results[0]["similarity_score"], 0.325)
+
+class TestUnfilteredRetry(unittest.TestCase):
+
+    def setUp(self):
+        self.mock_gemini = MagicMock()
+        self.mock_qdrant = MagicMock()
+        self.mock_cache = MagicMock()
+        self.service = RecommendationService(
+            llm=self.mock_gemini,
+            qdrant=self.mock_qdrant,
+            cache=self.mock_cache,
+        )
+        self.target = {
+            "skills": ["python"],
+            "experience_level": "mid level",
+            "location": "New York",
+            "employment_type": "full_time",
+        }
+        self.mock_qdrant.get_with_vector.return_value = (self.target, [0.1] * 768)
+        self.mock_cache.get.return_value = None
+
+    def _signals(self):
+        return {"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}
+
+    def _result(self, pid, score):
+        return {
+            "_point_id": pid,
+            "score": score,
+            "required_skills": [],
+            "location": "New York",
+            "experience_level": "mid level",
+            "employment_type": "full_time",
+            "job_version": 1,
+            "title": f"Job {pid}",
+        }
+
+    def test_vector_path_filtered_empty_retries_unfiltered(self):
+        # peer search, filtered main search, unfiltered retry = 3 calls
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [],
+            [self._result(1001, 0.6)],
+        ]
+
+        results = self.service.recommend(
+            rec_type="jobs",
+            target_id=1,
+            target_version=1,
+            behavioral_signals=self._signals(),
+            hard_filters={"location": "Nowhere"},
+            force_refresh=True,
+            limit=10,
+        )
+
+        self.assertEqual(self.mock_qdrant.search.call_count, 3)
+        retry_call = self.mock_qdrant.search.call_args_list[-1]
+        self.assertIsNone(retry_call.kwargs["query_filter"])
+        self.assertEqual(self.mock_qdrant.search.call_args_list[1].kwargs["query_filter"], self.service._build_filter({"location": "Nowhere"}))
+        self.assertGreater(len(results), 0)
+        self.assertEqual(results[0]["id"], 1001)
+
+    def test_vector_path_no_retry_when_no_filter_set(self):
+        self.mock_qdrant.search.side_effect = [[], []]
+
+        results = self.service.recommend(
+            rec_type="jobs",
+            target_id=1,
+            target_version=1,
+            behavioral_signals=self._signals(),
+            hard_filters={},
+            force_refresh=True,
+            limit=10,
+        )
+
+        self.assertEqual(self.mock_qdrant.search.call_count, 2)
+        self.assertEqual(results, [])
+
+    def test_vector_path_no_retry_when_filtered_search_returns_results(self):
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [self._result(1001, 0.6)],
+        ]
+
+        results = self.service.recommend(
+            rec_type="jobs",
+            target_id=1,
+            target_version=1,
+            behavioral_signals=self._signals(),
+            hard_filters={"location": "New York"},
+            force_refresh=True,
+            limit=10,
+        )
+
+        self.assertEqual(self.mock_qdrant.search.call_count, 2)
+        self.assertGreater(len(results), 0)
+
+    def test_cold_start_scroll_retries_unfiltered(self):
+        self.mock_qdrant.get_with_vector.return_value = (self.target, None)
+        self.mock_qdrant.scroll.side_effect = [
+            [],
+            [self._result(1001, 0.0)],
+        ]
+
+        results = self.service.recommend(
+            rec_type="jobs",
+            target_id=1,
+            target_version=1,
+            behavioral_signals=self._signals(),
+            hard_filters={"location": "Nowhere"},
+            force_refresh=True,
+            limit=10,
+        )
+
+        self.assertEqual(self.mock_qdrant.scroll.call_count, 2)
+        self.assertEqual(self.mock_qdrant.search.call_count, 0)
+        self.mock_gemini.embed.assert_not_called()
+        self.assertGreater(len(results), 0)
+
+    def test_cold_start_intent_search_retries_unfiltered(self):
+        self.mock_qdrant.get_with_vector.return_value = (self.target, None)
+        self.mock_gemini.embed.return_value = [0.2] * 768
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [self._result(1001, 0.6)],
+        ]
+
+        results = self.service.recommend(
+            rec_type="jobs",
+            target_id=1,
+            target_version=1,
+            behavioral_signals={"recent_searches": ["python engineer"], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
+            hard_filters={"location": "Nowhere"},
+            force_refresh=True,
+            limit=10,
+        )
+
+        self.assertEqual(self.mock_qdrant.search.call_count, 2)
+        retry_call = self.mock_qdrant.search.call_args_list[-1]
+        self.assertIsNone(retry_call.kwargs["query_filter"])
+        self.mock_qdrant.scroll.assert_not_called()
+        self.mock_gemini.embed.assert_called_once()
+        self.assertGreater(len(results), 0)
+
+    def test_cold_start_intent_search_uses_vector_score(self):
+        self.mock_qdrant.get_with_vector.return_value = (self.target, None)
+        self.mock_gemini.embed.return_value = [0.2] * 768
+        self.mock_qdrant.search.side_effect = [
+            [self._result(1001, 0.6)],
+        ]
+
+        results = self.service.recommend(
+            rec_type="jobs",
+            target_id=1,
+            target_version=1,
+            behavioral_signals={"recent_searches": ["python engineer"], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
+            hard_filters={},
+            force_refresh=True,
+            limit=10,
+        )
+
+        self.mock_qdrant.scroll.assert_not_called()
+        self.mock_gemini.embed.assert_called_once()
+        self.assertEqual(len(results), 1)
+        # composite = 0.6 * 0.6 (vector) + 0.15 * 0 (skill) + 0.10 + 0.10 + 0.05
+        self.assertAlmostEqual(results[0]["similarity_score"], 0.61)
+
+    def test_cold_start_embeds_searches_when_present(self):
+        self.mock_qdrant.get_with_vector.return_value = (self.target, None)
+        self.mock_gemini.embed.return_value = [0.2] * 768
+        self.mock_qdrant.search.side_effect = [
+            [],
+        ]
+
+        results = self.service.recommend(
+            rec_type="jobs",
+            target_id=1,
+            target_version=1,
+            behavioral_signals={"recent_searches": ["python engineer"], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
+            hard_filters={},
+            force_refresh=True,
+            limit=10,
+        )
+
+        self.mock_gemini.embed.assert_called_once()
+        self.assertEqual(self.mock_qdrant.search.call_count, 1)
+        self.mock_qdrant.scroll.assert_not_called()
+
+    def test_cold_start_embed_failure_falls_back_to_scroll(self):
+        self.mock_qdrant.get_with_vector.return_value = (self.target, None)
+        self.mock_gemini.embed.side_effect = RuntimeError("embed unavailable")
+        self.mock_qdrant.scroll.side_effect = [
+            [self._result(1001, 0.0)],
+        ]
+
+        results = self.service.recommend(
+            rec_type="jobs",
+            target_id=1,
+            target_version=1,
+            behavioral_signals={"recent_searches": ["python engineer"], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
+            hard_filters={},
+            force_refresh=True,
+            limit=10,
+        )
+
+        self.mock_gemini.embed.assert_called_once()
+        self.mock_qdrant.search.assert_not_called()
+        self.assertEqual(self.mock_qdrant.scroll.call_count, 1)
+        self.assertEqual(len(results), 1)
+
+class TestSignalActivation(unittest.TestCase):
+
+    def setUp(self):
+        self.mock_gemini = MagicMock()
+        self.mock_qdrant = MagicMock()
+        self.mock_cache = MagicMock()
+        self.service = RecommendationService(
+            llm=self.mock_gemini,
+            qdrant=self.mock_qdrant,
+            cache=self.mock_cache,
+        )
+
+    def test_intent_activates_with_single_search_weight(self):
+        intent_weight, cooccurrence_weight, _, _ = self.service._compute_weights(
+            recent_searches=["python"],
+            recent_clicks=[],
+            recent_saves=[],
+            recent_positive_outcomes=[],
+        )
+        self.assertAlmostEqual(intent_weight, 0.15)
+        self.assertAlmostEqual(cooccurrence_weight, 0.0)
+
+    def test_intent_embeds_single_search_in_vector_path(self):
+        self.mock_qdrant.get_with_vector.return_value = (
+            {"skills": ["a", "b", "c"]}, [0.1] * 768,
+        )
+        self.mock_qdrant.search.side_effect = [[], []]
+        self.mock_gemini.embed.return_value = [0.2] * 768
+
+        self.service.recommend(
+            rec_type="jobs",
+            target_id=123,
+            target_version=1,
+            behavioral_signals={"recent_searches": ["python"], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
+            hard_filters={},
+            force_refresh=False,
+            limit=10,
+        )
+        self.mock_gemini.embed.assert_called_once()
+
+    def test_cooc_activates_with_single_save_weight(self):
+        intent_weight, cooccurrence_weight, _, _ = self.service._compute_weights(
+            recent_searches=[],
+            recent_clicks=[],
+            recent_saves=[100],
+            recent_positive_outcomes=[],
+        )
+        self.assertAlmostEqual(intent_weight, 0.0)
+        self.assertAlmostEqual(cooccurrence_weight, 0.05)
+
+    def test_cooc_activates_with_single_click_weight(self):
+        intent_weight, cooccurrence_weight, _, _ = self.service._compute_weights(
+            recent_searches=[],
+            recent_clicks=[{"id": 1, "dwell_time_seconds": 5}],
+            recent_saves=[],
+            recent_positive_outcomes=[],
+        )
+        self.assertAlmostEqual(intent_weight, 0.0)
+        self.assertAlmostEqual(cooccurrence_weight, 0.05)
+
+    def test_cooc_single_click_triggers_retrieval(self):
+        self.mock_qdrant.get_with_vector.return_value = (
+            {"skills": ["a", "b", "c"]}, [0.1] * 768,
+        )
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [],
+        ]
+        self.mock_qdrant._client = MagicMock()
+        self.mock_qdrant._client.retrieve.return_value = [
+            MagicMock(vector=[0.2] * 768),
+        ]
+
+        self.service.recommend(
+            rec_type="jobs",
+            target_id=123,
+            target_version=1,
+            behavioral_signals={
+                "recent_searches": [],
+                "recent_clicks": [{"id": 7, "dwell_time_seconds": 5}],
+                "recent_saves": [],
+                "recent_positive_outcomes": [],
+            },
+            hard_filters={},
+            force_refresh=False,
+            limit=10,
+        )
+        retrieve_call = self.mock_qdrant._client.retrieve.call_args
+        self.assertIn("ids", retrieve_call.kwargs)
+        self.assertEqual(set(retrieve_call.kwargs["ids"]), {7})
+
+    def test_cooc_single_click_not_retrieved_when_no_click_id(self):
+        self.mock_qdrant.get_with_vector.return_value = (
+            {"skills": ["a", "b", "c"]}, [0.1] * 768,
+        )
+        self.mock_qdrant.search.side_effect = [[], []]
+        self.mock_qdrant._client = MagicMock()
+        self.mock_qdrant._client.retrieve.return_value = []
+
+        self.service.recommend(
+            rec_type="jobs",
+            target_id=123,
+            target_version=1,
+            behavioral_signals={
+                "recent_searches": [],
+                "recent_clicks": [],
+                "recent_saves": [],
+                "recent_positive_outcomes": [],
+            },
+            hard_filters={},
+            force_refresh=False,
+            limit=10,
+        )
+        self.mock_qdrant._client.retrieve.assert_not_called()
+
+    def test_single_signal_weights_sum_to_one(self):
+        signal_sets = [
+            (["python"], [], [], []),
+            ([], [{"id": 1, "dwell_time_seconds": 5}], [], []),
+            ([], [], [100], []),
+        ]
+        for searches, clicks, saves, pos in signal_sets:
+            iw, cw, pw, ppw = self.service._compute_weights(searches, clicks, saves, pos)
+            self.assertAlmostEqual(iw + cw + pw + ppw, 1.0, places=10)
+
+class TestRecallCeiling(unittest.TestCase):
+
+    def setUp(self):
+        self.mock_gemini = MagicMock()
+        self.mock_qdrant = MagicMock()
+        self.mock_cache = MagicMock()
+        self.service = RecommendationService(
+            llm=self.mock_gemini,
+            qdrant=self.mock_qdrant,
+            cache=self.mock_cache,
+        )
+        self.mock_qdrant.get_with_vector.return_value = (
+            {"skills": ["a", "b", "c"]}, [0.1] * 768,
+        )
+        self.mock_qdrant.search.side_effect = [[], []]
+
+    def _signals(self):
+        return {"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}
+
+    def test_vector_search_fetches_effective_limit_times_five(self):
+        self.service.recommend(
+            rec_type="jobs",
+            target_id=123,
+            target_version=1,
+            behavioral_signals=self._signals(),
+            hard_filters={},
+            force_refresh=False,
+            limit=10,
+        )
+
+        main_search_call = self.mock_qdrant.search.call_args_list[-1]
+        self.assertEqual(main_search_call.kwargs["limit"], 50)
+
+    def test_cold_start_intent_search_fetches_effective_limit_times_five(self):
+        self.mock_qdrant.get_with_vector.return_value = (
+            {"skills": ["a", "b", "c"]}, None,
+        )
+        self.mock_gemini.embed.return_value = [0.2] * 768
+        self.mock_qdrant.search.side_effect = [[]]
+
+        self.service.recommend(
+            rec_type="jobs",
+            target_id=123,
+            target_version=1,
+            behavioral_signals={"recent_searches": ["python"], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
+            hard_filters={},
+            force_refresh=False,
+            limit=10,
+        )
+
+        main_search_call = self.mock_qdrant.search.call_args_list[-1]
+        self.assertEqual(main_search_call.kwargs["limit"], 50)
 
 if __name__ == "__main__":
     unittest.main()
