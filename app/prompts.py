@@ -400,6 +400,7 @@ Return a valid JSON object with exactly these keys:
 - "past_roles": array of strings (each entry MUST embed an explicit date range, e.g. "Title at Company (Jan 2020 – Present)")
 - "raw_profile_summary": string (concise summary of the candidate's overall profile)
 - "total_years_experience": number or null (compute from dated roles; set to null when it cannot be determined)
+- "headline": string or null (candidate's professional headline or most recent role title, e.g. "Head Nurse" or "Architect"; null if not determinable)
 
 If a field cannot be found, set its value to null (for strings), null (for numbers), or [] (for arrays). Never use placeholder strings like "Not Provided" or "N/A".
 

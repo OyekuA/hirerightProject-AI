@@ -139,7 +139,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         cv_text = "CV text"
         import hashlib
         new_hash = hashlib.sha256(cv_text.encode()).hexdigest()
-        mock_qdrant.get.return_value = {"cv_hash": new_hash}
+        mock_qdrant.get.return_value = {"cv_hash": new_hash, "embed_text_version": 2}
 
         with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
              patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
@@ -311,7 +311,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         jd_text = "Job description text"
         import hashlib
         new_hash = hashlib.sha256(jd_text.encode()).hexdigest()
-        mock_qdrant.get.return_value = {"jd_hash": new_hash}
+        mock_qdrant.get.return_value = {"jd_hash": new_hash, "embed_text_version": 2}
 
         with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
             mock_truncate.side_effect = lambda x: x
@@ -1292,7 +1292,7 @@ class TestCandidateDataSource(unittest.IsolatedAsyncioTestCase):
         cv_text = "CV text"
         import hashlib
         new_hash = hashlib.sha256(cv_text.encode()).hexdigest()
-        mock_qdrant.get.return_value = {"cv_hash": new_hash}
+        mock_qdrant.get.return_value = {"cv_hash": new_hash, "embed_text_version": 2}
 
         with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
              patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
@@ -1323,6 +1323,7 @@ class TestCandidateDataSource(unittest.IsolatedAsyncioTestCase):
         self.assertIn("data_source", payload_fields)
         self.assertEqual(payload_fields["data_source"], "linkedin")
         self.assertEqual(payload_fields["candidate_version"], 2)
+
 
 class TestEmploymentTypeAndWorkModeValidation(unittest.TestCase):
 
@@ -1524,7 +1525,7 @@ class TestJobMetadataPersistence(unittest.IsolatedAsyncioTestCase):
         import hashlib
         new_hash = hashlib.sha256(jd_text.encode()).hexdigest()
         mock_qdrant, mock_gemini, mock_store, mock_callback = self._job_mocks(
-            existing_payload={"jd_hash": new_hash}
+            existing_payload={"jd_hash": new_hash, "embed_text_version": 2}
         )
         with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
             mock_truncate.side_effect = lambda x: x
@@ -1673,7 +1674,7 @@ class TestCandidateWorkModePersistence(unittest.IsolatedAsyncioTestCase):
         import hashlib
         new_hash = hashlib.sha256(cv_text.encode()).hexdigest()
         mock_qdrant, mock_gemini, mock_store, mock_callback = self._candidate_mocks(
-            existing_payload={"cv_hash": new_hash, "total_years_experience": 2.0}
+            existing_payload={"cv_hash": new_hash, "total_years_experience": 2.0, "embed_text_version": 2}
         )
         with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
              patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
@@ -1759,17 +1760,18 @@ class TestEmbedTextEnrichment(unittest.IsolatedAsyncioTestCase):
         mock_gemini.embed.assert_called_once()
         text = mock_gemini.embed.call_args[0][0]
         self.assertIn("Job Title: Software Engineer", text)
-        self.assertIn("Location: Remote", text)
-        self.assertIn("Employment Type: full_time", text)
-        self.assertIn("Work Mode: remote", text)
-        self.assertIn("Remote Regions: EMEA", text)
         self.assertIn("Required Skills: Python, AWS", text)
         self.assertIn("Summary: Looking for a software engineer", text)
-        self.assertIn("Description: We need a Python engineer.", text)
-        self.assertIn("Requirements: Python and AWS.", text)
-        self.assertIn("Responsibilities: Build APIs.", text)
-        self.assertIn("Benefits: Health and 401k.", text)
-        self.assertIn("Salary: 90000 - 120000 USD", text)
+        self.assertIn("Location: Remote", text)
+        self.assertIn("Experience Level: Mid", text)
+        self.assertIn("Work Mode: remote", text)
+        self.assertNotIn("Employment Type:", text)
+        self.assertNotIn("Remote Regions:", text)
+        self.assertNotIn("Description:", text)
+        self.assertNotIn("Requirements:", text)
+        self.assertNotIn("Responsibilities:", text)
+        self.assertNotIn("Benefits:", text)
+        self.assertNotIn("Salary:", text)
 
     async def test_job_embed_text_none_safe_skips_missing_values(self):
         mock_qdrant = MagicMock()
@@ -1868,6 +1870,7 @@ class TestEmbedTextEnrichment(unittest.IsolatedAsyncioTestCase):
         text = mock_gemini.embed.call_args[0][0]
         self.assertNotIn("Alice", text)
         self.assertNotIn("John Doe", text)
+        self.assertIn("Role Headline: Engineer", text)
         self.assertIn("Industry: Tech", text)
         self.assertIn("Location: Remote", text)
         self.assertIn("Employment Type: full_time", text)

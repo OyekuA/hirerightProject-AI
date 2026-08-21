@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field, field_validator
 class RecommendResult(BaseModel):
     id: int
     similarity_score: float
-    llm_score: Optional[int] = Field(None, ge=0, le=100)
 
 
 class RecentClick(BaseModel):

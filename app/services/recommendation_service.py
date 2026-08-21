@@ -21,7 +21,7 @@ POOL_RANK_CONCURRENCY = 5
 POOL_RANK_TIMEOUT_SECONDS = 30
 POOL_RANK_DEFAULT_FIT_SCORE = 0
 
-RECOMMEND_MIN_SIMILARITY = 0.35
+RECOMMEND_MIN_SIMILARITY = 0.50
 
 
 class RecommendationService:
@@ -107,7 +107,7 @@ class RecommendationService:
         result_city = result.get("location", "").split(",")[0].strip().lower()
         target_remote = resolve_work_mode(target_payload) in ("remote", "hybrid")
         result_remote = resolve_work_mode(result) in ("remote", "hybrid")
-        location_match = 1.0 if (target_remote or result_remote) or (target_city and target_city == result_city) else 0.0
+        location_match = 1.0 if (target_city and target_city == result_city) else (0.5 if (target_remote or result_remote) else 0.0)
         target_level = target_payload.get("experience_level", "").lower().strip().replace("-", " ")
         result_level = result.get("experience_level", "").lower().strip().replace("-", " ")
         target_level_canon = self._canonicalize_level(target_level)
@@ -123,34 +123,12 @@ class RecommendationService:
             level_match = 0.0
         employment_match = 1.0 if _extract_employment_category(target_payload.get("employment_type", "")) == _extract_employment_category(result.get("employment_type", "")) else 0.0
         return (
-            0.60 * vector_score
-            + 0.15 * skill_overlap
-            + 0.10 * location_match
-            + 0.10 * level_match
-            + 0.05 * employment_match
+            0.50 * vector_score
+            + 0.30 * skill_overlap
+            + 0.08 * location_match
+            + 0.08 * level_match
+            + 0.04 * employment_match
         )
-
-    def _resolve_cache_ids(self, rec_type, target_id, target_version, result_id, result_version):
-        if rec_type == "jobs":
-            return target_id, target_version, result_id, result_version
-        else:
-            return result_id, result_version, target_id, target_version
-
-    def _lookup_llm_score(self, candidate_id, candidate_version, job_id, job_version, result_version, force_refresh):
-        if force_refresh or result_version is None:
-            return None
-        cache_key = f"{candidate_id}:{candidate_version}:{job_id}:{job_version}"
-        cached = self.cache.get(cache_key)
-        if cached is not None:
-            llm_score = cached.get("overall_score_percentage")
-            if llm_score is not None:
-                logger.debug(
-                    "LLM score cache hit",
-                    cache_key=cache_key,
-                    llm_score=llm_score,
-                )
-            return llm_score
-        return None
 
     @staticmethod
     def _resolve_skill_field(collection: str) -> str:
@@ -279,27 +257,23 @@ class RecommendationService:
             scored_results = []
             for result in raw_results:
                 result_id = result["_point_id"]
-                result_version = result.get(version_field)
-
-                candidate_id_for_key, candidate_version_for_key, job_id_for_key, job_version_for_key = self._resolve_cache_ids(
-                    rec_type, target_id, target_version, result_id, result_version
-                )
 
                 similarity_score = self._compute_composite_score(
                     target_payload, result, target_skills, result.get("score", 0.0), search_collection
                 )
 
-                llm_score = self._lookup_llm_score(
-                    candidate_id_for_key, candidate_version_for_key,
-                    job_id_for_key, job_version_for_key,
-                    result_version, force_refresh
-                )
-
                 scored_results.append({
                     "id": result_id,
                     "similarity_score": similarity_score,
-                    "llm_score": llm_score,
                 })
+            # hard floor for cold-start as well — no job > wrong job
+            below = sum(1 for x in scored_results if x["similarity_score"] < RECOMMEND_MIN_SIMILARITY)
+            if below:
+                logger.info("Filtering below-floor cold-start", below_floor_count=below, floor=RECOMMEND_MIN_SIMILARITY)
+            scored_results = [x for x in scored_results if x["similarity_score"] >= RECOMMEND_MIN_SIMILARITY]
+            if not scored_results:
+                logger.info("No cold-start results above floor", floor=RECOMMEND_MIN_SIMILARITY)
+                return []
             scored_results.sort(key=lambda x: x["similarity_score"], reverse=True)
             output = scored_results
 
@@ -399,23 +373,33 @@ class RecommendationService:
             final_score = self._compute_composite_score(target_payload, result, target_skills, result["score"], search_collection)
             result["final_score"] = final_score
 
-        raw_results.sort(
-            key=lambda r: (r["final_score"] >= RECOMMEND_MIN_SIMILARITY, r["final_score"]),
-            reverse=True,
-        )
         below_floor_count = sum(1 for r in raw_results if r["final_score"] < RECOMMEND_MIN_SIMILARITY)
         if below_floor_count:
             logger.info(
-                "Returning below-floor recommendations",
+                "Filtering below-floor recommendations",
                 below_floor_count=below_floor_count,
                 floor=RECOMMEND_MIN_SIMILARITY,
             )
+        raw_results = [r for r in raw_results if r["final_score"] >= RECOMMEND_MIN_SIMILARITY]
+        if not raw_results:
+            logger.info("No results above floor", floor=RECOMMEND_MIN_SIMILARITY)
+            return []
+        raw_results.sort(key=lambda r: r["final_score"], reverse=True)
 
         def cluster_key(result):
             if rec_type == "jobs":
-                return (result.get("title", ""), result.get("location", ""))
+                title_norm = (result.get("title") or "").lower().strip()
+                loc_norm = (result.get("location") or "").lower().strip()
+                company = result.get("company_id")
+                if company is None:
+                    company = result.get("company_name")
+                if company is None:
+                    company = result.get("company")
+                if company and str(company).strip():
+                    return (title_norm, loc_norm, str(company).lower().strip())
+                return (title_norm, loc_norm, str(result.get("_point_id", "")))
             else:
-                return (result.get("name", ""), result.get("location", ""))
+                return ((result.get("name") or "").lower().strip(), (result.get("location") or "").lower().strip())
 
         clusters = {}
         for result in raw_results:
@@ -453,22 +437,10 @@ class RecommendationService:
         for result in selected:
             result_id = result["_point_id"]
             similarity_score = result["final_score"]
-            result_version = result.get(version_field)
-
-            candidate_id_for_key, candidate_version_for_key, job_id_for_key, job_version_for_key = self._resolve_cache_ids(
-                rec_type, target_id, target_version, result_id, result_version
-            )
-
-            llm_score = self._lookup_llm_score(
-                candidate_id_for_key, candidate_version_for_key,
-                job_id_for_key, job_version_for_key,
-                result_version, force_refresh
-            )
 
             output.append({
                 "id": result_id,
                 "similarity_score": similarity_score,
-                "llm_score": llm_score,
             })
 
         logger.info(

@@ -34,6 +34,7 @@ class ProfileData(BaseModel):
     data_source: Optional[str] = None
     total_years_experience: Optional[float] = None
     work_mode: Optional[str] = None
+    headline: Optional[str] = None
 
     @field_validator("employment_type")
     @classmethod
@@ -112,6 +113,7 @@ class CandidateExtraction(BaseModel):
     past_roles: List[str] = []
     raw_profile_summary: Optional[str] = None
     total_years_experience: Optional[float] = None
+    headline: Optional[str] = None
 
 
 class JobExtraction(BaseModel):

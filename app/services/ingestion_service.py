@@ -81,20 +81,41 @@ def _format_salary(min_value: Optional[float], max_value: Optional[float], curre
     return text
 
 
+EMBED_TEXT_VERSION = 2
+
+
+def _resolve_candidate_headline(profile: ProfileData, extraction: CandidateExtraction) -> Optional[str]:
+    h = getattr(profile, "headline", None)
+    if h and str(h).strip():
+        return str(h).strip()
+    h2 = getattr(extraction, "headline", None)
+    if h2 and str(h2).strip():
+        return str(h2).strip()
+    if extraction.past_roles:
+        first = extraction.past_roles[0]
+        if first and str(first).strip():
+            title_part = str(first).split(" at ")[0].split(" @ ")[0].split(" (")[0].strip()
+            if " - " in title_part:
+                maybe = title_part.split(" - ")[0].strip()
+                if maybe and len(maybe) < 50:
+                    title_part = maybe
+            if title_part:
+                return title_part
+    if extraction.skills:
+        first_skill = extraction.skills[0] if extraction.skills[0] else None
+        if first_skill and str(first_skill).strip():
+            return str(first_skill).strip()
+    return None
+
+
 def _build_job_embed_text(metadata: JobMetadata, extraction: JobExtraction, raw_jd_summary: str) -> str:
     return _build_labeled_text([
         ("Job Title", extraction.title or metadata.title),
-        ("Location", extraction.location or metadata.location),
-        ("Employment Type", extraction.employment_type or metadata.employment_type),
-        ("Work Mode", metadata.work_mode),
-        ("Remote Regions", metadata.remote_regions),
         ("Required Skills", extraction.required_skills),
         ("Summary", raw_jd_summary),
-        ("Description", metadata.description),
-        ("Requirements", metadata.requirements),
-        ("Responsibilities", metadata.responsibilities),
-        ("Benefits", metadata.benefits),
-        ("Salary", _format_salary(metadata.salary_min, metadata.salary_max, metadata.salary_currency)),
+        ("Location", extraction.location or metadata.location),
+        ("Experience Level", extraction.experience_level or metadata.experience_level),
+        ("Work Mode", metadata.work_mode),
     ])
 
 
@@ -103,7 +124,9 @@ def _build_candidate_embed_text(
     extraction: CandidateExtraction,
     raw_profile_summary: str,
 ) -> str:
+    headline = _resolve_candidate_headline(profile, extraction)
     return _build_labeled_text([
+        ("Role Headline", headline),
         ("Industry", extraction.industry or profile.industry),
         ("Location", extraction.location or profile.location),
         ("Employment Type", extraction.employment_type or profile.employment_type),
@@ -391,7 +414,7 @@ async def run_candidate_ingestion(
         new_hash = hashlib.sha256(cv_text.encode()).hexdigest()
         cv_text = truncate_to_prompt_cap(cv_text)
         existing_payload = qdrant.get(CANDIDATES_COLLECTION, candidate_id)
-        if existing_payload is not None and existing_payload is not MISSING and existing_payload.get("cv_hash") == new_hash:
+        if existing_payload is not None and existing_payload is not MISSING and existing_payload.get("cv_hash") == new_hash and existing_payload.get("embed_text_version", 1) == EMBED_TEXT_VERSION:
             qdrant.update_payload(CANDIDATES_COLLECTION, candidate_id, {
                 "name": validated_profile.name,
                 "location": validated_profile.location,
@@ -404,6 +427,8 @@ async def run_candidate_ingestion(
                 "cv_hash": new_hash,
                 "work_mode": validated_profile.work_mode,
                 "total_years_experience": validated_profile.total_years_experience,
+                "embed_text_version": EMBED_TEXT_VERSION,
+                "headline": validated_profile.headline,
             })
             logger.info("Candidate ingestion skipped (hash match)", event_id=event_id, candidate_id=candidate_id)
             store.update(event_id, status="success", attempt_count=1)
@@ -441,6 +466,8 @@ async def run_candidate_ingestion(
             "ingested_at": datetime.now(timezone.utc).isoformat(),
             "cv_hash": new_hash,
             "total_years_experience": validated_extraction.total_years_experience,
+            "embed_text_version": EMBED_TEXT_VERSION,
+            "headline": validated_extraction.headline or validated_profile.headline,
         }
 
         qdrant.upsert(CANDIDATES_COLLECTION, candidate_id, vector, payload)
@@ -484,7 +511,7 @@ async def run_job_ingestion(
 
     async def _ingest() -> None:
         existing_payload = qdrant.get(JOBS_COLLECTION, job_id)
-        if existing_payload is not None and existing_payload is not MISSING and existing_payload.get("jd_hash") == new_hash:
+        if existing_payload is not None and existing_payload is not MISSING and existing_payload.get("jd_hash") == new_hash and existing_payload.get("embed_text_version", 1) == EMBED_TEXT_VERSION:
             qdrant.update_payload(JOBS_COLLECTION, job_id, {
                 "title": validated_metadata.title,
                 "location": validated_metadata.location,
@@ -504,7 +531,8 @@ async def run_job_ingestion(
                 "work_mode": validated_metadata.work_mode,
                 "remote_regions": validated_metadata.remote_regions,
                 "ingested_at": datetime.now(timezone.utc).isoformat(),
-                "jd_hash": new_hash
+                "jd_hash": new_hash,
+                "embed_text_version": EMBED_TEXT_VERSION
             })
             logger.info("Job ingestion skipped (hash match)", event_id=event_id, job_id=job_id)
             store.update(event_id, status="success", attempt_count=1)
@@ -547,6 +575,7 @@ async def run_job_ingestion(
             "remote_regions": validated_metadata.remote_regions,
             "ingested_at": datetime.now(timezone.utc).isoformat(),
             "jd_hash": new_hash,
+            "embed_text_version": EMBED_TEXT_VERSION,
         }
 
         qdrant.upsert(JOBS_COLLECTION, job_id, vector, payload)

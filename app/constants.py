@@ -1,3 +1,5 @@
+import json
+import pathlib
 import re
 
 CANDIDATES_COLLECTION = "candidates"
@@ -21,110 +23,85 @@ WORK_MODES = (
     "onsite",
 )
 
-EXPERIENCE_LEVEL_LADDER = [
-    "intern",
-    "apprentice",
-    "trainee",
-    "junior",
-    "associate",
-    "mid level",
-    "engineer",
-    "senior",
-    "staff",
-    "specialist",
-    "lead",
-    "principal",
-    "distinguished",
-    "fellow",
-    "manager",
-    "senior manager",
-    "director",
-    "senior director",
-    "vice president",
-    "senior vice president",
-    "executive vice president",
-    "chief officer (cto, cio, cdo, etc.)",
-    "president",
-    "ceo",
-]
+_CONFIG_PATH = pathlib.Path(__file__).parent / "config" / "experience_ladder.json"
 
-_EXACT_VARIANTS: dict[str, str] = {
-    "jr": "junior",
-    "jr.": "junior",
-    "entry level": "junior",
-    "graduate": "junior",
-    "fresh graduate": "junior",
-    "mid": "mid level",
-    "midlevel": "mid level",
-    "mid senior": "senior",
-    "sr": "senior",
-    "sr.": "senior",
-    "senior level": "senior",
-    "staff engineer": "staff",
-    "lead engineer": "lead",
-    "tech lead": "lead",
-    "technical lead": "lead",
-    "principle": "principal",
-    "principle engineer": "principal",
-    "engineering manager": "manager",
-    "product manager": "manager",
-    "managerial": "manager",
-    "group manager": "senior manager",
-    "director level": "director",
-    "head of engineering": "director",
-    "head of product": "director",
-    "vp": "vice president",
-    "vp of engineering": "vice president",
-    "vp of product": "vice president",
-    "svp": "senior vice president",
-    "evp": "executive vice president",
-    "c level": "chief officer (cto, cio, cdo, etc.)",
-    "cto": "chief officer (cto, cio, cdo, etc.)",
-    "cio": "chief officer (cto, cio, cdo, etc.)",
-    "cdo": "chief officer (cto, cio, cdo, etc.)",
-    "chief technology officer": "chief officer (cto, cio, cdo, etc.)",
-    "chief information officer": "chief officer (cto, cio, cdo, etc.)",
-    "chief data officer": "chief officer (cto, cio, cdo, etc.)",
-    "ceo": "ceo",
-    "president": "president",
-}
+def _load_experience_config():
+    try:
+        raw = _CONFIG_PATH.read_text(encoding="utf-8")
+    except Exception as e:
+        raise RuntimeError(f"Failed to load experience ladder config at {_CONFIG_PATH}: {e}") from e
+    try:
+        data = json.loads(raw)
+    except Exception as e:
+        raise RuntimeError(f"Invalid JSON in experience ladder config at {_CONFIG_PATH}: {e}") from e
 
-_KEYWORD_RULES: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"\bexecutive vice president\b"), "executive vice president"),
-    (re.compile(r"\bsenior vice president\b"),    "senior vice president"),
-    (re.compile(r"\bceo\b"),                      "ceo"),
-    (re.compile(r"\bpresident\b"),                "president"),
-    (re.compile(r"\bexecutive director\b"),       "senior director"),
-    (re.compile(r"\bsenior director\b"),          "senior director"),
-    (re.compile(r"\bdirector\b"),                 "director"),
-    (re.compile(r"\bsenior manager\b"),           "senior manager"),
-    (re.compile(r"\bgroup manager\b"),            "senior manager"),
-    (re.compile(r"\bmanager\b"),                  "manager"),
-    (re.compile(r"\bprincipal\b"),                "principal"),
-    (re.compile(r"\bdistinguished\b"),            "distinguished"),
-    (re.compile(r"\bfellow\b"),                   "fellow"),
-    (re.compile(r"\bstaff\b"),                    "staff"),
-    (re.compile(r"\blead\b"),                     "lead"),
-    (re.compile(r"\bsenior\b"),                   "senior"),
-    (re.compile(r"\bmid\b"),                      "mid level"),
-    (re.compile(r"\bjunior\b"),                   "junior"),
-    (re.compile(r"\bjr\b"),                       "junior"),
-    (re.compile(r"\bentry\b"),                    "junior"),
-    (re.compile(r"\bapprentice\b"),               "apprentice"),
-    (re.compile(r"\btrainee\b"),                  "trainee"),
-    (re.compile(r"\bintern\b"),                   "intern"),
-]
+    if "ladder" not in data or "aliases" not in data or "keywords" not in data or "numeric_map" not in data:
+        raise RuntimeError(f"Experience ladder config missing required keys at {_CONFIG_PATH}")
 
-_NUMERIC_LEVEL: dict[int, str] = {
-    1: "intern",
-    2: "junior",
-    3: "mid level",
-    4: "senior",
-    5: "staff",
-    6: "principal",
-    7: "distinguished",
-    8: "fellow",
-}
+    ladder = data["ladder"]
+    aliases = data["aliases"]
+    keywords_raw = data["keywords"]
+    numeric_map_raw = data["numeric_map"]
+    version = data.get("version", 1)
+
+    if not isinstance(ladder, list) or not all(isinstance(x, str) for x in ladder):
+        raise RuntimeError("ladder must be a list of strings")
+    if len(ladder) != len(set(ladder)):
+        raise RuntimeError("ladder must contain unique values")
+    if not isinstance(aliases, dict):
+        raise RuntimeError("aliases must be a dict")
+    ladder_set = set(ladder)
+    for k, v in aliases.items():
+        if v not in ladder_set:
+            raise RuntimeError(f"alias '{k}' -> '{v}' not in ladder")
+
+    keyword_rules: list[tuple[re.Pattern, str]] = []
+    for entry in keywords_raw:
+        if not isinstance(entry, dict) or "pattern" not in entry or "canonical" not in entry:
+            raise RuntimeError(f"keyword entry invalid: {entry}")
+        pat = entry["pattern"]
+        canon = entry["canonical"]
+        if canon not in ladder_set:
+            raise RuntimeError(f"keyword canonical '{canon}' not in ladder")
+        try:
+            compiled = re.compile(pat)
+        except re.error as e:
+            raise RuntimeError(f"keyword pattern compile failed for '{pat}': {e}") from e
+        keyword_rules.append((compiled, canon))
+
+    numeric_map: dict[int, str] = {}
+    for k, v in numeric_map_raw.items():
+        try:
+            ik = int(k)
+        except Exception as e:
+            raise RuntimeError(f"numeric_map key '{k}' must be int-convertible: {e}") from e
+        if v not in ladder_set:
+            raise RuntimeError(f"numeric_map value '{v}' not in ladder")
+        numeric_map[ik] = v
+
+    return version, ladder, aliases, keyword_rules, numeric_map
+
+VOCAB_VERSION, EXPERIENCE_LEVEL_LADDER, _EXACT_VARIANTS, _KEYWORD_RULES, _NUMERIC_LEVEL = _load_experience_config()
+
+
+def get_ladder() -> list[str]:
+    return EXPERIENCE_LEVEL_LADDER
+
+
+def get_aliases() -> dict[str, str]:
+    return _EXACT_VARIANTS
+
+
+def get_keywords() -> list[tuple[re.Pattern, str]]:
+    return _KEYWORD_RULES
+
+
+def get_numeric_map() -> dict[int, str]:
+    return _NUMERIC_LEVEL
+
+
+def get_vocab_version() -> int:
+    return VOCAB_VERSION
 
 
 def canonicalize_experience_level(level: str) -> str:

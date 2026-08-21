@@ -1,4 +1,3 @@
-
 import unittest
 import time
 from unittest.mock import MagicMock, patch, call
@@ -112,9 +111,7 @@ class TestRecommendationServiceTruncation(unittest.TestCase):
 
         self.mock_qdrant.scroll.assert_called_once()
         self.mock_gemini.embed.assert_not_called()
-        self.assertEqual(len(results), 1)
-        self.assertAlmostEqual(results[0]["similarity_score"], 0.075)
-
+        self.assertEqual(len(results), 0)
 class TestRecommendationServiceCacheKey(unittest.TestCase):
 
     def setUp(self):
@@ -166,13 +163,7 @@ class TestRecommendationServiceCacheKey(unittest.TestCase):
             force_refresh=False,
             limit=10,
         )
-
-        calls = self.mock_cache.get.call_args_list
-        self.assertEqual(len(calls), 2)
-
-        self.assertEqual(calls[0][0][0], "123:3:1001:2")
-        self.assertEqual(calls[1][0][0], "123:3:1002:1")
-
+        self.mock_cache.get.assert_not_called()
     def test_cache_key_candidates(self):
 
         self.mock_qdrant.get_with_vector.return_value = (
@@ -200,11 +191,7 @@ class TestRecommendationServiceCacheKey(unittest.TestCase):
             force_refresh=False,
             limit=10,
         )
-
-        calls = self.mock_cache.get.call_args_list
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][0][0], "2001:5:456:7")
-
+        self.mock_cache.get.assert_not_called()
     def test_cache_key_without_version(self):
 
         self.mock_qdrant.get_with_vector.return_value = (
@@ -283,13 +270,8 @@ class TestColdStart(unittest.TestCase):
         self.mock_qdrant.scroll.assert_called_once()
         self.mock_gemini.embed.assert_not_called()
         self.mock_cache.get.assert_not_called()
-        self.assertEqual(len(results), 2)
-        for r in results:
-            self.assertEqual(r["similarity_score"], 0.0)
-            self.assertIsNone(r["llm_score"])
-
-    def test_cold_start_attaches_cached_llm_score(self):
-
+        self.assertEqual(len(results), 0)  # hard floor 0.50 drops all below-floor scroll results
+    def test_cold_start_skips_cache_lookup(self):
         self.mock_qdrant.get_with_vector.return_value = (
             {"skills": ["a", "b"], "experience_level": "junior", "location": "", "employment_type": "full-time"},
             None,
@@ -329,12 +311,8 @@ class TestColdStart(unittest.TestCase):
 
         self.mock_qdrant.scroll.assert_called_once()
         self.mock_gemini.embed.assert_not_called()
-        self.assertEqual(self.mock_cache.get.call_count, 2)
-        self.assertEqual(results[0]["llm_score"], 82)
-        self.assertIsNone(results[1]["llm_score"])
-        for r in results:
-            self.assertEqual(r["similarity_score"], 0.0)
-
+        self.mock_cache.get.assert_not_called()
+        self.assertEqual(len(results), 0)  # cache removed; hard floor drops all below-floor scroll results
     def test_cold_start_force_refresh_skips_cache(self):
 
         self.mock_qdrant.get_with_vector.return_value = (
@@ -374,9 +352,7 @@ class TestColdStart(unittest.TestCase):
         self.mock_qdrant.scroll.assert_called_once()
         self.mock_gemini.embed.assert_not_called()
         self.mock_cache.get.assert_not_called()
-        for r in results:
-            self.assertIsNone(r["llm_score"])
-            self.assertEqual(r["similarity_score"], 0.0)
+        self.assertEqual(len(results), 0)  # hard floor drops all below-floor scroll results
 
     def test_missing_vector_with_many_skills_triggers_scroll(self):
 
@@ -408,10 +384,7 @@ class TestColdStart(unittest.TestCase):
 
         self.mock_qdrant.scroll.assert_called_once()
         self.mock_gemini.embed.assert_not_called()
-        self.assertEqual(len(results), 1)
-        self.assertAlmostEqual(results[0]["similarity_score"], 0.325)
-        self.assertIsNone(results[0]["llm_score"])
-
+        self.assertEqual(len(results), 0)  # composite 0.35 < hard floor 0.50
     def test_cold_start_with_vector_but_sparse_skills(self):
 
         self.mock_qdrant.get_with_vector.return_value = (
@@ -442,10 +415,7 @@ class TestColdStart(unittest.TestCase):
 
         self.mock_qdrant.scroll.assert_called_once()
         self.mock_gemini.embed.assert_not_called()
-        self.assertEqual(len(results), 1)
-        self.assertAlmostEqual(results[0]["similarity_score"], 0.325)  # skill overlap 0.5, location match 1, level match 1, employment match 1
-        self.assertIsNone(results[0]["llm_score"])
-
+        self.assertEqual(len(results), 0)  # composite 0.35 < hard floor 0.50
 class TestAdaptiveWeights(unittest.TestCase):
 
     def setUp(self):
@@ -693,21 +663,21 @@ class TestReRanker(unittest.TestCase):
         )
         self.assertEqual(len(results), 2)
         expected_score_1001 = (
-            0.55 * 0.9
-            + 0.20 * (2 / 3)
-            + 0.10 * 1.0
-            + 0.10 * 1.0
-            + 0.05 * 1.0
+            0.50 * 0.9
+            + 0.30 * (2 / 3)
+            + 0.08 * 1.0
+            + 0.08 * 1.0
+            + 0.04 * 1.0
         )
         expected_score_1002 = (
-            0.60 * 0.8
-            + 0.15 * 0.25
-            + 0.10 * 0.0
-            + 0.10 * 0.5
-            + 0.05 * 0.0
+            0.50 * 0.8
+            + 0.30 * 0.25
+            + 0.08 * 0.0
+            + 0.08 * 0.5
+            + 0.04 * 0.0
         )
         score_by_id = {r["id"]: r["similarity_score"] for r in results}
-        self.assertAlmostEqual(score_by_id[1001], 0.89, places=7)
+        self.assertAlmostEqual(score_by_id[1001], 0.85, places=7)
         self.assertAlmostEqual(score_by_id[1002], expected_score_1002, places=7)
         self.assertGreater(score_by_id[1001], score_by_id[1002])
 
@@ -734,6 +704,7 @@ class TestDiversityPass(unittest.TestCase):
                     "score": 0.95,
                     "title": "Software Engineer",
                     "location": "Berlin",
+                    "company_id": 1,
                     "final_score": 0.95,
                 },
                 {
@@ -741,6 +712,7 @@ class TestDiversityPass(unittest.TestCase):
                     "score": 0.94,
                     "title": "Software Engineer",
                     "location": "Berlin",
+                    "company_id": 1,
                     "final_score": 0.94,
                 },
                 {
@@ -748,6 +720,7 @@ class TestDiversityPass(unittest.TestCase):
                     "score": 0.93,
                     "title": "Data Scientist",
                     "location": "Munich",
+                    "company_id": 2,
                     "final_score": 0.93,
                 },
                 {
@@ -755,6 +728,7 @@ class TestDiversityPass(unittest.TestCase):
                     "score": 0.92,
                     "title": "Data Scientist",
                     "location": "Munich",
+                    "company_id": 2,
                     "final_score": 0.92,
                 },
                 {
@@ -762,6 +736,7 @@ class TestDiversityPass(unittest.TestCase):
                     "score": 0.91,
                     "title": "DevOps Engineer",
                     "location": "Berlin",
+                    "company_id": 3,
                     "final_score": 0.91,
                 },
                 {
@@ -769,6 +744,7 @@ class TestDiversityPass(unittest.TestCase):
                     "score": 0.90,
                     "title": "Product Manager",
                     "location": "Hamburg",
+                    "company_id": 4,
                     "final_score": 0.90,
                 },
             ],
@@ -1212,8 +1188,7 @@ class TestRecommendationCanonicalMatch(unittest.TestCase):
             "skills": [],
         }
         score = self.service._compute_composite_score(target, result, [], 0.0, None)
-        self.assertAlmostEqual(score, 0.25)  # 0.10 location + 0.10 level + 0.05 employment
-
+        self.assertAlmostEqual(score, 0.20)  # 0.08+0.08+0.04
     def test_employment_match_category_mismatch_zero(self):
         target = {
             "location": "Berlin",
@@ -1228,8 +1203,7 @@ class TestRecommendationCanonicalMatch(unittest.TestCase):
             "skills": [],
         }
         score = self.service._compute_composite_score(target, result, [], 0.0, None)
-        self.assertAlmostEqual(score, 0.20)  # no employment match
-
+        self.assertAlmostEqual(score, 0.16)  # 0.08+0.08
     def test_location_match_uses_work_mode_resolver(self):
         target = {
             "location": "Berlin",
@@ -1246,8 +1220,7 @@ class TestRecommendationCanonicalMatch(unittest.TestCase):
             "skills": [],
         }
         score = self.service._compute_composite_score(target, result, [], 0.0, None)
-        self.assertAlmostEqual(score, 0.25)  # remote match grants location despite different city
-
+        self.assertAlmostEqual(score, 0.16)  # 0.08*0.5 location + 0.08 level + 0.04 employment
 class TestRecommendMinSimilarity(unittest.TestCase):
 
     def setUp(self):
@@ -1283,8 +1256,8 @@ class TestRecommendMinSimilarity(unittest.TestCase):
             "employment_type": "full_time",
         }
         self.mock_qdrant.get_with_vector.return_value = (target, [0.1] * 768)
-        # composite = 0.6 * vector + 0.25 metadata (skills 0 + loc 0.10 + level 0.10 + emp 0.05)
-        # 1001: 0.61 (above) | 1002: 0.41 (above) | 1003: 0.31 (below floor 0.35)
+        # composite = 0.50*vector +0.20 metadata (Jaccard 0 + loc 0.08 + level 0.08 + emp 0.04)
+        # 1001: 0.50 (at floor 0.50) | 1002: 0.33 (below) | 1003: 0.25 (below) - hard 0.50 drops below
         self.mock_qdrant.search.side_effect = [
             [],
             [
@@ -1305,10 +1278,9 @@ class TestRecommendMinSimilarity(unittest.TestCase):
             limit=10,
         )
         ids = [r["id"] for r in results]
-        self.assertEqual(ids, [1001, 1002, 1003])
-        self.assertGreater(results[1]["similarity_score"], results[2]["similarity_score"])
-
-    def test_all_below_floor_returns_best_available(self):
+        self.assertEqual(ids, [1001])
+        self.assertAlmostEqual(results[0]["similarity_score"], 0.50)
+    def test_all_below_floor_returns_empty(self):
         target = {
             "skills": ["python"],
             "experience_level": "mid level",
@@ -1318,7 +1290,7 @@ class TestRecommendMinSimilarity(unittest.TestCase):
         self.mock_qdrant.get_with_vector.return_value = (target, [0.1] * 768)
         self.mock_qdrant.search.side_effect = [
             [],
-            [self._base_result(1001, 0.1)],  # composite 0.31 -> below floor but still returned
+            [self._base_result(1001, 0.1)],  # composite 0.25 -> below hard floor 0.50 -> dropped
         ]
         self.mock_cache.get.return_value = None
 
@@ -1331,13 +1303,10 @@ class TestRecommendMinSimilarity(unittest.TestCase):
             force_refresh=True,
             limit=10,
         )
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["id"], 1001)
-        self.assertAlmostEqual(results[0]["similarity_score"], 0.31)
-
-    def test_cold_start_not_filtered_despite_sub_floor_composite(self):
+        self.assertEqual(len(results), 0)
+    def test_cold_start_applies_hard_floor(self):
         # Cold-start composite is metadata-only (capped at 0.40 by construction),
-        # so the floor must not apply — 0.325 stays.
+        # cold-start composite is metadata-only (capped at 0.50 by construction); hard floor applies.
         self.mock_qdrant.get_with_vector.return_value = (
             {"skills": ["python", "java"], "experience_level": "mid level", "location": "New York", "employment_type": "full_time"},
             None,
@@ -1363,9 +1332,7 @@ class TestRecommendMinSimilarity(unittest.TestCase):
             force_refresh=False,
             limit=10,
         )
-        self.assertEqual(len(results), 1)
-        self.assertAlmostEqual(results[0]["similarity_score"], 0.325)
-
+        self.assertEqual(len(results), 0)
 class TestUnfilteredRetry(unittest.TestCase):
 
     def setUp(self):
@@ -1465,7 +1432,7 @@ class TestUnfilteredRetry(unittest.TestCase):
         self.mock_qdrant.get_with_vector.return_value = (self.target, None)
         self.mock_qdrant.scroll.side_effect = [
             [],
-            [self._result(1001, 0.0)],
+            [dict(self._result(1001, 0.0), required_skills=["python"])],
         ]
 
         results = self.service.recommend(
@@ -1528,9 +1495,8 @@ class TestUnfilteredRetry(unittest.TestCase):
         self.mock_qdrant.scroll.assert_not_called()
         self.mock_gemini.embed.assert_called_once()
         self.assertEqual(len(results), 1)
-        # composite = 0.6 * 0.6 (vector) + 0.15 * 0 (skill) + 0.10 + 0.10 + 0.05
-        self.assertAlmostEqual(results[0]["similarity_score"], 0.61)
-
+        # composite = 0.50 * 0.6 (vector) + 0.30 * 0 (skill) + 0.08 + 0.08 + 0.04
+        self.assertAlmostEqual(results[0]["similarity_score"], 0.50)
     def test_cold_start_embeds_searches_when_present(self):
         self.mock_qdrant.get_with_vector.return_value = (self.target, None)
         self.mock_gemini.embed.return_value = [0.2] * 768
@@ -1556,7 +1522,7 @@ class TestUnfilteredRetry(unittest.TestCase):
         self.mock_qdrant.get_with_vector.return_value = (self.target, None)
         self.mock_gemini.embed.side_effect = RuntimeError("embed unavailable")
         self.mock_qdrant.scroll.side_effect = [
-            [self._result(1001, 0.0)],
+            [dict(self._result(1001, 0.0), required_skills=["python"])],
         ]
 
         results = self.service.recommend(
