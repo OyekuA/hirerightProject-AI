@@ -25,7 +25,6 @@ class RecommendRequest(BaseModel):
     target_version: int
     behavioral_signals: BehavioralSignals = Field(default_factory=BehavioralSignals)
     hard_filters: dict = {}
-    force_refresh: bool = False
     limit: int = Field(default=10, ge=1, le=50)
 
 

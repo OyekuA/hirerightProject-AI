@@ -1,5 +1,6 @@
 import concurrent.futures
 import math
+import re
 import numpy as np
 import structlog
 from concurrent.futures import wait
@@ -38,11 +39,18 @@ class RecommendationService:
         self.cache = cache
 
     @staticmethod
+    def _normalize_skill(skill: str) -> str:
+        s = skill.lower().strip()
+        s = re.sub(r'\.?js$', '', s)
+        s = s.replace('-', '').replace(' ', '')
+        return s
+
+    @staticmethod
     def _jaccard_similarity(list_a, list_b):
         if not list_a and not list_b:
             return 0.0
-        set_a = {s.lower().strip() for s in list_a}
-        set_b = {s.lower().strip() for s in list_b}
+        set_a = {RecommendationService._normalize_skill(s) for s in list_a if s.strip()}
+        set_b = {RecommendationService._normalize_skill(s) for s in list_b if s.strip()}
         intersection = len(set_a & set_b)
         union = len(set_a | set_b)
         return intersection / union if union > 0 else 0.0
@@ -52,50 +60,32 @@ class RecommendationService:
         return canonicalize_experience_level(level)
 
     def _build_filter(self, hard_filters: dict):
+        normalized = dict(hard_filters)
+        if "experience_level" in normalized:
+            normalized["experience_level"] = canonicalize_experience_level(normalized["experience_level"])
+        if "employment_type" in normalized:
+            normalized["employment_type"] = _extract_employment_category(normalized["employment_type"])
         conditions = [
-            qdrant_models.FieldCondition(key=k, match=qdrant_models.MatchValue(value=hard_filters[k]))
+            qdrant_models.FieldCondition(key=k, match=qdrant_models.MatchValue(value=normalized[k]))
             for k in ("location", "experience_level", "industry", "employment_type")
-            if k in hard_filters
+            if k in normalized
         ]
         return qdrant_models.Filter(must=conditions) if conditions else None
 
     def _search_with_filter_retry(self, collection, query_vector, limit, filter_obj, hard_filters):
-        results = self.qdrant.search(
+        return self.qdrant.search(
             collection=collection,
             query_vector=query_vector,
             limit=limit,
             query_filter=filter_obj,
         )
-        if not results and filter_obj is not None:
-            logger.warning(
-                "Hard filters excluded all candidates; retrying unfiltered",
-                hard_filters=hard_filters,
-            )
-            results = self.qdrant.search(
-                collection=collection,
-                query_vector=query_vector,
-                limit=limit,
-                query_filter=None,
-            )
-        return results
 
     def _scroll_with_filter_retry(self, collection, limit, filter_obj, hard_filters):
-        results = self.qdrant.scroll(
+        return self.qdrant.scroll(
             collection=collection,
             query_filter=filter_obj,
             limit=limit,
         )
-        if not results and filter_obj is not None:
-            logger.warning(
-                "Hard filters excluded all candidates; retrying unfiltered",
-                hard_filters=hard_filters,
-            )
-            results = self.qdrant.scroll(
-                collection=collection,
-                query_filter=None,
-                limit=limit,
-            )
-        return results
 
     def _compute_composite_score(self, target_payload, result, target_skills, vector_score, collection=None):
         if collection is not None:
@@ -158,7 +148,6 @@ class RecommendationService:
         target_version: int,
         behavioral_signals: dict = None,
         hard_filters: dict = None,
-        force_refresh: bool = False,
         limit: int = 10,
     ) -> list[dict]:
         if behavioral_signals is None:
@@ -183,18 +172,15 @@ class RecommendationService:
                 "positive_outcomes": len(recent_positive_outcomes),
             },
             hard_filters=hard_filters,
-            force_refresh=force_refresh,
             limit=limit,
         )
 
         if rec_type == "jobs":
             search_collection = JOBS_COLLECTION
             target_collection = CANDIDATES_COLLECTION
-            version_field = "job_version"
         else:
             search_collection = CANDIDATES_COLLECTION
             target_collection = JOBS_COLLECTION
-            version_field = "candidate_version"
 
         target_payload, profile_vec = self.qdrant.get_with_vector(target_collection, target_id)
         if target_payload is MISSING or target_payload is None:
@@ -254,7 +240,7 @@ class RecommendationService:
                 )
             else:
                 raw_results = self._scroll_with_filter_retry(
-                    search_collection, effective_limit, filter_obj, hard_filters
+                    search_collection, effective_limit * 5, filter_obj, hard_filters
                 )
 
             scored_results = []
@@ -268,6 +254,7 @@ class RecommendationService:
                 scored_results.append({
                     "id": result_id,
                     "similarity_score": similarity_score,
+                    "_raw": result,
                 })
             below = sum(1 for x in scored_results if x["similarity_score"] < RECOMMEND_MIN_SIMILARITY_COLD)
             if below:
@@ -277,7 +264,24 @@ class RecommendationService:
                 logger.info("No cold-start results above floor", floor=RECOMMEND_MIN_SIMILARITY_COLD)
                 return []
             scored_results.sort(key=lambda x: x["similarity_score"], reverse=True)
-            output = scored_results
+
+            def _cold_cluster_key(x):
+                r = x["_raw"]
+                if rec_type == "jobs":
+                    t = (r.get("title") or "").lower().strip()
+                    loc = (r.get("location") or "").lower().strip()
+                    comp = r.get("company_id") or r.get("company_name") or r.get("company") or str(r.get("_point_id",""))
+                    return (t, loc, str(comp).lower().strip())
+                return ((r.get("name") or "").lower().strip(), (r.get("location") or "").lower().strip())
+            clusters = {}
+            for x in scored_results:
+                k = _cold_cluster_key(x)
+                if k not in clusters or x["similarity_score"] > clusters[k]["similarity_score"]:
+                    clusters[k] = x
+            scored_results = list(clusters.values())
+            scored_results.sort(key=lambda x: x["similarity_score"], reverse=True)
+            scored_results = scored_results[:effective_limit]
+            output = [{"id": x["id"], "similarity_score": x["similarity_score"]} for x in scored_results]
 
             logger.info(
                 "Cold-start recommendations (missing vector)",

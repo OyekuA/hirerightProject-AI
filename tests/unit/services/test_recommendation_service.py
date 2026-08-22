@@ -36,7 +36,6 @@ class TestRecommendationServiceTruncation(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": original_searches, "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
 
@@ -61,7 +60,6 @@ class TestRecommendationServiceTruncation(unittest.TestCase):
                 target_version=1,
                 behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
                 hard_filters={},
-                force_refresh=False,
                 limit=10,
             )
 
@@ -77,7 +75,6 @@ class TestRecommendationServiceTruncation(unittest.TestCase):
                 target_version=1,
                 behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
                 hard_filters={},
-                force_refresh=False,
                 limit=10,
             )
         self.assertIn("Target profile not found", str(cm.exception))
@@ -105,7 +102,6 @@ class TestRecommendationServiceTruncation(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
 
@@ -160,7 +156,6 @@ class TestRecommendationServiceCacheKey(unittest.TestCase):
             target_version=3,
             behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
         self.mock_cache.get.assert_not_called()
@@ -188,7 +183,6 @@ class TestRecommendationServiceCacheKey(unittest.TestCase):
             target_version=7,
             behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
         self.mock_cache.get.assert_not_called()
@@ -215,7 +209,6 @@ class TestRecommendationServiceCacheKey(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
 
@@ -263,7 +256,6 @@ class TestColdStart(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
 
@@ -305,7 +297,6 @@ class TestColdStart(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
 
@@ -345,7 +336,6 @@ class TestColdStart(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=True,
             limit=10,
         )
 
@@ -378,7 +368,6 @@ class TestColdStart(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
 
@@ -409,7 +398,6 @@ class TestColdStart(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
 
@@ -442,7 +430,6 @@ class TestAdaptiveWeights(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
         self.mock_gemini.embed.assert_not_called()
@@ -456,7 +443,6 @@ class TestAdaptiveWeights(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": ["x", "y", "z"], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
         self.assertEqual(self.mock_gemini.embed.call_count, 3)
@@ -525,7 +511,6 @@ class TestAdaptiveWeights(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [100, 200], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
         self.mock_qdrant.get_with_vector.assert_called_once()
@@ -595,7 +580,6 @@ class TestPeerCentroid(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
         self.mock_qdrant.get_with_vector.assert_called_once()
@@ -658,7 +642,6 @@ class TestReRanker(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
         self.assertEqual(len(results), 2)
@@ -760,7 +743,6 @@ class TestDiversityPass(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
         self.assertLessEqual(len(results), 4)
@@ -820,7 +802,6 @@ class TestDiversityPass(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
 
@@ -839,7 +820,6 @@ class TestDiversityPass(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=1,
         )
         self.assertLessEqual(len(results), 1)
@@ -853,7 +833,6 @@ class TestDiversityPass(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=2,
         )
         self.assertLessEqual(len(results), 2)
@@ -1135,7 +1114,6 @@ class TestRecommendationServiceVersionValidation(unittest.TestCase):
                 target_version=3,  # mismatch
                 behavioral_signals={},
                 hard_filters={},
-                force_refresh=False,
                 limit=10,
             )
         self.assertIn("Target version mismatch", str(cm.exception))
@@ -1156,7 +1134,6 @@ class TestRecommendationServiceVersionValidation(unittest.TestCase):
                 target_version=6,  # mismatch
                 behavioral_signals={},
                 hard_filters={},
-                force_refresh=False,
                 limit=10,
             )
         self.assertIn("Target version mismatch", str(cm.exception))
@@ -1278,7 +1255,6 @@ class TestRecommendMinSimilarity(unittest.TestCase):
             target_version=1,
             behavioral_signals=self._signals(),
             hard_filters={},
-            force_refresh=True,
             limit=10,
         )
         ids = [r["id"] for r in results]
@@ -1304,7 +1280,6 @@ class TestRecommendMinSimilarity(unittest.TestCase):
             target_version=1,
             behavioral_signals=self._signals(),
             hard_filters={},
-            force_refresh=True,
             limit=10,
         )
         self.assertEqual(len(results), 0)
@@ -1333,7 +1308,6 @@ class TestRecommendMinSimilarity(unittest.TestCase):
             target_version=1,
             behavioral_signals=self._signals(),
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
         self.assertEqual(len(results), 0)
@@ -1373,11 +1347,10 @@ class TestUnfilteredRetry(unittest.TestCase):
         }
 
     def test_vector_path_filtered_empty_retries_unfiltered(self):
-        # peer search, filtered main search, unfiltered retry = 3 calls
+        # hard filter respected, no unfiltered retry
         self.mock_qdrant.search.side_effect = [
             [],
             [],
-            [self._result(1001, 0.9)],
         ]
 
         results = self.service.recommend(
@@ -1386,16 +1359,11 @@ class TestUnfilteredRetry(unittest.TestCase):
             target_version=1,
             behavioral_signals=self._signals(),
             hard_filters={"location": "Nowhere"},
-            force_refresh=True,
             limit=10,
         )
 
-        self.assertEqual(self.mock_qdrant.search.call_count, 3)
-        retry_call = self.mock_qdrant.search.call_args_list[-1]
-        self.assertIsNone(retry_call.kwargs["query_filter"])
-        self.assertEqual(self.mock_qdrant.search.call_args_list[1].kwargs["query_filter"], self.service._build_filter({"location": "Nowhere"}))
-        self.assertGreater(len(results), 0)
-        self.assertEqual(results[0]["id"], 1001)
+        self.assertEqual(self.mock_qdrant.search.call_count, 2)
+        self.assertEqual(results, [])
 
     def test_vector_path_no_retry_when_no_filter_set(self):
         self.mock_qdrant.search.side_effect = [[], []]
@@ -1406,7 +1374,6 @@ class TestUnfilteredRetry(unittest.TestCase):
             target_version=1,
             behavioral_signals=self._signals(),
             hard_filters={},
-            force_refresh=True,
             limit=10,
         )
 
@@ -1425,7 +1392,6 @@ class TestUnfilteredRetry(unittest.TestCase):
             target_version=1,
             behavioral_signals=self._signals(),
             hard_filters={"location": "New York"},
-            force_refresh=True,
             limit=10,
         )
 
@@ -1436,7 +1402,6 @@ class TestUnfilteredRetry(unittest.TestCase):
         self.mock_qdrant.get_with_vector.return_value = (self.target, None)
         self.mock_qdrant.scroll.side_effect = [
             [],
-            [dict(self._result(1001, 0.0), required_skills=["python"])],
         ]
 
         results = self.service.recommend(
@@ -1445,21 +1410,19 @@ class TestUnfilteredRetry(unittest.TestCase):
             target_version=1,
             behavioral_signals=self._signals(),
             hard_filters={"location": "Nowhere"},
-            force_refresh=True,
             limit=10,
         )
 
-        self.assertEqual(self.mock_qdrant.scroll.call_count, 2)
+        self.assertEqual(self.mock_qdrant.scroll.call_count, 1)
         self.assertEqual(self.mock_qdrant.search.call_count, 0)
         self.mock_gemini.embed.assert_not_called()
-        self.assertGreater(len(results), 0)
+        self.assertEqual(results, [])
 
     def test_cold_start_intent_search_retries_unfiltered(self):
         self.mock_qdrant.get_with_vector.return_value = (self.target, None)
         self.mock_gemini.embed.return_value = [0.2] * 768
         self.mock_qdrant.search.side_effect = [
             [],
-            [self._result(1001, 0.9)],
         ]
 
         results = self.service.recommend(
@@ -1468,16 +1431,13 @@ class TestUnfilteredRetry(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": ["python engineer"], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={"location": "Nowhere"},
-            force_refresh=True,
             limit=10,
         )
 
-        self.assertEqual(self.mock_qdrant.search.call_count, 2)
-        retry_call = self.mock_qdrant.search.call_args_list[-1]
-        self.assertIsNone(retry_call.kwargs["query_filter"])
+        self.assertEqual(self.mock_qdrant.search.call_count, 1)
         self.mock_qdrant.scroll.assert_not_called()
         self.mock_gemini.embed.assert_called_once()
-        self.assertGreater(len(results), 0)
+        self.assertEqual(results, [])
 
     def test_cold_start_intent_search_uses_vector_score(self):
         self.mock_qdrant.get_with_vector.return_value = (self.target, None)
@@ -1492,7 +1452,6 @@ class TestUnfilteredRetry(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": ["python engineer"], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=True,
             limit=10,
         )
 
@@ -1514,7 +1473,6 @@ class TestUnfilteredRetry(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": ["python engineer"], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=True,
             limit=10,
         )
 
@@ -1535,7 +1493,6 @@ class TestUnfilteredRetry(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": ["python engineer"], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=True,
             limit=10,
         )
 
@@ -1579,7 +1536,6 @@ class TestSignalActivation(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": ["python"], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
         self.mock_gemini.embed.assert_called_once()
@@ -1628,7 +1584,6 @@ class TestSignalActivation(unittest.TestCase):
                 "recent_positive_outcomes": [],
             },
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
         retrieve_call = self.mock_qdrant._client.retrieve.call_args
@@ -1654,7 +1609,6 @@ class TestSignalActivation(unittest.TestCase):
                 "recent_positive_outcomes": [],
             },
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
         self.mock_qdrant._client.retrieve.assert_not_called()
@@ -1695,7 +1649,6 @@ class TestRecallCeiling(unittest.TestCase):
             target_version=1,
             behavioral_signals=self._signals(),
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
 
@@ -1715,7 +1668,6 @@ class TestRecallCeiling(unittest.TestCase):
             target_version=1,
             behavioral_signals={"recent_searches": ["python"], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []},
             hard_filters={},
-            force_refresh=False,
             limit=10,
         )
 

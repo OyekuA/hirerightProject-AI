@@ -45,7 +45,6 @@ async def recommend(
             target_version=req.target_version,
             behavioral_signals=req.behavioral_signals.model_dump(),
             hard_filters=req.hard_filters,
-            force_refresh=req.force_refresh,
             limit=req.limit,
         )
     except ValueError as e:
