@@ -22,6 +22,7 @@ POOL_RANK_TIMEOUT_SECONDS = 30
 POOL_RANK_DEFAULT_FIT_SCORE = 0
 
 RECOMMEND_MIN_SIMILARITY = 0.50
+RECOMMEND_MIN_SIMILARITY_COLD = 0.35
 
 
 class RecommendationService:
@@ -122,12 +123,14 @@ class RecommendationService:
         else:
             level_match = 0.0
         employment_match = 1.0 if _extract_employment_category(target_payload.get("employment_type", "")) == _extract_employment_category(result.get("employment_type", "")) else 0.0
+        scaled_vector = (vector_score - 0.50) / 0.40
+        scaled_vector = max(0.0, min(1.0, scaled_vector))
         return (
-            0.50 * vector_score
-            + 0.30 * skill_overlap
-            + 0.08 * location_match
-            + 0.08 * level_match
-            + 0.04 * employment_match
+            0.55 * scaled_vector
+            + 0.35 * skill_overlap
+            + 0.04 * location_match
+            + 0.04 * level_match
+            + 0.02 * employment_match
         )
 
     @staticmethod
@@ -216,7 +219,7 @@ class RecommendationService:
             raise ValueError(f"Target version mismatch: stored {stored_target_version}, requested {target_version}")
         if profile_vec is None:
             logger.warning(
-                "Target profile vector is missing – falling back to cold‑start",
+                "Target profile vector is missing - falling back to cold-start",
                 target_id=target_id,
                 collection=target_collection,
             )
@@ -266,19 +269,18 @@ class RecommendationService:
                     "id": result_id,
                     "similarity_score": similarity_score,
                 })
-            # hard floor for cold-start as well — no job > wrong job
-            below = sum(1 for x in scored_results if x["similarity_score"] < RECOMMEND_MIN_SIMILARITY)
+            below = sum(1 for x in scored_results if x["similarity_score"] < RECOMMEND_MIN_SIMILARITY_COLD)
             if below:
-                logger.info("Filtering below-floor cold-start", below_floor_count=below, floor=RECOMMEND_MIN_SIMILARITY)
-            scored_results = [x for x in scored_results if x["similarity_score"] >= RECOMMEND_MIN_SIMILARITY]
+                logger.info("Filtering below-floor cold-start", below_floor_count=below, floor=RECOMMEND_MIN_SIMILARITY_COLD)
+            scored_results = [x for x in scored_results if x["similarity_score"] >= RECOMMEND_MIN_SIMILARITY_COLD]
             if not scored_results:
-                logger.info("No cold-start results above floor", floor=RECOMMEND_MIN_SIMILARITY)
+                logger.info("No cold-start results above floor", floor=RECOMMEND_MIN_SIMILARITY_COLD)
                 return []
             scored_results.sort(key=lambda x: x["similarity_score"], reverse=True)
             output = scored_results
 
             logger.info(
-                "Cold‑start recommendations (missing vector)",
+                "Cold-start recommendations (missing vector)",
                 target_id=target_id,
                 result_count=len(output),
             )

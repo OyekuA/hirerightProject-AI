@@ -41,11 +41,11 @@ class Settings(BaseSettings):
     DOCS_USERNAME: Optional[str] = None
     DOCS_PASSWORD: Optional[str] = None
 
-    SCORING_WEIGHT_SKILLS: float = 0.35
-    SCORING_WEIGHT_ROLE: float = 0.25
-    SCORING_WEIGHT_EXPERIENCE: float = 0.20
-    SCORING_WEIGHT_LOCATION: float = 0.12
-    SCORING_WEIGHT_EMPLOYMENT: float = 0.08
+    SCORING_WEIGHT_SKILLS: float = 0.45
+    SCORING_WEIGHT_ROLE: float = 0.35
+    SCORING_WEIGHT_EXPERIENCE: float = 0.10
+    SCORING_WEIGHT_LOCATION: float = 0.05
+    SCORING_WEIGHT_EMPLOYMENT: float = 0.05
 
     DECISION_FIT_WEIGHT: float = 0.40
     DECISION_ASSESSMENT_WEIGHT: float = 0.60

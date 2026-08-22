@@ -27,10 +27,10 @@ class DecisionService:
         self._scoring_service = ScoringService(llm=llm, qdrant=qdrant, cache=cache)
 
     @staticmethod
-    def _compute_label(combined_score: int, assessment_score: int) -> str:
+    def _compute_label(combined_score: int, assessment_score: int, fit_score: int) -> str:
         if combined_score >= 80 and assessment_score >= 75:
             return "hire"
-        if combined_score < 50 or assessment_score < 40:
+        if combined_score < 50 or assessment_score < 40 or fit_score < 30:
             return "no_hire"
         return "review"
 
@@ -86,7 +86,7 @@ class DecisionService:
         )
         combined_score = max(0, min(100, combined_score))
 
-        decision = self._compute_label(combined_score, assessment_score)
+        decision = self._compute_label(combined_score, assessment_score, fit_score)
         needs_review_note = ""
         if needs_review:
             decision = "review"

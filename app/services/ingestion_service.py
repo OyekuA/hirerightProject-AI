@@ -81,9 +81,6 @@ def _format_salary(min_value: Optional[float], max_value: Optional[float], curre
     return text
 
 
-EMBED_TEXT_VERSION = 2
-
-
 def _resolve_candidate_headline(profile: ProfileData, extraction: CandidateExtraction) -> Optional[str]:
     h = getattr(profile, "headline", None)
     if h and str(h).strip():
@@ -413,26 +410,6 @@ async def run_candidate_ingestion(
         cv_text = await asyncio.to_thread(fetch_and_parse_cv, cv_url)
         new_hash = hashlib.sha256(cv_text.encode()).hexdigest()
         cv_text = truncate_to_prompt_cap(cv_text)
-        existing_payload = qdrant.get(CANDIDATES_COLLECTION, candidate_id)
-        if existing_payload is not None and existing_payload is not MISSING and existing_payload.get("cv_hash") == new_hash and existing_payload.get("embed_text_version", 1) == EMBED_TEXT_VERSION:
-            qdrant.update_payload(CANDIDATES_COLLECTION, candidate_id, {
-                "name": validated_profile.name,
-                "location": validated_profile.location,
-                "experience_level": validated_profile.experience_level,
-                "industry": validated_profile.industry,
-                "employment_type": validated_profile.employment_type,
-                "candidate_version": validated_profile.candidate_version,
-                "data_source": validated_profile.data_source,
-                "ingested_at": datetime.now(timezone.utc).isoformat(),
-                "cv_hash": new_hash,
-                "work_mode": validated_profile.work_mode,
-                "total_years_experience": validated_profile.total_years_experience,
-                "embed_text_version": EMBED_TEXT_VERSION,
-                "headline": validated_profile.headline,
-            })
-            logger.info("Candidate ingestion skipped (hash match)", event_id=event_id, candidate_id=candidate_id)
-            store.update(event_id, status="success", attempt_count=1)
-            return
         logger.debug("CV parsed", event_id=event_id, text_length=len(cv_text))
 
         profile_data_json = validated_profile.model_dump_json(indent=2)
@@ -466,7 +443,6 @@ async def run_candidate_ingestion(
             "ingested_at": datetime.now(timezone.utc).isoformat(),
             "cv_hash": new_hash,
             "total_years_experience": validated_extraction.total_years_experience,
-            "embed_text_version": EMBED_TEXT_VERSION,
             "headline": validated_extraction.headline or validated_profile.headline,
         }
 
@@ -510,33 +486,6 @@ async def run_job_ingestion(
     jd_text = truncate_to_prompt_cap(jd_text)
 
     async def _ingest() -> None:
-        existing_payload = qdrant.get(JOBS_COLLECTION, job_id)
-        if existing_payload is not None and existing_payload is not MISSING and existing_payload.get("jd_hash") == new_hash and existing_payload.get("embed_text_version", 1) == EMBED_TEXT_VERSION:
-            qdrant.update_payload(JOBS_COLLECTION, job_id, {
-                "title": validated_metadata.title,
-                "location": validated_metadata.location,
-                "experience_level": validated_metadata.experience_level,
-                "industry": validated_metadata.industry,
-                "employment_type": validated_metadata.employment_type,
-                "job_version": validated_metadata.job_version,
-                "company_name": validated_metadata.company_name,
-                "about": validated_metadata.about,
-                "description": validated_metadata.description,
-                "requirements": validated_metadata.requirements,
-                "responsibilities": validated_metadata.responsibilities,
-                "benefits": validated_metadata.benefits,
-                "salary_min": validated_metadata.salary_min,
-                "salary_max": validated_metadata.salary_max,
-                "salary_currency": validated_metadata.salary_currency,
-                "work_mode": validated_metadata.work_mode,
-                "remote_regions": validated_metadata.remote_regions,
-                "ingested_at": datetime.now(timezone.utc).isoformat(),
-                "jd_hash": new_hash,
-                "embed_text_version": EMBED_TEXT_VERSION
-            })
-            logger.info("Job ingestion skipped (hash match)", event_id=event_id, job_id=job_id)
-            store.update(event_id, status="success", attempt_count=1)
-            return
         metadata_json = validated_metadata.model_dump_json(indent=2)
         validated_extraction = await asyncio.to_thread(
             extract_job_entities, jd_text, metadata_json, llm,
@@ -575,7 +524,6 @@ async def run_job_ingestion(
             "remote_regions": validated_metadata.remote_regions,
             "ingested_at": datetime.now(timezone.utc).isoformat(),
             "jd_hash": new_hash,
-            "embed_text_version": EMBED_TEXT_VERSION,
         }
 
         qdrant.upsert(JOBS_COLLECTION, job_id, vector, payload)

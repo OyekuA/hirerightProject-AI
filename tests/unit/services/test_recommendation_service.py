@@ -662,22 +662,24 @@ class TestReRanker(unittest.TestCase):
             limit=10,
         )
         self.assertEqual(len(results), 2)
+        scaled_09 = (0.9 - 0.50) / 0.40
+        scaled_08 = (0.8 - 0.50) / 0.40
         expected_score_1001 = (
-            0.50 * 0.9
-            + 0.30 * (2 / 3)
-            + 0.08 * 1.0
-            + 0.08 * 1.0
+            0.55 * scaled_09
+            + 0.35 * (2 / 3)
             + 0.04 * 1.0
+            + 0.04 * 1.0
+            + 0.02 * 1.0
         )
         expected_score_1002 = (
-            0.50 * 0.8
-            + 0.30 * 0.25
-            + 0.08 * 0.0
-            + 0.08 * 0.5
+            0.55 * scaled_08
+            + 0.35 * 0.25
             + 0.04 * 0.0
+            + 0.04 * 0.5
+            + 0.02 * 0.0
         )
         score_by_id = {r["id"]: r["similarity_score"] for r in results}
-        self.assertAlmostEqual(score_by_id[1001], 0.85, places=7)
+        self.assertAlmostEqual(score_by_id[1001], expected_score_1001, places=7)
         self.assertAlmostEqual(score_by_id[1002], expected_score_1002, places=7)
         self.assertGreater(score_by_id[1001], score_by_id[1002])
 
@@ -1188,7 +1190,8 @@ class TestRecommendationCanonicalMatch(unittest.TestCase):
             "skills": [],
         }
         score = self.service._compute_composite_score(target, result, [], 0.0, None)
-        self.assertAlmostEqual(score, 0.20)  # 0.08+0.08+0.04
+        self.assertAlmostEqual(score, 0.10)
+
     def test_employment_match_category_mismatch_zero(self):
         target = {
             "location": "Berlin",
@@ -1203,7 +1206,8 @@ class TestRecommendationCanonicalMatch(unittest.TestCase):
             "skills": [],
         }
         score = self.service._compute_composite_score(target, result, [], 0.0, None)
-        self.assertAlmostEqual(score, 0.16)  # 0.08+0.08
+        self.assertAlmostEqual(score, 0.08)
+
     def test_location_match_uses_work_mode_resolver(self):
         target = {
             "location": "Berlin",
@@ -1220,7 +1224,7 @@ class TestRecommendationCanonicalMatch(unittest.TestCase):
             "skills": [],
         }
         score = self.service._compute_composite_score(target, result, [], 0.0, None)
-        self.assertAlmostEqual(score, 0.16)  # 0.08*0.5 location + 0.08 level + 0.04 employment
+        self.assertAlmostEqual(score, 0.08)
 class TestRecommendMinSimilarity(unittest.TestCase):
 
     def setUp(self):
@@ -1256,12 +1260,12 @@ class TestRecommendMinSimilarity(unittest.TestCase):
             "employment_type": "full_time",
         }
         self.mock_qdrant.get_with_vector.return_value = (target, [0.1] * 768)
-        # composite = 0.50*vector +0.20 metadata (Jaccard 0 + loc 0.08 + level 0.08 + emp 0.04)
-        # 1001: 0.50 (at floor 0.50) | 1002: 0.33 (below) | 1003: 0.25 (below) - hard 0.50 drops below
+        # 0.55 scaled vector (0.50-0.90->0.0-1.0) +0.35 Jaccard +0.04 loc +0.04 level +0.02 emp
+        # 1001: 0.9->scaled1.0 =>0.65 (>0.50) | 1002:0.26->0.0 =>0.10 (<0.50) | 1003:0.1->0.0 =>0.10 (<0.50)
         self.mock_qdrant.search.side_effect = [
             [],
             [
-                self._base_result(1001, 0.6),
+                self._base_result(1001, 0.9),
                 self._base_result(1002, 0.26),
                 self._base_result(1003, 0.1),
             ],
@@ -1279,7 +1283,7 @@ class TestRecommendMinSimilarity(unittest.TestCase):
         )
         ids = [r["id"] for r in results]
         self.assertEqual(ids, [1001])
-        self.assertAlmostEqual(results[0]["similarity_score"], 0.50)
+        self.assertAlmostEqual(results[0]["similarity_score"], 0.65, places=2)
     def test_all_below_floor_returns_empty(self):
         target = {
             "skills": ["python"],
@@ -1373,7 +1377,7 @@ class TestUnfilteredRetry(unittest.TestCase):
         self.mock_qdrant.search.side_effect = [
             [],
             [],
-            [self._result(1001, 0.6)],
+            [self._result(1001, 0.9)],
         ]
 
         results = self.service.recommend(
@@ -1412,7 +1416,7 @@ class TestUnfilteredRetry(unittest.TestCase):
     def test_vector_path_no_retry_when_filtered_search_returns_results(self):
         self.mock_qdrant.search.side_effect = [
             [],
-            [self._result(1001, 0.6)],
+            [self._result(1001, 0.9)],
         ]
 
         results = self.service.recommend(
@@ -1455,7 +1459,7 @@ class TestUnfilteredRetry(unittest.TestCase):
         self.mock_gemini.embed.return_value = [0.2] * 768
         self.mock_qdrant.search.side_effect = [
             [],
-            [self._result(1001, 0.6)],
+            [self._result(1001, 0.9)],
         ]
 
         results = self.service.recommend(
@@ -1479,7 +1483,7 @@ class TestUnfilteredRetry(unittest.TestCase):
         self.mock_qdrant.get_with_vector.return_value = (self.target, None)
         self.mock_gemini.embed.return_value = [0.2] * 768
         self.mock_qdrant.search.side_effect = [
-            [self._result(1001, 0.6)],
+            [self._result(1001, 0.9)],
         ]
 
         results = self.service.recommend(
@@ -1495,8 +1499,8 @@ class TestUnfilteredRetry(unittest.TestCase):
         self.mock_qdrant.scroll.assert_not_called()
         self.mock_gemini.embed.assert_called_once()
         self.assertEqual(len(results), 1)
-        # composite = 0.50 * 0.6 (vector) + 0.30 * 0 (skill) + 0.08 + 0.08 + 0.04
-        self.assertAlmostEqual(results[0]["similarity_score"], 0.50)
+        # 0.9 scaled 1.0: 0.55*1 +0.10 logistics =0.65
+        self.assertAlmostEqual(results[0]["similarity_score"], 0.65, places=2)
     def test_cold_start_embeds_searches_when_present(self):
         self.mock_qdrant.get_with_vector.return_value = (self.target, None)
         self.mock_gemini.embed.return_value = [0.2] * 768

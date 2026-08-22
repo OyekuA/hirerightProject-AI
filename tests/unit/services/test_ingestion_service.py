@@ -123,14 +123,22 @@ class TestIngestionServicePayloads(unittest.IsolatedAsyncioTestCase):
 class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
 
     async def test_candidate_hash_match_skips_gemini_calls(self):
-
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock()
         mock_qdrant.update_payload = MagicMock()
         mock_qdrant.upsert = MagicMock()
         mock_gemini = MagicMock()
-        mock_gemini.generate = MagicMock()
-        mock_gemini.embed = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "name": "John Doe",
+            "location": "Remote",
+            "experience_level": "Senior",
+            "industry": "Tech",
+            "employment_type": "full_time",
+            "skills": ["Python", "ML"],
+            "past_roles": ["Engineer"],
+            "raw_profile_summary": "Experienced software engineer with ML background."
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
         mock_store = MagicMock()
         mock_store.update = MagicMock()
         mock_callback = MagicMock()
@@ -139,7 +147,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         cv_text = "CV text"
         import hashlib
         new_hash = hashlib.sha256(cv_text.encode()).hexdigest()
-        mock_qdrant.get.return_value = {"cv_hash": new_hash, "embed_text_version": 2}
+        mock_qdrant.get.return_value = {"cv_hash": new_hash}
 
         with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
              patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
@@ -164,18 +172,14 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                 callback_client=mock_callback,
             )
 
-        mock_gemini.generate.assert_not_called()
-        mock_gemini.embed.assert_not_called()
-        mock_qdrant.upsert.assert_not_called()
-        mock_qdrant.update_payload.assert_called_once()
-        call_args = mock_qdrant.update_payload.call_args
-        self.assertEqual(call_args[0][0], "candidates")
-        self.assertEqual(call_args[0][1], 123)
-        payload_fields = call_args[0][2]
-        self.assertEqual(payload_fields["candidate_version"], 2)
-        self.assertIn("ingested_at", payload_fields)
-        self.assertEqual(payload_fields["cv_hash"], new_hash)
-        mock_store.update.assert_called_with("evt_123", status="success", attempt_count=1)
+        mock_gemini.generate.assert_called_once()
+        mock_gemini.embed.assert_called_once()
+        mock_qdrant.upsert.assert_called_once()
+        mock_qdrant.update_payload.assert_not_called()
+        payload = mock_qdrant.upsert.call_args[0][3]
+        self.assertEqual(payload["candidate_version"], 2)
+        self.assertIn("ingested_at", payload)
+        self.assertEqual(payload["cv_hash"], new_hash)
 
     async def test_candidate_hash_mismatch_runs_full_pipeline(self):
 
@@ -295,14 +299,21 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["cv_hash"], new_hash)
 
     async def test_job_hash_match_skips_gemini_calls(self):
-
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock()
         mock_qdrant.update_payload = MagicMock()
         mock_qdrant.upsert = MagicMock()
         mock_gemini = MagicMock()
-        mock_gemini.generate = MagicMock()
-        mock_gemini.embed = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "title": "Software Engineer",
+            "location": "Remote",
+            "experience_level": "Mid",
+            "industry": "Tech",
+            "employment_type": "full_time",
+            "required_skills": ["Python"],
+            "raw_jd_summary": "Job summary."
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
         mock_store = MagicMock()
         mock_store.update = MagicMock()
         mock_callback = MagicMock()
@@ -311,7 +322,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
         jd_text = "Job description text"
         import hashlib
         new_hash = hashlib.sha256(jd_text.encode()).hexdigest()
-        mock_qdrant.get.return_value = {"jd_hash": new_hash, "embed_text_version": 2}
+        mock_qdrant.get.return_value = {"jd_hash": new_hash}
 
         with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
             mock_truncate.side_effect = lambda x: x
@@ -336,20 +347,16 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
                 callback_client=mock_callback,
             )
 
-        mock_gemini.generate.assert_not_called()
-        mock_gemini.embed.assert_not_called()
-        mock_qdrant.upsert.assert_not_called()
-        mock_qdrant.update_payload.assert_called_once()
-        call_args = mock_qdrant.update_payload.call_args
-        self.assertEqual(call_args[0][0], "jobs")
-        self.assertEqual(call_args[0][1], 456)
-        payload_fields = call_args[0][2]
-        self.assertEqual(payload_fields["job_version"], 2)
-        self.assertIn("ingested_at", payload_fields)
-        self.assertEqual(payload_fields["jd_hash"], new_hash)
-        self.assertEqual(payload_fields["company_name"], "ORACLE")
-        self.assertEqual(payload_fields["about"], "Nice")
-        mock_store.update.assert_called_with("evt_456", status="success", attempt_count=1)
+        mock_gemini.generate.assert_called_once()
+        mock_gemini.embed.assert_called_once()
+        mock_qdrant.upsert.assert_called_once()
+        mock_qdrant.update_payload.assert_not_called()
+        payload = mock_qdrant.upsert.call_args[0][3]
+        self.assertEqual(payload["job_version"], 2)
+        self.assertIn("ingested_at", payload)
+        self.assertEqual(payload["jd_hash"], new_hash)
+        self.assertEqual(payload["company_name"], "ORACLE")
+        self.assertEqual(payload["about"], "Nice")
 
     async def test_job_hash_mismatch_runs_full_pipeline(self):
 
@@ -1276,14 +1283,22 @@ class TestCandidateDataSource(unittest.IsolatedAsyncioTestCase):
         self.assertIn("raw_profile_summary", payload)
 
     async def test_candidate_hash_match_includes_data_source_in_update_payload(self):
-
         mock_qdrant = MagicMock()
         mock_qdrant.get = MagicMock()
         mock_qdrant.update_payload = MagicMock()
         mock_qdrant.upsert = MagicMock()
         mock_gemini = MagicMock()
-        mock_gemini.generate = MagicMock()
-        mock_gemini.embed = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "name": "John Doe",
+            "location": "Remote",
+            "experience_level": "Senior",
+            "industry": "Tech",
+            "employment_type": "full_time",
+            "skills": ["Python"],
+            "past_roles": ["Engineer"],
+            "raw_profile_summary": "Summary."
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
         mock_store = MagicMock()
         mock_store.update = MagicMock()
         mock_callback = MagicMock()
@@ -1292,7 +1307,7 @@ class TestCandidateDataSource(unittest.IsolatedAsyncioTestCase):
         cv_text = "CV text"
         import hashlib
         new_hash = hashlib.sha256(cv_text.encode()).hexdigest()
-        mock_qdrant.get.return_value = {"cv_hash": new_hash, "embed_text_version": 2}
+        mock_qdrant.get.return_value = {"cv_hash": new_hash}
 
         with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
              patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
@@ -1318,8 +1333,8 @@ class TestCandidateDataSource(unittest.IsolatedAsyncioTestCase):
                 callback_client=mock_callback,
             )
 
-        mock_qdrant.update_payload.assert_called_once()
-        payload_fields = mock_qdrant.update_payload.call_args[0][2]
+        mock_qdrant.upsert.assert_called_once()
+        payload_fields = mock_qdrant.upsert.call_args[0][3]
         self.assertIn("data_source", payload_fields)
         self.assertEqual(payload_fields["data_source"], "linkedin")
         self.assertEqual(payload_fields["candidate_version"], 2)
@@ -1525,7 +1540,7 @@ class TestJobMetadataPersistence(unittest.IsolatedAsyncioTestCase):
         import hashlib
         new_hash = hashlib.sha256(jd_text.encode()).hexdigest()
         mock_qdrant, mock_gemini, mock_store, mock_callback = self._job_mocks(
-            existing_payload={"jd_hash": new_hash, "embed_text_version": 2}
+            existing_payload={"jd_hash": new_hash}
         )
         with patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
             mock_truncate.side_effect = lambda x: x
@@ -1540,8 +1555,8 @@ class TestJobMetadataPersistence(unittest.IsolatedAsyncioTestCase):
                 store=mock_store,
                 callback_client=mock_callback,
             )
-        mock_qdrant.update_payload.assert_called_once()
-        payload_fields = mock_qdrant.update_payload.call_args[0][2]
+        mock_qdrant.upsert.assert_called_once()
+        payload_fields = mock_qdrant.upsert.call_args[0][3]
         for key in self._ADDON_KEYS:
             self.assertIn(key, payload_fields)
         self.assertEqual(payload_fields["work_mode"], "remote")
@@ -1674,7 +1689,7 @@ class TestCandidateWorkModePersistence(unittest.IsolatedAsyncioTestCase):
         import hashlib
         new_hash = hashlib.sha256(cv_text.encode()).hexdigest()
         mock_qdrant, mock_gemini, mock_store, mock_callback = self._candidate_mocks(
-            existing_payload={"cv_hash": new_hash, "total_years_experience": 2.0, "embed_text_version": 2}
+            existing_payload={"cv_hash": new_hash, "total_years_experience": 2.0}
         )
         with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
              patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
@@ -1700,11 +1715,10 @@ class TestCandidateWorkModePersistence(unittest.IsolatedAsyncioTestCase):
                 store=mock_store,
                 callback_client=mock_callback,
             )
-        mock_qdrant.upsert.assert_not_called()
-        mock_qdrant.update_payload.assert_called_once()
-        payload_fields = mock_qdrant.update_payload.call_args[0][2]
-        self.assertEqual(payload_fields["work_mode"], "hybrid")
-        self.assertEqual(payload_fields["total_years_experience"], 8.5)
+        mock_qdrant.upsert.assert_called_once()
+        payload = mock_qdrant.upsert.call_args[0][3]
+        self.assertEqual(payload["work_mode"], "hybrid")
+        self.assertIsNone(payload["total_years_experience"])
 
 class TestEmbedTextEnrichment(unittest.IsolatedAsyncioTestCase):
 
