@@ -12,6 +12,7 @@ from app.clients.dependencies import CANDIDATES_COLLECTION, JOBS_COLLECTION
 from app.clients.llm import LLMClient
 from app.clients.qdrant import QdrantClient, MISSING
 from app.clients.cache import CacheBackend
+from app.config import get_settings
 from app.constants import EXPERIENCE_LEVEL_LADDER, canonicalize_experience_level
 from app.services.scoring_service import ScoringService, resolve_work_mode, _extract_employment_category
 from app.utils.ingestion import truncate_to_prompt_cap
@@ -22,8 +23,8 @@ POOL_RANK_CONCURRENCY = 5
 POOL_RANK_TIMEOUT_SECONDS = 30
 POOL_RANK_DEFAULT_FIT_SCORE = 0
 
-RECOMMEND_MIN_SIMILARITY = 0.50
-RECOMMEND_MIN_SIMILARITY_COLD = 0.35
+RECOMMEND_MIN_SIMILARITY = 0.40
+RECOMMEND_MIN_SIMILARITY_COLD = 0.25
 
 
 class RecommendationService:
@@ -256,12 +257,13 @@ class RecommendationService:
                     "similarity_score": similarity_score,
                     "_raw": result,
                 })
-            below = sum(1 for x in scored_results if x["similarity_score"] < RECOMMEND_MIN_SIMILARITY_COLD)
+            _cold_floor = get_settings().RECOMMEND_MIN_SIMILARITY_COLD
+            below = sum(1 for x in scored_results if x["similarity_score"] < _cold_floor)
             if below:
-                logger.info("Filtering below-floor cold-start", below_floor_count=below, floor=RECOMMEND_MIN_SIMILARITY_COLD)
-            scored_results = [x for x in scored_results if x["similarity_score"] >= RECOMMEND_MIN_SIMILARITY_COLD]
+                logger.info("Filtering below-floor cold-start", below_floor_count=below, floor=_cold_floor)
+            scored_results = [x for x in scored_results if x["similarity_score"] >= _cold_floor]
             if not scored_results:
-                logger.info("No cold-start results above floor", floor=RECOMMEND_MIN_SIMILARITY_COLD)
+                logger.info("No cold-start results above floor", floor=_cold_floor)
                 return []
             scored_results.sort(key=lambda x: x["similarity_score"], reverse=True)
 
@@ -379,16 +381,17 @@ class RecommendationService:
             final_score = self._compute_composite_score(target_payload, result, target_skills, result["score"], search_collection)
             result["final_score"] = final_score
 
-        below_floor_count = sum(1 for r in raw_results if r["final_score"] < RECOMMEND_MIN_SIMILARITY)
+        _floor = get_settings().RECOMMEND_MIN_SIMILARITY
+        below_floor_count = sum(1 for r in raw_results if r["final_score"] < _floor)
         if below_floor_count:
             logger.info(
                 "Filtering below-floor recommendations",
                 below_floor_count=below_floor_count,
-                floor=RECOMMEND_MIN_SIMILARITY,
+                floor=_floor,
             )
-        raw_results = [r for r in raw_results if r["final_score"] >= RECOMMEND_MIN_SIMILARITY]
+        raw_results = [r for r in raw_results if r["final_score"] >= _floor]
         if not raw_results:
-            logger.info("No results above floor", floor=RECOMMEND_MIN_SIMILARITY)
+            logger.info("No results above floor", floor=_floor)
             return []
         raw_results.sort(key=lambda r: r["final_score"], reverse=True)
 

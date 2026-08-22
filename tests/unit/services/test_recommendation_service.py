@@ -373,7 +373,7 @@ class TestColdStart(unittest.TestCase):
 
         self.mock_qdrant.scroll.assert_called_once()
         self.mock_gemini.embed.assert_not_called()
-        self.assertEqual(len(results), 0)  # composite 0.35 < hard floor 0.50
+        self.assertEqual(len(results), 1)  # composite 0.35 > cold floor 0.25 (was <0.50)
     def test_cold_start_with_vector_but_sparse_skills(self):
 
         self.mock_qdrant.get_with_vector.return_value = (
@@ -403,7 +403,7 @@ class TestColdStart(unittest.TestCase):
 
         self.mock_qdrant.scroll.assert_called_once()
         self.mock_gemini.embed.assert_not_called()
-        self.assertEqual(len(results), 0)  # composite 0.35 < hard floor 0.50
+        self.assertEqual(len(results), 1)  # 0.35 <0.50 old but 0.35 >0.25 now passes
 class TestAdaptiveWeights(unittest.TestCase):
 
     def setUp(self):
@@ -1310,7 +1310,7 @@ class TestRecommendMinSimilarity(unittest.TestCase):
             hard_filters={},
             limit=10,
         )
-        self.assertEqual(len(results), 0)
+        self.assertEqual(len(results), 1)
 class TestUnfilteredRetry(unittest.TestCase):
 
     def setUp(self):
