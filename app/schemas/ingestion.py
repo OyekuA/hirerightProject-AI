@@ -35,6 +35,7 @@ class ProfileData(BaseModel):
     total_years_experience: Optional[float] = None
     work_mode: Optional[str] = None
     headline: Optional[str] = None
+    skills: Optional[List[str]] = None
 
     @field_validator("employment_type")
     @classmethod
@@ -51,13 +52,15 @@ class ProfileData(BaseModel):
 
 class IngestCandidateRequest(BaseModel):
     candidate_id: int
-    cv_url: HttpUrl
+    cv_url: Optional[HttpUrl] = None
     profile_data: ProfileData
     callback_url: HttpUrl
 
     @field_validator("cv_url")
     @classmethod
-    def ensure_https(cls, v: HttpUrl) -> HttpUrl:
+    def ensure_https(cls, v: Optional[HttpUrl]) -> Optional[HttpUrl]:
+        if v is None:
+            return None
         if v.scheme != "https":
             raise ValueError("URL scheme must be HTTPS")
         return v
@@ -88,6 +91,7 @@ class JobMetadata(BaseModel):
     salary_currency: Optional[str] = None
     work_mode: Optional[str] = None
     remote_regions: Optional[List[str]] = None
+    required_skills: Optional[List[str]] = None
 
     @field_validator("employment_type")
     @classmethod

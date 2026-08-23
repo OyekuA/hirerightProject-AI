@@ -1,6 +1,7 @@
 
 
 import json
+import asyncio
 import unittest
 from unittest.mock import MagicMock, patch, ANY, AsyncMock
 
@@ -173,7 +174,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             )
 
         mock_gemini.generate.assert_called_once()
-        mock_gemini.embed.assert_called_once()
+        self.assertEqual(mock_gemini.embed.call_count, 2)  # profile vector + skills_vector
         mock_qdrant.upsert.assert_called_once()
         mock_qdrant.update_payload.assert_not_called()
         payload = mock_qdrant.upsert.call_args[0][3]
@@ -233,7 +234,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             )
 
         mock_gemini.generate.assert_called_once()
-        mock_gemini.embed.assert_called_once()
+        self.assertEqual(mock_gemini.embed.call_count, 2)  # profile vector + skills_vector
         mock_qdrant.upsert.assert_called_once()
         mock_qdrant.update_payload.assert_not_called()
         payload = mock_qdrant.upsert.call_args[0][3]
@@ -291,7 +292,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             )
 
         mock_gemini.generate.assert_called_once()
-        mock_gemini.embed.assert_called_once()
+        self.assertEqual(mock_gemini.embed.call_count, 2)  # profile vector + skills_vector
         mock_qdrant.upsert.assert_called_once()
         mock_qdrant.update_payload.assert_not_called()
         payload = mock_qdrant.upsert.call_args[0][3]
@@ -348,7 +349,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             )
 
         mock_gemini.generate.assert_called_once()
-        mock_gemini.embed.assert_called_once()
+        self.assertEqual(mock_gemini.embed.call_count, 2)  # profile vector + skills_vector
         mock_qdrant.upsert.assert_called_once()
         mock_qdrant.update_payload.assert_not_called()
         payload = mock_qdrant.upsert.call_args[0][3]
@@ -409,7 +410,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             )
 
         mock_gemini.generate.assert_called_once()
-        mock_gemini.embed.assert_called_once()
+        self.assertEqual(mock_gemini.embed.call_count, 2)  # profile vector + skills_vector
         mock_qdrant.upsert.assert_called_once()
         mock_qdrant.update_payload.assert_not_called()
         payload = mock_qdrant.upsert.call_args[0][3]
@@ -468,7 +469,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             )
 
         mock_gemini.generate.assert_called_once()
-        mock_gemini.embed.assert_called_once()
+        self.assertEqual(mock_gemini.embed.call_count, 2)  # profile vector + skills_vector
         mock_qdrant.upsert.assert_called_once()
         mock_qdrant.update_payload.assert_not_called()
         payload = mock_qdrant.upsert.call_args[0][3]
@@ -530,7 +531,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             )
 
         mock_gemini.generate.assert_called_once()
-        mock_gemini.embed.assert_called_once()
+        self.assertEqual(mock_gemini.embed.call_count, 2)  # profile vector + skills_vector
         mock_qdrant.upsert.assert_called_once()
         mock_qdrant.update_payload.assert_not_called()
         payload = mock_qdrant.upsert.call_args[0][3]
@@ -589,7 +590,7 @@ class TestIngestionHashDeduplication(unittest.IsolatedAsyncioTestCase):
             )
 
         mock_gemini.generate.assert_called_once()
-        mock_gemini.embed.assert_called_once()
+        self.assertEqual(mock_gemini.embed.call_count, 2)  # profile vector + skills_vector
         mock_qdrant.upsert.assert_called_once()
         mock_qdrant.update_payload.assert_not_called()
         payload = mock_qdrant.upsert.call_args[0][3]
@@ -1771,8 +1772,8 @@ class TestEmbedTextEnrichment(unittest.IsolatedAsyncioTestCase):
                 callback_client=mock_callback,
             )
 
-        mock_gemini.embed.assert_called_once()
-        text = mock_gemini.embed.call_args[0][0]
+        self.assertEqual(mock_gemini.embed.call_count, 2)  # profile vector + skills_vector
+        text = mock_gemini.embed.call_args_list[0][0][0]  # first call = profile/job vector
         self.assertIn("Job Title: Software Engineer", text)
         self.assertIn("Required Skills: Python, AWS", text)
         self.assertIn("Summary: Looking for a software engineer", text)
@@ -1827,7 +1828,7 @@ class TestEmbedTextEnrichment(unittest.IsolatedAsyncioTestCase):
                 callback_client=mock_callback,
             )
 
-        text = mock_gemini.embed.call_args[0][0]
+        text = mock_gemini.embed.call_args_list[0][0][0]  # first call = profile/job vector
         self.assertNotIn("Salary:", text)
         self.assertNotIn("Work Mode:", text)
         self.assertNotIn("Benefits:", text)
@@ -1880,8 +1881,8 @@ class TestEmbedTextEnrichment(unittest.IsolatedAsyncioTestCase):
                 callback_client=mock_callback,
             )
 
-        mock_gemini.embed.assert_called_once()
-        text = mock_gemini.embed.call_args[0][0]
+        self.assertEqual(mock_gemini.embed.call_count, 2)  # profile vector + skills_vector
+        text = mock_gemini.embed.call_args_list[0][0][0]  # first call = profile/job vector
         self.assertNotIn("Alice", text)
         self.assertNotIn("John Doe", text)
         self.assertIn("Role Headline: Engineer", text)
@@ -1934,3 +1935,163 @@ class TestJobMetadataAddonSchemaXor(unittest.TestCase):
         )
         self.assertIsNotNone(req.job_metadata)
         self.assertIsNone(req.job_id)
+
+class TestMergedSkillsAndProfileOnly(unittest.TestCase):
+
+    def setUp(self):
+        self.mock_qdrant = MagicMock()
+        self.mock_qdrant.get = MagicMock(return_value=None)
+        self.mock_qdrant.upsert = MagicMock()
+        self.mock_store = MagicMock()
+        self.mock_store.update = MagicMock()
+        self.mock_callback = MagicMock()
+        self.mock_callback.send = AsyncMock(return_value=True)
+
+    def _mock_llm(self, skills):
+        mock_gemini = MagicMock()
+        mock_gemini.generate = MagicMock(return_value=json.dumps({
+            "name": "John Doe",
+            "location": "Remote",
+            "experience_level": "Senior",
+            "industry": "Tech",
+            "employment_type": "full_time",
+            "skills": skills,
+            "past_roles": ["Engineer"],
+            "raw_profile_summary": "Experienced engineer."
+        }))
+        mock_gemini.embed = MagicMock(return_value=[0.1] * 768)
+        return mock_gemini
+
+    def test_merged_skills_union_be_passed_plus_extracted(self):
+        """BE-passed skills + extracted skills merge as union, deduped, sorted for embed."""
+        mock_gemini = self._mock_llm(["Python", "Docker"])
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_fetch.return_value = "CV text"
+            mock_truncate.side_effect = lambda x: x
+            asyncio.run(run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={
+                    "name": "John",
+                    "location": "Remote",
+                    "experience_level": "Senior",
+                    "industry": "Tech",
+                    "employment_type": "full_time",
+                    "candidate_version": 1,
+                    "skills": ["Python", "AWS"],  # BE-passed
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_123",
+                qdrant=self.mock_qdrant,
+                llm=mock_gemini,
+                store=self.mock_store,
+                callback_client=self.mock_callback,
+            ))
+        payload = self.mock_qdrant.upsert.call_args[0][3]
+        # union: Python, AWS (BE) + Python, Docker (extracted) -> dedupe
+        self.assertEqual(sorted(payload["skills"]), ["AWS", "Docker", "Python"])
+        # skills embed receives SORTED joined list (deterministic)
+        skills_call = mock_gemini.embed.call_args_list[1][0][0]
+        self.assertEqual(skills_call, "AWS, Docker, Python")
+        # skills_vector stored
+        self.assertIsNotNone(payload["skills_vector"])
+
+    def test_merged_skills_dedupe_case_insensitive(self):
+        mock_gemini = self._mock_llm(["python", "Docker"])
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_fetch.return_value = "CV text"
+            mock_truncate.side_effect = lambda x: x
+            asyncio.run(run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={
+                    "name": "John",
+                    "location": "Remote",
+                    "experience_level": "Senior",
+                    "industry": "Tech",
+                    "employment_type": "full_time",
+                    "candidate_version": 1,
+                    "skills": ["Python"],  # case-different from extracted "python"
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_123",
+                qdrant=self.mock_qdrant,
+                llm=mock_gemini,
+                store=self.mock_store,
+                callback_client=self.mock_callback,
+            ))
+        payload = self.mock_qdrant.upsert.call_args[0][3]
+        # BE-passed "Python" seen first -> casing kept; extracted "python" deduped away
+        self.assertEqual(sorted(payload["skills"]), ["Docker", "Python"])
+
+    def test_profile_only_ingestion_no_cv_url(self):
+        """Profile-only (cv_url=None) must not crash; uses marker text, stores skills_vector."""
+        mock_gemini = self._mock_llm(["Emergency response", "Clinical leadership"])
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_truncate.side_effect = lambda x: x
+            asyncio.run(run_candidate_ingestion(
+                candidate_id=123,
+                cv_url=None,  # profile-only
+                profile_data={
+                    "name": "Maria",
+                    "location": "Lagos, Nigeria",
+                    "experience_level": "senior",
+                    "industry": "healthcare",
+                    "employment_type": "full_time",
+                    "candidate_version": 1,
+                    "headline": "Senior Registered Nurse specialising in emergency response",
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_123",
+                qdrant=self.mock_qdrant,
+                llm=mock_gemini,
+                store=self.mock_store,
+                callback_client=self.mock_callback,
+            ))
+        # fetch must NOT be called (no CV)
+        mock_fetch.assert_not_called()
+        # extraction ran with the profile-only marker text
+        generate_call = mock_gemini.generate.call_args[0][0]
+        self.assertIn("No CV provided", generate_call)
+        payload = self.mock_qdrant.upsert.call_args[0][3]
+        self.assertIsNotNone(payload["skills_vector"])
+
+    def test_skills_vector_embed_failure_degrades(self):
+        """skills_vector embed failure must NOT fail ingest (debate F-5)."""
+        mock_gemini = self._mock_llm(["Python"])
+        # second embed (skills_vector, exact text "Python") raises; first (profile vector) works
+        def flaky_embed(text):
+            if text == "Python":
+                raise Exception("embedding breaker open")
+            return [0.1] * 768
+
+        mock_gemini.embed.side_effect = flaky_embed
+        with patch("app.services.ingestion_service.fetch_and_parse_cv") as mock_fetch, \
+             patch("app.services.ingestion_service.truncate_to_prompt_cap") as mock_truncate:
+            mock_fetch.return_value = "CV text"
+            mock_truncate.side_effect = lambda x: x
+            asyncio.run(run_candidate_ingestion(
+                candidate_id=123,
+                cv_url="https://example.com/cv.pdf",
+                profile_data={
+                    "name": "John",
+                    "location": "Remote",
+                    "experience_level": "Senior",
+                    "industry": "Tech",
+                    "employment_type": "full_time",
+                    "candidate_version": 1,
+                },
+                callback_url="https://example.com/callback",
+                event_id="evt_123",
+                qdrant=self.mock_qdrant,
+                llm=mock_gemini,
+                store=self.mock_store,
+                callback_client=self.mock_callback,
+            ))
+        # ingest still succeeded (upsert called) with skills_vector=None
+        self.mock_qdrant.upsert.assert_called_once()
+        payload = self.mock_qdrant.upsert.call_args[0][3]
+        self.assertIsNone(payload["skills_vector"])

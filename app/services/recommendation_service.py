@@ -1,6 +1,5 @@
 import concurrent.futures
 import math
-import re
 import numpy as np
 import structlog
 from concurrent.futures import wait
@@ -23,9 +22,6 @@ POOL_RANK_CONCURRENCY = 5
 POOL_RANK_TIMEOUT_SECONDS = 30
 POOL_RANK_DEFAULT_FIT_SCORE = 0
 
-RECOMMEND_MIN_SIMILARITY = 0.40
-RECOMMEND_MIN_SIMILARITY_COLD = 0.25
-
 
 class RecommendationService:
 
@@ -40,21 +36,26 @@ class RecommendationService:
         self.cache = cache
 
     @staticmethod
-    def _normalize_skill(skill: str) -> str:
-        s = skill.lower().strip()
-        s = re.sub(r'\.?js$', '', s)
-        s = s.replace('-', '').replace(' ', '')
-        return s
+    def _skill_cosine(vec_a, vec_b) -> float:
+        """Cosine similarity between two skills_vector payloads. Missing -> 0.0."""
+        if vec_a is None or vec_b is None:
+            return 0.0
+        a = np.asarray(vec_a, dtype=np.float32)
+        b = np.asarray(vec_b, dtype=np.float32)
+        na = np.linalg.norm(a)
+        nb = np.linalg.norm(b)
+        if na == 0.0 or nb == 0.0:
+            return 0.0
+        return float(np.dot(a, b) / (na * nb))
 
     @staticmethod
-    def _jaccard_similarity(list_a, list_b):
-        if not list_a and not list_b:
+    def _skill_overlap_scaled(cosine: float, settings) -> float:
+        """Rescale dense cosine into the skill-term range (debate F-6)."""
+        lo = settings.RECOMMEND_SKILL_RESCALE_LO
+        hi = settings.RECOMMEND_SKILL_RESCALE_HI
+        if hi <= lo:
             return 0.0
-        set_a = {RecommendationService._normalize_skill(s) for s in list_a if s.strip()}
-        set_b = {RecommendationService._normalize_skill(s) for s in list_b if s.strip()}
-        intersection = len(set_a & set_b)
-        union = len(set_a | set_b)
-        return intersection / union if union > 0 else 0.0
+        return max(0.0, min(1.0, (cosine - lo) / (hi - lo)))
 
     @staticmethod
     def _canonicalize_level(level: str) -> str:
@@ -88,13 +89,14 @@ class RecommendationService:
             limit=limit,
         )
 
-    def _compute_composite_score(self, target_payload, result, target_skills, vector_score, collection=None):
-        if collection is not None:
-            skill_field = self._resolve_skill_field(collection)
-            result_skills = [s.lower().strip() for s in result.get(skill_field, [])]
-        else:
-            result_skills = [s.lower().strip() for s in (result.get("skills", []) or result.get("required_skills", []))]
-        skill_overlap = self._jaccard_similarity(target_skills, result_skills)
+    def _compute_composite_score(self, target_payload, result, vector_score, collection=None):
+        settings = get_settings()
+        # semantic skill overlap: cosine of skills_vector payloads (missing -> 0.0)
+        skill_cosine = self._skill_cosine(
+            target_payload.get("skills_vector"),
+            result.get("skills_vector"),
+        )
+        skill_overlap = self._skill_overlap_scaled(skill_cosine, settings)
         target_city = target_payload.get("location", "").split(",")[0].strip().lower()
         result_city = result.get("location", "").split(",")[0].strip().lower()
         target_remote = resolve_work_mode(target_payload) in ("remote", "hybrid")
@@ -114,22 +116,14 @@ class RecommendationService:
         else:
             level_match = 0.0
         employment_match = 1.0 if _extract_employment_category(target_payload.get("employment_type", "")) == _extract_employment_category(result.get("employment_type", "")) else 0.0
-        scaled_vector = (vector_score - 0.50) / 0.40
-        scaled_vector = max(0.0, min(1.0, scaled_vector))
+        # window-free: raw cosine directly, never zeroed
         return (
-            0.55 * scaled_vector
-            + 0.35 * skill_overlap
-            + 0.04 * location_match
-            + 0.04 * level_match
-            + 0.02 * employment_match
+            settings.RECOMMEND_WEIGHT_VECTOR * vector_score
+            + settings.RECOMMEND_WEIGHT_SKILL * skill_overlap
+            + settings.RECOMMEND_WEIGHT_LOCATION * location_match
+            + settings.RECOMMEND_WEIGHT_LEVEL * level_match
+            + settings.RECOMMEND_WEIGHT_EMPLOYMENT * employment_match
         )
-
-    @staticmethod
-    def _resolve_skill_field(collection: str) -> str:
-        if collection == CANDIDATES_COLLECTION:
-            return "skills"
-        else:
-            return "required_skills"
 
     def _compute_weights(self, recent_searches, recent_clicks, recent_saves, recent_positive_outcomes):
         intent_signals = len(recent_searches) + len(recent_clicks) + len(recent_saves) + len(recent_positive_outcomes)
@@ -156,10 +150,56 @@ class RecommendationService:
         if hard_filters is None:
             hard_filters = {}
 
-        recent_searches = behavioral_signals.get("recent_searches", [])
-        recent_clicks = behavioral_signals.get("recent_clicks", [])
-        recent_saves = behavioral_signals.get("recent_saves", [])
-        recent_positive_outcomes = behavioral_signals.get("recent_positive_outcomes", [])
+        recent_searches = behavioral_signals.get("recent_searches", []) or []
+        recent_clicks = behavioral_signals.get("recent_clicks", []) or []
+        recent_saves = behavioral_signals.get("recent_saves", []) or []
+        recent_positive_outcomes = behavioral_signals.get("recent_positive_outcomes", []) or []
+
+        # --- behavioral signal caps (defense in depth) ---
+        settings = get_settings()
+        max_searches = settings.RECOMMEND_MAX_SEARCHES
+        max_cooc = settings.RECOMMEND_MAX_COOC_IDS
+        dropped_signals = 0
+
+        if len(recent_searches) > max_searches:
+            dropped = len(recent_searches) - max_searches
+            dropped_signals += dropped
+            recent_searches = recent_searches[-max_searches:]
+            logger.info("Truncated behavioral signals", dropped_signals=dropped, field="recent_searches", kept=len(recent_searches))
+
+        total_cooc = len(recent_clicks) + len(recent_saves) + len(recent_positive_outcomes)
+        if total_cooc > max_cooc:
+            dropped_cooc = total_cooc - max_cooc
+            dropped_signals += dropped_cooc
+            # Keep most recent cooc ids across the three lists (combined tail).
+            # Build ordered combined sequence clicks -> saves -> positive_outcomes, keep last max_cooc.
+            # Reconstruct truncated lists preserving relative order/tail.
+            # clicks are dicts {"id": int}, saves/pos are ints.
+            combined = []
+            for c in recent_clicks:
+                combined.append(("click", c))
+            for s in recent_saves:
+                combined.append(("save", s))
+            for p in recent_positive_outcomes:
+                combined.append(("pos", p))
+            kept = combined[-max_cooc:]
+            new_clicks = []
+            new_saves = []
+            new_pos = []
+            for kind, val in kept:
+                if kind == "click":
+                    new_clicks.append(val)
+                elif kind == "save":
+                    new_saves.append(val)
+                else:
+                    new_pos.append(val)
+            recent_clicks = new_clicks
+            recent_saves = new_saves
+            recent_positive_outcomes = new_pos
+            logger.info("Truncated behavioral signals", dropped_signals=dropped_cooc, field="cooc_ids", kept=len(kept))
+
+        if dropped_signals:
+            logger.info("Behavioral signals truncated", dropped_signals=dropped_signals, max_searches=max_searches, max_cooc_ids=max_cooc)
 
         logger.info(
             "Generating recommendations",
@@ -211,9 +251,6 @@ class RecommendationService:
                 collection=target_collection,
             )
 
-        target_skills = [s.lower().strip() for s in target_payload.get(self._resolve_skill_field(target_collection), [])]
-
-
         if profile_vec is None:
             filter_obj = self._build_filter(hard_filters)
 
@@ -244,26 +281,70 @@ class RecommendationService:
                     search_collection, effective_limit * 5, filter_obj, hard_filters
                 )
 
+            fetched = len(raw_results)
+            raw_gated = 0  # not applied on cold-start by design
+            skill_gated = 0
+            level_gated = 0
+            extraction_degraded = 0
+
             scored_results = []
             for result in raw_results:
                 result_id = result["_point_id"]
+                vector_score = result.get("score", 0.0) or 0.0
 
                 similarity_score = self._compute_composite_score(
-                    target_payload, result, target_skills, result.get("score", 0.0), search_collection
+                    target_payload, result, vector_score, search_collection
                 )
+
+                # --- gates (cold-start: SKILL + LEVEL only, no RAW) ---
+                # skill gate (semantic — cosine of skills_vector payloads)
+                target_vec = target_payload.get("skills_vector")
+                result_vec = result.get("skills_vector")
+                target_has_vec = target_vec is not None
+                result_has_vec = result_vec is not None
+                skill_cosine = self._skill_cosine(target_vec, result_vec)
+
+                if target_has_vec and result_has_vec:
+                    if skill_cosine < settings.SKILL_COSINE_GATE:
+                        skill_gated += 1
+                        logger.debug("SKILL_GATE drop", raw_cosine=vector_score, skill_cosine=skill_cosine, target_id=target_id, result_id=result_id)
+                        continue
+                elif target_has_vec ^ result_has_vec:
+                    extraction_degraded += 1
+                    logger.debug("extraction_degraded", reason="one_side_missing_skills_vector", target_id=target_id, result_id=result_id)
+                elif not target_has_vec and not result_has_vec:
+                    extraction_degraded += 1
+                    logger.debug("extraction_degraded", reason="both_missing_skills_vector", target_id=target_id, result_id=result_id)
+
+                # level gate
+                target_level_raw = target_payload.get("experience_level", "") or ""
+                result_level_raw = result.get("experience_level", "") or ""
+                target_canon = self._canonicalize_level(target_level_raw.lower().strip().replace("-", " "))
+                result_canon = self._canonicalize_level(result_level_raw.lower().strip().replace("-", " "))
+                target_in = target_canon in EXPERIENCE_LEVEL_LADDER
+                result_in = result_canon in EXPERIENCE_LEVEL_LADDER
+                if target_in and result_in:
+                    idx_a = EXPERIENCE_LEVEL_LADDER.index(target_canon)
+                    idx_b = EXPERIENCE_LEVEL_LADDER.index(result_canon)
+                    if abs(idx_a - idx_b) > settings.LEVEL_GATE_DISTANCE:
+                        level_gated += 1
+                        logger.debug("LEVEL_GATE drop", target_id=target_id, result_id=result_id, target_level=target_canon, result_level=result_canon, distance=abs(idx_a - idx_b))
+                        continue
+                else:
+                    # canonicalization fallback: no gate, but log for observability
+                    if not target_in or not result_in:
+                        logger.debug("LEVEL_GATE fallback", target_id=target_id, result_id=result_id, target_level_raw=target_level_raw, result_level_raw=result_level_raw, target_canon=target_canon, result_canon=result_canon)
 
                 scored_results.append({
                     "id": result_id,
                     "similarity_score": similarity_score,
                     "_raw": result,
                 })
-            _cold_floor = get_settings().RECOMMEND_MIN_SIMILARITY_COLD
-            below = sum(1 for x in scored_results if x["similarity_score"] < _cold_floor)
-            if below:
-                logger.info("Filtering below-floor cold-start", below_floor_count=below, floor=_cold_floor)
-            scored_results = [x for x in scored_results if x["similarity_score"] >= _cold_floor]
+
+            # gate telemetry: only log once per request; the final line (below) carries the real returned count
             if not scored_results:
-                logger.info("No cold-start results above floor", floor=_cold_floor)
+                logger.info("Recommendation gates", target_id=target_id, fetched=fetched, raw_gated=raw_gated, skill_gated=skill_gated, level_gated=level_gated, extraction_degraded=extraction_degraded, returned=0)
+                logger.info("No cold-start results after gates", target_id=target_id)
                 return []
             scored_results.sort(key=lambda x: x["similarity_score"], reverse=True)
 
@@ -290,6 +371,8 @@ class RecommendationService:
                 target_id=target_id,
                 result_count=len(output),
             )
+            # single gates telemetry line per request (cold path), returned = actual response length
+            logger.info("Recommendation gates", target_id=target_id, fetched=fetched, raw_gated=raw_gated, skill_gated=skill_gated, level_gated=level_gated, extraction_degraded=extraction_degraded, returned=len(output))
             return output
 
         intent_weight, cooccurrence_weight, peer_weight, profile_weight = self._compute_weights(
@@ -376,22 +459,68 @@ class RecommendationService:
             search_collection, query_vec, effective_limit * 5, filter_obj, hard_filters
         )
 
+        fetched = len(raw_results)
+        raw_gated = 0
+        skill_gated = 0
+        level_gated = 0
+        extraction_degraded = 0
 
+        gated_results = []
         for result in raw_results:
-            final_score = self._compute_composite_score(target_payload, result, target_skills, result["score"], search_collection)
-            result["final_score"] = final_score
+            vector_score = result.get("score", 0.0) or 0.0
+            # compute composite before gates (gates run after composite, before sort)
+            final_score = self._compute_composite_score(target_payload, result, vector_score, search_collection)
 
-        _floor = get_settings().RECOMMEND_MIN_SIMILARITY
-        below_floor_count = sum(1 for r in raw_results if r["final_score"] < _floor)
-        if below_floor_count:
-            logger.info(
-                "Filtering below-floor recommendations",
-                below_floor_count=below_floor_count,
-                floor=_floor,
-            )
-        raw_results = [r for r in raw_results if r["final_score"] >= _floor]
+            # --- RAW gate ---
+            if vector_score < settings.RAW_COSINE_GATE:
+                raw_gated += 1
+                logger.debug("RAW_GATE drop", target_id=target_id, result_id=result.get("_point_id"), raw_cosine=vector_score, gate=settings.RAW_COSINE_GATE)
+                continue
+
+            # --- SKILL gate (three-state, semantic) ---
+            target_vec = target_payload.get("skills_vector")
+            result_vec = result.get("skills_vector")
+            target_has_vec = target_vec is not None
+            result_has_vec = result_vec is not None
+            skill_cosine = self._skill_cosine(target_vec, result_vec)
+            if target_has_vec and result_has_vec:
+                if skill_cosine < settings.SKILL_COSINE_GATE:
+                    skill_gated += 1
+                    logger.debug("SKILL_GATE drop", raw_cosine=vector_score, skill_cosine=skill_cosine, target_id=target_id, result_id=result.get("_point_id"))
+                    continue
+            elif target_has_vec ^ result_has_vec:
+                extraction_degraded += 1
+                logger.debug("extraction_degraded", reason="one_side_missing_skills_vector", target_id=target_id, result_id=result.get("_point_id"))
+            elif not target_has_vec and not result_has_vec:
+                extraction_degraded += 1
+                logger.debug("extraction_degraded", reason="both_missing_skills_vector", target_id=target_id, result_id=result.get("_point_id"))
+
+            # --- LEVEL gate ---
+            target_level_raw = target_payload.get("experience_level", "") or ""
+            result_level_raw = result.get("experience_level", "") or ""
+            target_canon = self._canonicalize_level(target_level_raw.lower().strip().replace("-", " "))
+            result_canon = self._canonicalize_level(result_level_raw.lower().strip().replace("-", " "))
+            target_in = target_canon in EXPERIENCE_LEVEL_LADDER
+            result_in = result_canon in EXPERIENCE_LEVEL_LADDER
+            if target_in and result_in:
+                idx_a = EXPERIENCE_LEVEL_LADDER.index(target_canon)
+                idx_b = EXPERIENCE_LEVEL_LADDER.index(result_canon)
+                if abs(idx_a - idx_b) > settings.LEVEL_GATE_DISTANCE:
+                    level_gated += 1
+                    logger.debug("LEVEL_GATE drop", target_id=target_id, result_id=result.get("_point_id"), target_level=target_canon, result_level=result_canon, distance=abs(idx_a - idx_b))
+                    continue
+            else:
+                if not target_in or not result_in:
+                    logger.debug("LEVEL_GATE fallback", target_id=target_id, result_id=result.get("_point_id"), target_level_raw=target_level_raw, result_level_raw=result_level_raw, target_canon=target_canon, result_canon=result_canon)
+
+            result["final_score"] = final_score
+            gated_results.append(result)
+
+        raw_results = gated_results
+
         if not raw_results:
-            logger.info("No results above floor", floor=_floor)
+            logger.info("Recommendation gates", target_id=target_id, fetched=fetched, raw_gated=raw_gated, skill_gated=skill_gated, level_gated=level_gated, extraction_degraded=extraction_degraded, returned=0)
+            logger.info("No results after gates", target_id=target_id, fetched=fetched, raw_gated=raw_gated, skill_gated=skill_gated, level_gated=level_gated)
             return []
         raw_results.sort(key=lambda r: r["final_score"], reverse=True)
 
@@ -458,6 +587,8 @@ class RecommendationService:
             rec_type=rec_type,
             result_count=len(output),
         )
+        # single gates telemetry line per request, returned = actual response length
+        logger.info("Recommendation gates", target_id=target_id, fetched=fetched, raw_gated=raw_gated, skill_gated=skill_gated, level_gated=level_gated, extraction_degraded=extraction_degraded, returned=len(output))
         return output
 
     def rank_pool(

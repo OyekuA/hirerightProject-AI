@@ -6,6 +6,9 @@ from typing import Any
 def mask_candidate_for_scoring(candidate_payload: dict) -> dict:
     masked = copy.deepcopy(candidate_payload)
     masked.pop("name", None)
+    # skills_vector is a 1536-float matching artifact (~21KB JSON); it must
+    # never reach an LLM prompt (blows the prompt cap and breaks scoring).
+    masked.pop("skills_vector", None)
     location = masked.get("location")
     if isinstance(location, str) and "," in location:
         masked["location"] = location.strip().rsplit(",", 1)[-1].strip()

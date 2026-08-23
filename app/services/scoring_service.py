@@ -274,7 +274,9 @@ class ScoringService:
     ) -> dict:
         masked_candidate_payload = mask_candidate_for_scoring(candidate_payload)
         candidate_payload_json = json.dumps(masked_candidate_payload, indent=2)
-        job_payload_json = json.dumps(job_payload, indent=2)
+        # job payload also carries skills_vector (~21KB); strip it before the prompt
+        masked_job_payload = mask_candidate_for_scoring(job_payload)
+        job_payload_json = json.dumps(masked_job_payload, indent=2)
         prompt = SCORING_FIT_PROMPT_TEMPLATE.format(
             candidate_id=candidate_id,
             candidate_version=candidate_version,

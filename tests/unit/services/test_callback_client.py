@@ -34,7 +34,7 @@ async def test_send_with_extra_payload(client: CallbackClient):
     mock_async_client.__aenter__.return_value = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_resp)
 
-    with patch("httpx.AsyncClient", return_value=mock_async_client):
+    with patch("httpx.AsyncClient", return_value=mock_async_client), patch("app.services.callback_client.validate_callback_url"):
         result = await client.send(
             callback_url="https://example.com/callback",
             event_id="evt-1",
@@ -66,7 +66,7 @@ async def test_send_without_extra_payload_unaffected(client: CallbackClient):
     mock_async_client.__aenter__.return_value = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_resp)
 
-    with patch("httpx.AsyncClient", return_value=mock_async_client):
+    with patch("httpx.AsyncClient", return_value=mock_async_client), patch("app.services.callback_client.validate_callback_url"):
         result = await client.send(
             callback_url="https://example.com/callback",
             event_id="evt-2",

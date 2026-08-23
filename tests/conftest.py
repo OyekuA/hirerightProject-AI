@@ -90,6 +90,19 @@ def mock_get_settings():
     mock.RECALL_AI_REGION = "us-east-1"
     mock.RECALL_AI_WEBHOOK_SECRET = "test-webhook-secret"
     mock.INTERVIEW_SESSION_STORE_PATH = "/tmp/test_interview_sessions"
+
+    mock.RECOMMEND_WEIGHT_VECTOR = 0.55
+    mock.RECOMMEND_WEIGHT_SKILL = 0.35
+    mock.RECOMMEND_WEIGHT_LOCATION = 0.04
+    mock.RECOMMEND_WEIGHT_LEVEL = 0.04
+    mock.RECOMMEND_WEIGHT_EMPLOYMENT = 0.02
+    mock.RAW_COSINE_GATE = 0.30
+    mock.SKILL_COSINE_GATE = 0.40
+    mock.RECOMMEND_SKILL_RESCALE_LO = 0.30
+    mock.RECOMMEND_SKILL_RESCALE_HI = 1.0
+    mock.LEVEL_GATE_DISTANCE = 4
+    mock.RECOMMEND_MAX_SEARCHES = 5
+    mock.RECOMMEND_MAX_COOC_IDS = 20
     return mock
 
 @pytest.fixture(scope="session", autouse=True)
@@ -106,6 +119,7 @@ def patch_settings():
         "app.clients.dependencies.get_settings",
         "app.clients.qdrant.get_settings",
         "app.services.scoring_service.get_settings",
+        "app.services.recommendation_service.get_settings",
         "app.services.screening_service.get_settings",
         "app.utils.ingestion.get_settings",
         "app.routers.interview_webhook.get_settings",

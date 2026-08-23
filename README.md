@@ -245,6 +245,18 @@ Full table sourced from [`.env.example`](.env.example):
 | `DOCS_PASSWORD` | Optional | _(empty)_ | HTTP Basic Auth password for Swagger UI (only enforced when `ENABLE_DOCS=true` and both credentials are set) |
 | `DECISION_FIT_WEIGHT` | Optional | `0.40` | Weight applied to the fit score in the Decision Engine's combined score |
 | `DECISION_ASSESSMENT_WEIGHT` | Optional | `0.60` | Weight applied to the assessment score in the Decision Engine's combined score |
+| `RECOMMEND_WEIGHT_VECTOR` | Optional | `0.55` | Composite weight for the raw vector cosine in `/recommend` ranking |
+| `RECOMMEND_WEIGHT_SKILL` | Optional | `0.35` | Composite weight for the semantic skill-cosine term in `/recommend` ranking (rescaled: `(cosine − 0.30)/0.70`) |
+| `RECOMMEND_WEIGHT_LOCATION` | Optional | `0.04` | Composite weight for location match in `/recommend` ranking |
+| `RECOMMEND_WEIGHT_LEVEL` | Optional | `0.04` | Composite weight for level match in `/recommend` ranking |
+| `RECOMMEND_WEIGHT_EMPLOYMENT` | Optional | `0.02` | Composite weight for employment-type match in `/recommend` ranking |
+| `RAW_COSINE_GATE` | Optional | `0.30` | Warm-path absolute gate: results with raw vector cosine below this are dropped |
+| `SKILL_COSINE_GATE` | Optional | `0.40` | Semantic skill gate: results whose `skills_vector` cosine vs target is below this are dropped (both sides must have a vector; else `extraction_degraded`, no drop) |
+| `RECOMMEND_SKILL_RESCALE_LO` | Optional | `0.30` | Lower bound of the skill-cosine rescale window for the composite skill term |
+| `RECOMMEND_SKILL_RESCALE_HI` | Optional | `1.0` | Upper bound of the skill-cosine rescale window |
+| `LEVEL_GATE_DISTANCE` | Optional | `4` | Level gate: results more than this many ladder rungs from the target are dropped |
+| `RECOMMEND_MAX_SEARCHES` | Optional | `5` | Behavioral-signal cap: most recent N searches embedded per request |
+| `RECOMMEND_MAX_COOC_IDS` | Optional | `20` | Behavioral-signal cap: total co-occurrence ids (clicks+saves+positive outcomes) per request |
 | `RECALL_AI_API_KEY` | Required | _(none)_ | Recall.ai API key used by `RecallAIClient` for bot injection/transcript calls |
 | `RECALL_AI_REGION` | Optional | `us-east-1` | Recall.ai region — determines API host (`us-east-1`, `us-west-2`, `eu-central-1`, `ap-northeast-1`) |
 | `RECALL_AI_WEBHOOK_SECRET` | Required | _(none)_ | Svix secret used to verify Recall.ai webhook signatures |
@@ -290,7 +302,7 @@ Rate limits are enforced **per API key** (SHA‑256 fingerprinted). Endpoints th
 | `POST /assessment/generate` | 500/day | 10/minute | 50/day per entity | LLM‑cost (generation) |
 | `POST /assessment/grade` | 1000/day | 30/minute | 100/day per entity | LLM‑cost (generation) |
 | `POST /calculate-fit` | 1000/hour | 30/minute | 100/hour per candidate | LLM‑cost (generation) |
-| `POST /recommend` | 500/day | 20/minute | 50/hour per target | LLM‑cost (generation) |
+| `POST /recommend` | 5000/day | 100/minute | 300/hour per target | LLM‑free hot path (intent embed capped 5) |
 | `POST /recommend/pool` | 100/hour | 10/minute | — | LLM‑cost (generation) |
 | `POST /analyze-career-paths` | 500/day | 10/minute | 20/day per candidate | LLM‑cost (generation) |
 | `POST /generate-jd` | 500/day | 10/minute | 50/day per job | LLM‑cost (generation) |
@@ -471,11 +483,14 @@ remote | hybrid | onsite
 ## API Reference
 
 ### `POST /api/ai/ingest‑candidate`
-- **Purpose:** Asynchronously ingest a candidate CV from a cloud URL into the vector store.
-- **Request:** `candidate_id` (int), `cv_url` (HTTPS URL to PDF), `callback_url` (HTTP or HTTPS), `profile_data` (object):
+- **Purpose:** Asynchronously ingest a candidate into the vector store — **with or without a CV**.
+- **Request:** `candidate_id` (int), `cv_url` (optional HTTPS URL to PDF), `callback_url` (HTTP or HTTPS), `profile_data` (object):
   - `name`, `location`, `experience_level`, `industry`, `employment_type` (canonical values — see [Canonical Enum Values](#canonical-enum-values-contract)), `candidate_version` (int)
   - `work_mode` (optional, canonical: `remote|hybrid|onsite`) — the candidate's preference
   - `total_years_experience` (optional float), `data_source` (optional string)
+  - `headline` (optional string) — professional headline or current role title
+  - `skills` (optional array of strings) — BE-passed skills; **merged (union, deduped) with LLM-extracted skills** and embedded into `skills_vector`
+- **Profile-only (no `cv_url`):** the LLM extracts fields from the profile data itself (headline, industry, experience level, experience descriptions, BE-passed skills). Never send `cv_url` when the user has no CV — sending the literal string `"None"` is rejected/ignored.
 - **Response:** `202 Accepted` — `{"event_id": "<uuid>"}`
 - **Rate limit:** 500/day, 10/minute, 20/day per candidate
 - **curl:** `curl -X POST http://localhost/api/ai/ingest-candidate -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"candidate_id": 123, "cv_url": "https://example.com/cv.pdf", "profile_data": {"name": "A", "location": "Lagos, Nigeria", "experience_level": "Senior Level", "industry": "fintech", "employment_type": "full_time", "candidate_version": 1, "work_mode": "remote"}, "callback_url": "https://php-backend.example.com/callback"}'`
@@ -486,7 +501,7 @@ remote | hybrid | onsite
 - **Request:** `job_id` (int), `jd_text` (string), `metadata` (object), `callback_url` (HTTP or HTTPS)
 - **`metadata` fields:**
   - Required: `title`, `location`, `experience_level`, `industry`, `employment_type` (canonical values)
-  - Optional: `company_name`, `about`, `work_mode` (canonical), `remote_regions` (array of strings, e.g. `["Worldwide", "EMEA"]`), `description`, `requirements`, `responsibilities`, `benefits`, `salary_min` (number), `salary_max` (number), `salary_currency` (string, e.g. `"NGN"`), `job_version` (int, **defaults to 1**)
+  - Optional: `company_name`, `about`, `work_mode` (canonical), `remote_regions` (array of strings, e.g. `["Worldwide", "EMEA"]`), `description`, `requirements`, `responsibilities`, `benefits`, `salary_min` (number), `salary_max` (number), `salary_currency` (string, e.g. `"NGN"`), `job_version` (int, **defaults to 1**), `required_skills` (optional array of strings — BE-passed; **merged, deduped with LLM-extracted `required_skills`** and embedded into the job's `skills_vector`)
   - The optional content fields (description/requirements/responsibilities/benefits/salary/work_mode/remote_regions) are stored in the vector payload, enrich the job's embedding, and feed JD generation and scoring context.
 - **Response:** `202 Accepted` — `{"event_id": "<uuid>"}`
 - **Rate limit:** 200/day, 10/minute, 20/day per job
@@ -503,16 +518,17 @@ remote | hybrid | onsite
 ### `DELETE /api/ai/candidates/{candidate_id}`
 - **Purpose:** Remove a candidate's vector from Qdrant and perform a **GDPR cascade** — after deleting from Qdrant and purging cache entries, calls `InterviewSessionStore.get_all_by_candidate_id(candidate_id)` and deletes every matching interview session file.
 - **Request:** Path param `candidate_id` (int)
-- **Response:** `200 OK` — `{"deleted": true}` or `404` if not found
+- **Response:** `200 OK` — `{"deleted": true}` (idempotent; deleting a missing id returns 200)
 - **Rate limit:** None (no LLM call)
-- **Note:** This cascade is **on-demand only**, executed synchronously within the same request when the caller invokes this DELETE — there is no scheduled/automatic background purge job.
+- **Note:** This cascade is **on-demand only**, executed synchronously within the same request when the caller invokes this DELETE — there is no scheduled/automatic background purge job. DELETE is idempotent — retries and double-deletes are harmless.
 - **curl:** `curl -X DELETE http://localhost/api/ai/candidates/123 -H "X-API-Key: $API_KEY"`
 
 ### `DELETE /api/ai/jobs/{job_id}`
 - **Purpose:** Remove a job's vector from Qdrant.
 - **Request:** Path param `job_id` (int)
-- **Response:** `200 OK` — `{"deleted": true}` or `404` if not found
+- **Response:** `200 OK` — `{"deleted": true}` (idempotent; deleting a missing id returns 200)
 - **Rate limit:** None (no LLM call)
+- **Note:** DELETE is idempotent — retries and double-deletes return 200.
 - **curl:** `curl -X DELETE http://localhost/api/ai/jobs/456 -H "X-API-Key: $API_KEY"`
 
 ### `GET /api/ai/ingestion‑status`
@@ -601,11 +617,17 @@ remote | hybrid | onsite
 
 ### `POST /api/ai/recommend`
 - **Purpose:** Return a ranked list of job or candidate recommendations for a target profile.
-- **Request:** `type` (`"jobs"|"candidates"`), `target_id` (int), `target_version` (int), `behavioral_signals` (object — `recent_searches` (list[str]), `recent_clicks` (list[`{id: int, dwell_time_seconds: int}`]), `recent_saves` (list[int]), `recent_positive_outcomes` (list[int])), `hard_filters` (dict), `force_refresh` (bool), `limit` (int, max 50)
-- **Response:** `{"results": [{"id": int, "similarity_score": float}, ...]}`
-- **Note:** **Breaking change:** `llm_score` has been removed from the response (previously `int|null` per result). The field is absent — not `null` — so clients must guard `result.llm_score ?? null` or remove reads. Internally `llm_score` remains cached for `calculate-fit` but is not exposed via `/recommend`. **Hard floor:** candidates below a composite `similarity_score` of **0.50** (`RECOMMEND_MIN_SIMILARITY` in `recommendation_service.py`) are **dropped, not top-upped** — no job > wrong job (calibrated on live data: good matches 0.55–0.79, noise 0.40–0.50). If nothing clears the floor the response is `[]`. The same hard floor applies to the cold-start path (missing target vector). Behavioral signals activate at low levels: intent blends in from a single recent search, co-occurrence from a single save or click. Hard filters (`hard_filters`) are exact-match; if they exclude every candidate the request **retries once unfiltered**. Vector search fetches **5×** the requested limit (`min(limit, 50) × 5`, up to 250 points) for recall. Ranking uses `similarity_score` (composite: 0.50 vector + 0.30 skill overlap + 0.08 location + 0.08 level + 0.04 employment; location remote → 0.5, same-city → 1.0).
-- **Rate limit:** 500/day, 20/minute, 50/hour per target
-- **curl:** `curl -X POST http://localhost/api/ai/recommend -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"type": "jobs", "target_id": 123, "target_version": 1, "behavioral_signals": {"recent_searches": ["python engineer"], "recent_clicks": [{"id": 456, "dwell_time_seconds": 30}], "recent_saves": [789], "recent_positive_outcomes": []}, "limit": 10}'`
+- **Request:** `type` (`"jobs"|"candidates"`), `target_id` (int), `target_version` (int), `behavioral_signals` (object — `recent_searches` (list[str] max 5), `recent_clicks` (list[`{id: int}`] max 20 total cooc), `recent_saves` (list[int] max 20 total cooc), `recent_positive_outcomes` (list[int] max 20 total cooc)), `hard_filters` (dict), `limit` (int, max 50). `force_refresh` is not part of the `/recommend` contract and is ignored; `/recommend` is always fresh (no cache). (`/recommend/pool` keeps its own `force_refresh`.)
+- **Response:** `{"results": [{"id": int, "similarity_score": float}, ...]}` — `similarity_score` range 0–1, monotonic composite `0.55·raw_cosine + 0.35·rescaled_skill_cosine + 0.04·location + 0.04·level + 0.02·employment`. The skill term is **semantic**: cosine between the target's `skills_vector` and each result's `skills_vector`, rescaled `(cosine − 0.30)/0.70` (clamped 0–1); missing `skills_vector` on either side contributes 0 and counts as `extraction_degraded`. `location`: same-city → 1.0, remote/hybrid either side → 0.5, else 0.0. `level`: `max(0, 1 - abs(idx_a - idx_b)/4)` on the canonical 24-rung ladder; `employment`: category equality → 1/0.
+- **`[]` semantics:** returned when every fetched candidate/job failed one of the absolute gates — **raw-cosine < 0.30**; **skill gate** — `skills_vector` cosine < 0.40 with both sides having vectors; **level gate** — ladder distance > 4. Not a floor; no top-up. Per-gate counts (`fetched / raw_gated / skill_gated / level_gated / extraction_degraded / returned`) are logged server-side with `target_id`.
+- **⚠️ Scores are NOT comparable to earlier versions.** The skill term moved from word-Jaccard (mean ~0.1) to semantic cosine (mean ~0.5, rescaled). Do not compare new `similarity_score` values to old deployments — the ranking semantics are what matters, not the raw number.
+- **Why semantic matching:** the word-Jaccard gate dropped real matches that use different phrasing for the same skill (e.g. `"Electronic health records (EHR)"` vs `"electronic health records experience"`, `"BSc Nursing"` vs `"patient care"`). The `skills_vector` cosine understands meaning: same-domain lists measure 0.52–0.66, cross-domain 0.25–0.37 (live-measured on `text-embedding-3-small`), and gate 0.40 splits them cleanly.
+- **Hard filters:** exact-match after canonicalization (`experience_level` + `employment_type` via `canonicalize_experience_level` / `_extract_employment_category`; `location`/`industry` verbatim). A hard filter that excludes everything returns `[]` (no unfiltered retry).
+- **Behavioral signals:** capped (`recent_searches ≤ 5`, total cooc ids `recent_clicks + recent_saves + recent_positive_outcomes ≤ 20`). Single-list overflow (e.g. 6 searches) is rejected with `422` at the schema layer; total-cooc overflow is trimmed to the most recent 20 and `dropped_signals` is logged. Intent blends from a single search, co-occurrence from a single save/click. Vector search fetches **5×** the requested limit (`min(limit, 50) × 5`, up to 250 points) for recall.
+- **Cold start:** candidates with a missing vector get fail-safe intent (embedding search if `recent_searches ≥ 1`) or scroll results (no vector). The raw-cosine gate is **not applied** on the cold-start path; skill + level gates still apply. Cold-start is logged and vector-missing is treated as anomaly (ingest always embeds; health scan asserts 0 missing vectors).
+- **Lifecycle:** Stateless — BE calls `POST /api/ai/ingest-job` when a job is published and `DELETE /api/ai/jobs/{job_id}` when it is deactivated/deleted (same for candidates: ingest on profile publish/update, delete when removed). AI never tracks `status`/`is_published`; stale points are BE's sync responsibility.
+- **Rate limit:** 5000/day, 100/minute, 300/hour per target (raised; `/recommend` is LLM-free in the hot path except capped intent embedding). `slowapi` in-memory sliding window, per-API-key + per-target fingerprint.
+- **curl:** `curl -X POST http://localhost/api/ai/recommend -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"type": "jobs", "target_id": 123, "target_version": 1, "behavioral_signals": {"recent_searches": ["python engineer"], "recent_clicks": [{"id": 456}], "recent_saves": [789], "recent_positive_outcomes": []}, "limit": 10}'`
 
 ### `POST /api/ai/recommend/pool`
 - **Purpose:** Rank a pre-filtered candidate pool by fit score (uses `ScoringService.calculate_fit` internally; cache hits are free).
@@ -831,13 +853,21 @@ GET /api/ai/ingestion‑status?event_id=<event_id>
 
 ```bash
 # Unit tests (CI — no live services required)
-uv run pytest tests/unit/ -v
+uv run pytest tests/unit -q
+# or
+python -m pytest tests/unit -q
 
-# Integration / E2E tests (optional — requires live Qdrant + LLM API)
-# No integration test suite exists yet; coverage is provided by unit tests.
+# Eval unit tier — deterministic, no network
+pytest tests/eval/test_recommend_quality_unit.py -v
 ```
 
-Unit tests mock all external dependencies (Qdrant, OpenAI) and run in CI on every push via [`.github/workflows/test.yml`](.github/workflows/test.yml).
+Unit tests mock all external dependencies (Qdrant, OpenAI) and run in CI on every push via [`.github/workflows/test.yml`](.github/workflows/test.yml). The eval unit tier (`tests/eval/test_recommend_quality_unit.py`) is part of the `/recommend` exit gate as specified in `artifacts/plans/plan-recommend-harness`.
+
+### Eval Unit Tier
+
+- **Unit tier** (`tests/eval/test_recommend_quality_unit.py`): deterministic, no network — drives `_compute_composite_score` arithmetic (semantic skill-cosine with rescale), RAW/skill/level gates, `[]` only when gates fire, signal truncation, telemetry counters (all settings-pinned).
+- **Adversarial semantic cases** (same file): the exact production regression — `"Electronic health records (EHR)"` vs `"electronic health records experience"` must PASS under semantic cosine (word-Jaccard returns zero overlap), sales→nurse must DROP, Flask→FastAPI family must PASS. A reintroduced word-Jaccard gate fails these tests by construction.
+- **Profile-only extraction** (live): the CV extraction prompt now carries a profile-only clause (derive fields from profile data when the CV slot is a placeholder); live-verified to return non-empty skills for a rich profile (e.g. nurse headline → `["emergency response", "clinical team leadership"]`).
 
 ### Test Coverage
 
@@ -854,7 +884,8 @@ Unit tests mock all external dependencies (Qdrant, OpenAI) and run in CI on ever
 | [`tests/unit/services/test_assessment_service.py`](tests/unit/services/test_assessment_service.py) | Question generation & answer grading |
 | [`tests/unit/services/test_career_service.py`](tests/unit/services/test_career_service.py) | Career path analysis |
 | [`tests/unit/services/test_jd_service.py`](tests/unit/services/test_jd_service.py) | JD generation & analysis |
-| [`tests/unit/services/test_recommendation_service.py`](tests/unit/services/test_recommendation_service.py) | Hybrid recommendation engine |
+| [`tests/unit/services/test_recommendation_service.py`](tests/unit/services/test_recommendation_service.py) | Hybrid recommendation engine (window-free composite, gates) |
+| [`tests/eval/test_recommend_quality_unit.py`](tests/eval/test_recommend_quality_unit.py) | Recommend quality unit tier — gates, truncation, telemetry, adversarial semantic cases |
 | [`tests/unit/services/test_scoring_service.py`](tests/unit/services/test_scoring_service.py) | Fit‑score calculation |
 | [`tests/unit/clients/test_circuit_breaker.py`](tests/unit/clients/test_circuit_breaker.py) | Circuit breaker state transitions |
 | [`tests/unit/clients/test_llm_client.py`](tests/unit/clients/test_llm_client.py) | LLM client generation & embedding |

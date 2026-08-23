@@ -135,6 +135,42 @@ def _build_candidate_embed_text(
     ])
 
 
+def _merge_skills(*skill_lists: Optional[List[str]]) -> List[str]:
+    """Union of skill lists, case-insensitive dedupe, trimmed, order-preserving."""
+    seen = set()
+    merged: List[str] = []
+    for skills in skill_lists:
+        if not skills:
+            continue
+        for skill in skills:
+            cleaned = str(skill).strip()
+            if not cleaned:
+                continue
+            key = cleaned.lower()
+            if key not in seen:
+                seen.add(key)
+                merged.append(cleaned)
+    return merged
+
+
+def _embed_skills_vector(
+    merged_skills: List[str],
+    llm: LLMClient,
+) -> Optional[List[float]]:
+    """Embed the merged skill list. Best-effort: failure degrades to None, never raises."""
+    if not merged_skills:
+        return None
+    skills_text = ", ".join(sorted(merged_skills, key=str.lower))
+    try:
+        return llm.embed(skills_text)
+    except Exception:
+        logger.warning(
+            "skills_vector embed failed; degrading to None",
+            skill_count=len(merged_skills),
+        )
+        return None
+
+
 def _compute_total_years_experience(past_roles: List[str]) -> Optional[float]:
     current_date_val = date.today()
     intervals_months: List[Tuple[int, int]] = []
@@ -407,10 +443,15 @@ async def run_candidate_ingestion(
     validated_profile = ProfileData.model_validate(profile_data)
 
     async def _ingest() -> None:
-        cv_text = await asyncio.to_thread(fetch_and_parse_cv, cv_url)
-        new_hash = hashlib.sha256(cv_text.encode()).hexdigest()
-        cv_text = truncate_to_prompt_cap(cv_text)
-        logger.debug("CV parsed", event_id=event_id, text_length=len(cv_text))
+        if cv_url is not None:
+            cv_text = await asyncio.to_thread(fetch_and_parse_cv, cv_url)
+            new_hash = hashlib.sha256(cv_text.encode()).hexdigest()
+            cv_text = truncate_to_prompt_cap(cv_text)
+            logger.debug("CV parsed", event_id=event_id, text_length=len(cv_text))
+        else:
+            cv_text = "[No CV provided — derive from profile data]"
+            new_hash = hashlib.sha256("profile-only".encode()).hexdigest()
+            logger.debug("Profile-only ingestion (no CV)", event_id=event_id, candidate_id=candidate_id)
 
         profile_data_json = validated_profile.model_dump_json(indent=2)
         validated_extraction = await asyncio.to_thread(
@@ -422,10 +463,17 @@ async def run_candidate_ingestion(
             raw_profile_summary = validated_extraction.raw_profile_summary or ""
         raw_profile_summary = truncate_to_prompt_cap(raw_profile_summary)
 
+        merged_skills = _merge_skills(
+            validated_profile.skills,
+            validated_extraction.skills,
+        )
+        object.__setattr__(validated_extraction, "skills", merged_skills)
+
         embed_text = truncate_to_embed_cap(
             _build_candidate_embed_text(validated_profile, validated_extraction, raw_profile_summary)
         )
         vector = await asyncio.to_thread(llm.embed, embed_text)
+        skills_vector = await asyncio.to_thread(_embed_skills_vector, merged_skills, llm)
 
         payload = {
             "name": validated_extraction.name or validated_profile.name,
@@ -435,7 +483,8 @@ async def run_candidate_ingestion(
             "industry": validated_extraction.industry or validated_profile.industry,
             "employment_type": validated_extraction.employment_type or validated_profile.employment_type,
             "work_mode": validated_extraction.work_mode or validated_profile.work_mode,
-            "skills": validated_extraction.skills,
+            "skills": merged_skills,
+            "skills_vector": skills_vector,
             "past_roles": validated_extraction.past_roles,
             "raw_profile_summary": raw_profile_summary,
             "candidate_version": validated_profile.candidate_version,
@@ -496,10 +545,17 @@ async def run_job_ingestion(
             raw_jd_summary = validated_extraction.raw_jd_summary or ""
         raw_jd_summary = truncate_to_prompt_cap(raw_jd_summary)
 
+        merged_required_skills = _merge_skills(
+            validated_metadata.required_skills,
+            validated_extraction.required_skills,
+        )
+        object.__setattr__(validated_extraction, "required_skills", merged_required_skills)
+
         embed_text = truncate_to_embed_cap(
             _build_job_embed_text(validated_metadata, validated_extraction, raw_jd_summary)
         )
         vector = await asyncio.to_thread(llm.embed, embed_text)
+        skills_vector = await asyncio.to_thread(_embed_skills_vector, merged_required_skills, llm)
 
         payload = {
             "title": validated_extraction.title or validated_metadata.title,
@@ -508,7 +564,8 @@ async def run_job_ingestion(
             "experience_level": validated_extraction.experience_level or validated_metadata.experience_level,
             "industry": validated_extraction.industry or validated_metadata.industry,
             "employment_type": validated_extraction.employment_type or validated_metadata.employment_type,
-            "required_skills": validated_extraction.required_skills,
+            "required_skills": merged_required_skills,
+            "skills_vector": skills_vector,
             "raw_jd_summary": raw_jd_summary,
             "job_version": validated_metadata.job_version,
             "company_name": validated_metadata.company_name,

@@ -694,7 +694,7 @@ class TestDeleteCandidateEndpoint(IsolatedAsyncioTestCase):
         mock_cache.delete_by_prefix.assert_called_once_with("99:")
         mock_interview_store.get_all_by_candidate_id.assert_called_once_with(99)
 
-    async def test_delete_candidate_not_found_raises_404(self):
+    async def test_delete_candidate_not_found_is_idempotent(self):
 
         from app.routers.ingestion import delete_candidate
 
@@ -704,17 +704,78 @@ class TestDeleteCandidateEndpoint(IsolatedAsyncioTestCase):
         mock_interview_store = MagicMock()
 
         mock_request = MagicMock(spec=Request)
-        from fastapi import HTTPException
 
-        with self.assertRaises(HTTPException) as cm:
-            await delete_candidate(
-                request=mock_request,
-                candidate_id=999,
-                qdrant=mock_qdrant,
-                cache=mock_cache,
-                interview_store=mock_interview_store,
-            )
-        self.assertEqual(cm.exception.status_code, 404)
-        self.assertIn("Candidate not found", str(cm.exception.detail))
+        result = await delete_candidate(
+            request=mock_request,
+            candidate_id=999,
+            qdrant=mock_qdrant,
+            cache=mock_cache,
+            interview_store=mock_interview_store,
+        )
+        self.assertTrue(result["deleted"])
         mock_qdrant.delete.assert_not_called()
         mock_cache.delete_by_prefix.assert_not_called()
+
+    async def test_delete_candidate_not_found_is_idempotent_for_missing_sentinel(self):
+
+        from app.routers.ingestion import delete_candidate
+        from app.clients.qdrant import MISSING
+
+        mock_qdrant = MagicMock()
+        mock_qdrant.get.return_value = MISSING
+        mock_cache = MagicMock()
+        mock_interview_store = MagicMock()
+
+        mock_request = MagicMock(spec=Request)
+
+        result = await delete_candidate(
+            request=mock_request,
+            candidate_id=999,
+            qdrant=mock_qdrant,
+            cache=mock_cache,
+            interview_store=mock_interview_store,
+        )
+        self.assertTrue(result["deleted"])
+        mock_qdrant.delete.assert_not_called()
+        mock_cache.delete_by_prefix.assert_not_called()
+
+    async def test_delete_job_not_found_is_idempotent(self):
+
+        from app.routers.ingestion import delete_job
+
+        mock_qdrant = MagicMock()
+        mock_qdrant.get.return_value = None
+        mock_cache = MagicMock()
+
+        mock_request = MagicMock(spec=Request)
+
+        result = await delete_job(
+            request=mock_request,
+            job_id=888,
+            qdrant=mock_qdrant,
+            cache=mock_cache,
+        )
+        self.assertTrue(result["deleted"])
+        mock_qdrant.delete.assert_not_called()
+        mock_cache.delete_by_job_id.assert_not_called()
+
+    async def test_delete_job_not_found_is_idempotent_for_missing_sentinel(self):
+
+        from app.routers.ingestion import delete_job
+        from app.clients.qdrant import MISSING
+
+        mock_qdrant = MagicMock()
+        mock_qdrant.get.return_value = MISSING
+        mock_cache = MagicMock()
+
+        mock_request = MagicMock(spec=Request)
+
+        result = await delete_job(
+            request=mock_request,
+            job_id=888,
+            qdrant=mock_qdrant,
+            cache=mock_cache,
+        )
+        self.assertTrue(result["deleted"])
+        mock_qdrant.delete.assert_not_called()
+        mock_cache.delete_by_job_id.assert_not_called()

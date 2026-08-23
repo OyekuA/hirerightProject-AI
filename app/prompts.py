@@ -402,6 +402,8 @@ Return a valid JSON object with exactly these keys:
 - "total_years_experience": number or null (compute from dated roles; set to null when it cannot be determined)
 - "headline": string or null (candidate's professional headline or most recent role title, e.g. "Head Nurse" or "Architect"; null if not determinable)
 
+IMPORTANT: If the CV content is absent, a placeholder, or too thin to extract from, derive ALL fields from the profile data instead. In particular, derive skills from the headline, industry, experience level, and any experience descriptions in the profile. Never return an empty skills array when the profile data implies a profession (e.g. headline or industry present).
+
 If a field cannot be found, set its value to null (for strings), null (for numbers), or [] (for arrays). Never use placeholder strings like "Not Provided" or "N/A".
 
 CV content:
@@ -423,6 +425,8 @@ Return a valid JSON object with exactly these keys:
 - "employment_type": string
 - "required_skills": array of strings
 - "raw_jd_summary": string (concise summary of the job description)
+
+IMPORTANT: If the job description is absent, a placeholder, or too thin to extract from, derive the fields from the metadata instead (title, description, requirements, responsibilities). Never return an empty required_skills array when the metadata implies the role's skills.
 
 If a field cannot be found, set its value to null (for strings) or [] (for arrays). Never use placeholder strings like "Not Provided" or "N/A".
 

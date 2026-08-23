@@ -107,7 +107,7 @@ class TestRecommendationServiceTruncation(unittest.TestCase):
 
         self.mock_qdrant.scroll.assert_called_once()
         self.mock_gemini.embed.assert_not_called()
-        self.assertEqual(len(results), 0)
+        self.assertEqual(len(results), 1)
 class TestRecommendationServiceCacheKey(unittest.TestCase):
 
     def setUp(self):
@@ -262,7 +262,7 @@ class TestColdStart(unittest.TestCase):
         self.mock_qdrant.scroll.assert_called_once()
         self.mock_gemini.embed.assert_not_called()
         self.mock_cache.get.assert_not_called()
-        self.assertEqual(len(results), 0)  # hard floor 0.50 drops all below-floor scroll results
+        self.assertEqual(len(results), 2)  # gates keep one-side-empty (extraction_degraded, no drop)
     def test_cold_start_skips_cache_lookup(self):
         self.mock_qdrant.get_with_vector.return_value = (
             {"skills": ["a", "b"], "experience_level": "junior", "location": "", "employment_type": "full-time"},
@@ -303,7 +303,7 @@ class TestColdStart(unittest.TestCase):
         self.mock_qdrant.scroll.assert_called_once()
         self.mock_gemini.embed.assert_not_called()
         self.mock_cache.get.assert_not_called()
-        self.assertEqual(len(results), 0)  # cache removed; hard floor drops all below-floor scroll results
+        self.assertEqual(len(results), 2)  # gates keep extraction_degraded
     def test_cold_start_force_refresh_skips_cache(self):
 
         self.mock_qdrant.get_with_vector.return_value = (
@@ -342,7 +342,7 @@ class TestColdStart(unittest.TestCase):
         self.mock_qdrant.scroll.assert_called_once()
         self.mock_gemini.embed.assert_not_called()
         self.mock_cache.get.assert_not_called()
-        self.assertEqual(len(results), 0)  # hard floor drops all below-floor scroll results
+        self.assertEqual(len(results), 2)  # gates keep extraction_degraded
 
     def test_missing_vector_with_many_skills_triggers_scroll(self):
 
@@ -602,6 +602,7 @@ class TestReRanker(unittest.TestCase):
         self.mock_qdrant.get_with_vector.return_value = (
             {
                 "skills": ["python", "sql", "java"],
+                "skills_vector": [1.0, 0.0],
                 "location": "Berlin",
                 "experience_level": "mid level",
                 "employment_type": "full_time",
@@ -616,6 +617,7 @@ class TestReRanker(unittest.TestCase):
                     "score": 0.9,
                     "job_version": 1,
                     "required_skills": ["python", "java"],
+                    "skills_vector": [1.0, 0.0],
                     "location": "Berlin",
                     "experience_level": "mid level",
                     "employment_type": "full_time",
@@ -626,6 +628,7 @@ class TestReRanker(unittest.TestCase):
                     "score": 0.8,
                     "job_version": 1,
                     "required_skills": ["sql", "excel"],
+                    "skills_vector": [0.0, 1.0],
                     "location": "Munich",
                     "experience_level": "senior",
                     "employment_type": "contract",
@@ -644,27 +647,21 @@ class TestReRanker(unittest.TestCase):
             hard_filters={},
             limit=10,
         )
-        self.assertEqual(len(results), 2)
-        scaled_09 = (0.9 - 0.50) / 0.40
-        scaled_08 = (0.8 - 0.50) / 0.40
+        self.assertEqual(len(results), 1)
+        # 1002 has skill cosine 0.0 < gate 0.40 -> dropped by SKILL gate (correct semantic behavior)
+        score_by_id = {r["id"]: r["similarity_score"] for r in results}
+        self.assertIn(1001, score_by_id)
+        # composite: 0.55*0.9 + 0.35*rescaled(1.0) + 0.04*1.0 + 0.04*1.0 + 0.02*1.0
+        # cosine(target [1,0], result [1,0]) = 1.0 -> rescaled (1.0-0.3)/0.7 = 1.0
+        skill_1001 = 1.0
         expected_score_1001 = (
-            0.55 * scaled_09
-            + 0.35 * (2 / 3)
+            0.55 * 0.9
+            + 0.35 * skill_1001
             + 0.04 * 1.0
             + 0.04 * 1.0
             + 0.02 * 1.0
         )
-        expected_score_1002 = (
-            0.55 * scaled_08
-            + 0.35 * 0.25
-            + 0.04 * 0.0
-            + 0.04 * 0.5
-            + 0.02 * 0.0
-        )
-        score_by_id = {r["id"]: r["similarity_score"] for r in results}
         self.assertAlmostEqual(score_by_id[1001], expected_score_1001, places=7)
-        self.assertAlmostEqual(score_by_id[1002], expected_score_1002, places=7)
-        self.assertGreater(score_by_id[1001], score_by_id[1002])
 
 class TestDiversityPass(unittest.TestCase):
 
@@ -1166,7 +1163,7 @@ class TestRecommendationCanonicalMatch(unittest.TestCase):
             "employment_type": "full-time",
             "skills": [],
         }
-        score = self.service._compute_composite_score(target, result, [], 0.0, None)
+        score = self.service._compute_composite_score(target, result, 0.0, None)
         self.assertAlmostEqual(score, 0.10)
 
     def test_employment_match_category_mismatch_zero(self):
@@ -1182,7 +1179,7 @@ class TestRecommendationCanonicalMatch(unittest.TestCase):
             "employment_type": "contract",
             "skills": [],
         }
-        score = self.service._compute_composite_score(target, result, [], 0.0, None)
+        score = self.service._compute_composite_score(target, result, 0.0, None)
         self.assertAlmostEqual(score, 0.08)
 
     def test_location_match_uses_work_mode_resolver(self):
@@ -1200,7 +1197,7 @@ class TestRecommendationCanonicalMatch(unittest.TestCase):
             "work_mode": "remote",
             "skills": [],
         }
-        score = self.service._compute_composite_score(target, result, [], 0.0, None)
+        score = self.service._compute_composite_score(target, result, 0.0, None)
         self.assertAlmostEqual(score, 0.08)
 class TestRecommendMinSimilarity(unittest.TestCase):
 
@@ -1217,11 +1214,12 @@ class TestRecommendMinSimilarity(unittest.TestCase):
     def _signals(self):
         return {"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}
 
-    def _base_result(self, pid, vector_score):
+    def _base_result(self, pid, vector_score, skills=None):
         return {
             "_point_id": pid,
             "score": vector_score,
-            "required_skills": ["ruby"],
+            "required_skills": skills if skills is not None else ["python"],
+            "skills_vector": [1.0, 0.0] if skills is None or "python" in (skills or []) else [0.0, 1.0],
             "location": "New York",
             "experience_level": "mid level",
             "employment_type": "full_time",
@@ -1232,19 +1230,19 @@ class TestRecommendMinSimilarity(unittest.TestCase):
     def test_vector_path_prefers_above_floor(self):
         target = {
             "skills": ["python"],
+            "skills_vector": [1.0, 0.0],
             "experience_level": "mid level",
             "location": "New York",
             "employment_type": "full_time",
         }
         self.mock_qdrant.get_with_vector.return_value = (target, [0.1] * 768)
-        # 0.55 scaled vector (0.50-0.90->0.0-1.0) +0.35 Jaccard +0.04 loc +0.04 level +0.02 emp
-        # 1001: 0.9->scaled1.0 =>0.65 (>0.50) | 1002:0.26->0.0 =>0.10 (<0.50) | 1003:0.1->0.0 =>0.10 (<0.50)
+        # window-free gates: RAW 0.30 drops 0.26/0.1, 0.9 passes; skill cosine 1.0 passes gate
         self.mock_qdrant.search.side_effect = [
             [],
             [
-                self._base_result(1001, 0.9),
-                self._base_result(1002, 0.26),
-                self._base_result(1003, 0.1),
+                self._base_result(1001, 0.9, ["python"]),
+                self._base_result(1002, 0.26, ["python"]),
+                self._base_result(1003, 0.1, ["python"]),
             ],
         ]
         self.mock_cache.get.return_value = None
@@ -1259,7 +1257,8 @@ class TestRecommendMinSimilarity(unittest.TestCase):
         )
         ids = [r["id"] for r in results]
         self.assertEqual(ids, [1001])
-        self.assertAlmostEqual(results[0]["similarity_score"], 0.65, places=2)
+        # composite = 0.55*0.9 + 0.35*rescaled(1.0) + 0.04+0.04+0.02 = 0.495+0.35+0.10 = 0.945
+        self.assertAlmostEqual(results[0]["similarity_score"], 0.945, places=2)
     def test_all_below_floor_returns_empty(self):
         target = {
             "skills": ["python"],
@@ -1270,7 +1269,7 @@ class TestRecommendMinSimilarity(unittest.TestCase):
         self.mock_qdrant.get_with_vector.return_value = (target, [0.1] * 768)
         self.mock_qdrant.search.side_effect = [
             [],
-            [self._base_result(1001, 0.1)],  # composite 0.25 -> below hard floor 0.50 -> dropped
+            [self._base_result(1001, 0.1, ["python"])],  # raw 0.1 <0.30 gate drops
         ]
         self.mock_cache.get.return_value = None
 
@@ -1283,9 +1282,9 @@ class TestRecommendMinSimilarity(unittest.TestCase):
             limit=10,
         )
         self.assertEqual(len(results), 0)
-    def test_cold_start_applies_hard_floor(self):
-        # Cold-start composite is metadata-only (capped at 0.40 by construction),
-        # cold-start composite is metadata-only (capped at 0.50 by construction); hard floor applies.
+    def test_cold_start_applies_gates(self):
+        # Cold-start composite is metadata-only (vector term 0 by construction);
+        # skill/level gates apply, raw gate does NOT (no vector).
         self.mock_qdrant.get_with_vector.return_value = (
             {"skills": ["python", "java"], "experience_level": "mid level", "location": "New York", "employment_type": "full_time"},
             None,
@@ -1458,8 +1457,8 @@ class TestUnfilteredRetry(unittest.TestCase):
         self.mock_qdrant.scroll.assert_not_called()
         self.mock_gemini.embed.assert_called_once()
         self.assertEqual(len(results), 1)
-        # 0.9 scaled 1.0: 0.55*1 +0.10 logistics =0.65
-        self.assertAlmostEqual(results[0]["similarity_score"], 0.65, places=2)
+        # cold-start window-free: 0.55*0.9 +0.35*0 (one-side empty skill) +0.10 logistics =0.595
+        self.assertAlmostEqual(results[0]["similarity_score"], 0.595, places=2)
     def test_cold_start_embeds_searches_when_present(self):
         self.mock_qdrant.get_with_vector.return_value = (self.target, None)
         self.mock_gemini.embed.return_value = [0.2] * 768
@@ -1673,6 +1672,274 @@ class TestRecallCeiling(unittest.TestCase):
 
         main_search_call = self.mock_qdrant.search.call_args_list[-1]
         self.assertEqual(main_search_call.kwargs["limit"], 50)
+
+class TestWindowFreeComposite(unittest.TestCase):
+
+    def setUp(self):
+        self.mock_llm = MagicMock()
+        self.mock_qdrant = MagicMock()
+        self.mock_cache = MagicMock()
+        self.service = RecommendationService(llm=self.mock_llm, qdrant=self.mock_qdrant, cache=self.mock_cache)
+
+    def test_composite_uses_raw_cosine_not_scaled(self):
+        # settings-pinned arithmetic 0.55*raw +0.35*rescaled_skill_cosine + logistics
+        # skills_vector [1,0] vs [1,0] -> cosine 1.0 -> rescaled (1.0-0.3)/0.7 = 1.0
+        target = {"skills_vector": [1.0, 0.0], "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time"}
+        result = {"skills_vector": [1.0, 0.0], "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time"}
+        # raw 0.4 should contribute 0.55*0.4, not zeroed (old scaled would be 0)
+        score = self.service._compute_composite_score(target, result, 0.4, "jobs")
+        # location 1.0, level 1.0, employment 1.0, skill cosine 1.0 -> rescaled 1.0
+        expected = 0.55 * 0.4 + 0.35 * 1.0 + 0.04 * 1.0 + 0.04 * 1.0 + 0.02 * 1.0
+        self.assertAlmostEqual(score, expected, places=7)
+        # raw 0.25 still contributes
+        score_low = self.service._compute_composite_score(target, result, 0.25, "jobs")
+        expected_low = 0.55 * 0.25 + 0.35 * 1.0 + 0.04 * 1.0 + 0.04 * 1.0 + 0.02 * 1.0
+        self.assertAlmostEqual(score_low, expected_low, places=7)
+
+
+class TestRawGate(unittest.TestCase):
+
+    def setUp(self):
+        self.mock_llm = MagicMock()
+        self.mock_qdrant = MagicMock()
+        self.mock_cache = MagicMock()
+        self.service = RecommendationService(llm=self.mock_llm, qdrant=self.mock_qdrant, cache=self.mock_cache)
+
+    def _target(self):
+        return {"skills": ["python"], "skills_vector": [1.0, 0.0], "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time", "candidate_version": 1}
+
+    def test_raw_gate_drops_low_cosine(self):
+        self.mock_qdrant.get_with_vector.return_value = (self._target(), [0.1] * 768)
+        # 0.25 raw <0.30 should be dropped even though skill cosine 1.0
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [{"_point_id": 1, "score": 0.25, "skills_vector": [1.0, 0.0], "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time", "title": "A", "company_id": 1}],
+        ]
+        results = self.service.recommend(rec_type="jobs", target_id=1, target_version=1, behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}, hard_filters={}, limit=10)
+        self.assertEqual(len(results), 0)
+
+    def test_raw_gate_passes_with_skill_cosine(self):
+        self.mock_qdrant.get_with_vector.return_value = (self._target(), [0.1] * 768)
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [{"_point_id": 1, "score": 0.35, "skills_vector": [1.0, 0.0], "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time", "title": "A", "company_id": 1}],
+        ]
+        results = self.service.recommend(rec_type="jobs", target_id=1, target_version=1, behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}, hard_filters={}, limit=10)
+        self.assertEqual(len(results), 1)
+
+    def test_raw_gate_not_applied_on_cold_start(self):
+        # cold-start: profile_vec is None, raw gate must NOT drop 0.0 scroll results
+        self.mock_qdrant.get_with_vector.return_value = ({"skills": ["python"], "skills_vector": [1.0, 0.0], "experience_level": "mid level", "location": "Berlin", "employment_type": "full_time"}, None)
+        self.mock_qdrant.scroll.return_value = [
+            {"_point_id": 1, "score": 0.0, "skills_vector": [1.0, 0.0], "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time", "job_version": 1},
+        ]
+        results = self.service.recommend(rec_type="jobs", target_id=1, target_version=1, behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}, hard_filters={}, limit=10)
+        # should not be dropped by raw gate
+        self.assertEqual(len(results), 1)
+
+
+class TestSkillGateThreeState(unittest.TestCase):
+
+    def setUp(self):
+        self.mock_llm = MagicMock()
+        self.mock_qdrant = MagicMock()
+        self.mock_cache = MagicMock()
+        self.service = RecommendationService(llm=self.mock_llm, qdrant=self.mock_qdrant, cache=self.mock_cache)
+
+    def test_skill_gate_both_nonempty_zero_overlap_drops(self):
+        # both have skills_vector, cosine 0.0 < gate 0.40 => drop
+        target = {"skills_vector": [1.0, 0.0, 0.0], "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time"}
+        self.mock_qdrant.get_with_vector.return_value = (target, [0.1] * 768)
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [{"_point_id": 1, "score": 0.9, "skills_vector": [0.0, 1.0, 0.0], "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time", "title": "A", "company_id": 1}],
+        ]
+        results = self.service.recommend(rec_type="jobs", target_id=1, target_version=1, behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}, hard_filters={}, limit=10)
+        self.assertEqual(len(results), 0)
+
+    def test_skill_gate_one_empty_keeps(self):
+        # target has vector, result missing => extraction_degraded, no drop
+        target = {"skills_vector": [1.0, 0.0, 0.0], "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time"}
+        self.mock_qdrant.get_with_vector.return_value = (target, [0.1] * 768)
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [{"_point_id": 1, "score": 0.9, "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time", "title": "A", "company_id": 1}],
+        ]
+        results = self.service.recommend(rec_type="jobs", target_id=1, target_version=1, behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}, hard_filters={}, limit=10)
+        self.assertEqual(len(results), 1)
+
+    def test_skill_gate_both_empty_keeps(self):
+        # both missing vectors => extraction_degraded, no drop
+        target = {"location": "Berlin", "experience_level": "mid level", "employment_type": "full_time"}
+        self.mock_qdrant.get_with_vector.return_value = (target, [0.1] * 768)
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [{"_point_id": 1, "score": 0.9, "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time", "title": "A", "company_id": 1}],
+        ]
+        results = self.service.recommend(rec_type="jobs", target_id=1, target_version=1, behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}, hard_filters={}, limit=10)
+        self.assertEqual(len(results), 1)
+
+class TestLevelGate(unittest.TestCase):
+
+    def setUp(self):
+        self.mock_llm = MagicMock()
+        self.mock_qdrant = MagicMock()
+        self.mock_cache = MagicMock()
+        self.service = RecommendationService(llm=self.mock_llm, qdrant=self.mock_qdrant, cache=self.mock_cache)
+
+    def _target_with_level(self, level):
+        return {"skills": ["python"], "location": "Berlin", "experience_level": level, "employment_type": "full_time"}
+
+    def test_level_gate_intern_to_senior_drops(self):
+        # intern (0) -> senior (7) distance 7 >4 => drop
+        self.mock_qdrant.get_with_vector.return_value = (self._target_with_level("intern"), [0.1] * 768)
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [{"_point_id": 1, "score": 0.9, "required_skills": ["python"], "location": "Berlin", "experience_level": "senior", "employment_type": "full_time", "title": "A", "company_id": 1}],
+        ]
+        results = self.service.recommend(rec_type="jobs", target_id=1, target_version=1, behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}, hard_filters={}, limit=10)
+        self.assertEqual(len(results), 0)
+
+    def test_level_gate_junior_to_senior_passes(self):
+        # junior (3) -> senior (7) distance 4 => pass (not >4)
+        self.mock_qdrant.get_with_vector.return_value = (self._target_with_level("junior"), [0.1] * 768)
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [{"_point_id": 1, "score": 0.9, "required_skills": ["python"], "location": "Berlin", "experience_level": "senior", "employment_type": "full_time", "title": "A", "company_id": 1}],
+        ]
+        results = self.service.recommend(rec_type="jobs", target_id=1, target_version=1, behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}, hard_filters={}, limit=10)
+        self.assertEqual(len(results), 1)
+
+    def test_level_gate_mid_to_lead_drops(self):
+        # mid level (5) -> lead (10) distance 5 >4 => drop
+        self.mock_qdrant.get_with_vector.return_value = (self._target_with_level("mid level"), [0.1] * 768)
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [{"_point_id": 1, "score": 0.9, "required_skills": ["python"], "location": "Berlin", "experience_level": "lead", "employment_type": "full_time", "title": "A", "company_id": 1}],
+        ]
+        results = self.service.recommend(rec_type="jobs", target_id=1, target_version=1, behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}, hard_filters={}, limit=10)
+        self.assertEqual(len(results), 0)
+
+    def test_level_gate_unknown_canonical_no_drop(self):
+        # unknown level not in ladder => fallback, no gate
+        self.mock_qdrant.get_with_vector.return_value = (self._target_with_level("unknown_level_xyz"), [0.1] * 768)
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [{"_point_id": 1, "score": 0.9, "required_skills": ["python"], "location": "Berlin", "experience_level": "senior", "employment_type": "full_time", "title": "A", "company_id": 1}],
+        ]
+        results = self.service.recommend(rec_type="jobs", target_id=1, target_version=1, behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}, hard_filters={}, limit=10)
+        self.assertEqual(len(results), 1)
+
+
+class TestNoFloorBehavior(unittest.TestCase):
+
+    def setUp(self):
+        self.mock_llm = MagicMock()
+        self.mock_qdrant = MagicMock()
+        self.mock_cache = MagicMock()
+        self.service = RecommendationService(llm=self.mock_llm, qdrant=self.mock_qdrant, cache=self.mock_cache)
+
+    def test_empty_only_when_gates_fire(self):
+        # two results: one passes gates (raw 0.35, skill cosine 1.0), one fails skill gate (cosine 0.0); expect 1 not 0
+        target = {"skills": ["python"], "skills_vector": [1.0, 0.0], "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time"}
+        self.mock_qdrant.get_with_vector.return_value = (target, [0.1] * 768)
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [
+                {"_point_id": 1, "score": 0.35, "skills_vector": [1.0, 0.0], "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time", "title": "A", "company_id": 1},
+                {"_point_id": 2, "score": 0.35, "skills_vector": [0.0, 1.0], "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time", "title": "B", "company_id": 2},
+            ],
+        ]
+        results = self.service.recommend(rec_type="jobs", target_id=1, target_version=1, behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}, hard_filters={}, limit=10)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], 1)
+
+    def test_no_top_up_when_all_gated(self):
+        target = {"skills": ["python"], "skills_vector": [1.0, 0.0], "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time"}
+        self.mock_qdrant.get_with_vector.return_value = (target, [0.1] * 768)
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [
+                {"_point_id": 1, "score": 0.10, "skills_vector": [0.0, 1.0], "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time", "title": "A", "company_id": 1},
+            ],
+        ]
+        results = self.service.recommend(rec_type="jobs", target_id=1, target_version=1, behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}, hard_filters={}, limit=10)
+        self.assertEqual(results, [])
+
+
+class TestSignalTruncation(unittest.TestCase):
+
+    def setUp(self):
+        self.mock_llm = MagicMock()
+        self.mock_qdrant = MagicMock()
+        self.mock_cache = MagicMock()
+        self.service = RecommendationService(llm=self.mock_llm, qdrant=self.mock_qdrant, cache=self.mock_cache)
+        self.mock_qdrant.get_with_vector.return_value = ({"skills": ["a"]}, [0.1] * 768)
+        self.mock_qdrant.search.return_value = []
+        self.mock_qdrant._client = MagicMock()
+        self.mock_qdrant._client.retrieve.return_value = []
+        self.mock_llm.embed.return_value = [0.1] * 768
+
+    def test_searches_truncated_to_five(self):
+        searches = [f"query {i}" for i in range(10)]
+        self.service.recommend(rec_type="jobs", target_id=1, target_version=1, behavioral_signals={"recent_searches": searches, "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}, hard_filters={}, limit=10)
+        # should embed only last 5
+        self.assertEqual(self.mock_llm.embed.call_count, 5)
+        # last 5 queries should be embedded
+        embedded_queries = [c[0][0] for c in self.mock_llm.embed.call_args_list]
+        self.assertEqual(embedded_queries, searches[-5:])
+
+    def test_cooc_truncated_to_twenty(self):
+        self.mock_qdrant.get_with_vector.return_value = ({"skills": ["a"]}, [0.1] * 768)
+        # 15 clicks + 10 saves =25 >20, should keep last 20
+        clicks = [{"id": i} for i in range(15)]
+        saves = list(range(100, 110))
+        self.mock_qdrant.search.side_effect = [[], []]
+        self.mock_qdrant._client.retrieve.return_value = []
+        self.service.recommend(rec_type="jobs", target_id=1, target_version=1, behavioral_signals={"recent_searches": [], "recent_clicks": clicks, "recent_saves": saves, "recent_positive_outcomes": []}, hard_filters={}, limit=10)
+        # retrieve should be called with 20 ids (last 20 of combined)
+        retrieve_ids = self.mock_qdrant._client.retrieve.call_args.kwargs["ids"]
+        self.assertEqual(len(retrieve_ids), 20)
+        # combined = clicks ids 0-14 + saves 100-109 => kept last 20 =  ids 5-14 (10) + 100-109 (10) =20
+        expected = list(range(5, 15)) + list(range(100, 110))
+        self.assertEqual(set(retrieve_ids), set(expected))
+
+
+class TestTelemetryCounters(unittest.TestCase):
+
+    def setUp(self):
+        self.mock_llm = MagicMock()
+        self.mock_qdrant = MagicMock()
+        self.mock_cache = MagicMock()
+        self.service = RecommendationService(llm=self.mock_llm, qdrant=self.mock_qdrant, cache=self.mock_cache)
+
+    def test_telemetry_logged(self):
+        target = {"skills": ["python"], "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time"}
+        self.mock_qdrant.get_with_vector.return_value = (target, [0.1] * 768)
+        self.mock_qdrant.search.side_effect = [
+            [],
+            [
+                {"_point_id": 1, "score": 0.9, "required_skills": ["python"], "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time", "title": "A", "company_id": 1},
+                {"_point_id": 2, "score": 0.10, "required_skills": ["python"], "location": "Berlin", "experience_level": "mid level", "employment_type": "full_time", "title": "B", "company_id": 2},
+            ],
+        ]
+        with patch("app.services.recommendation_service.logger") as mock_logger:
+            results = self.service.recommend(rec_type="jobs", target_id=1, target_version=1, behavioral_signals={"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}, hard_filters={}, limit=10)
+            # check that Recommendation gates was logged with expected keys
+            gate_calls = [c for c in mock_logger.info.call_args_list if "Recommendation gates" in str(c)]
+            self.assertTrue(len(gate_calls) >= 1)
+            last = gate_calls[-1]
+            kwargs = last.kwargs if hasattr(last, 'kwargs') else last[1]
+            # ensure keys present
+            self.assertIn("fetched", kwargs)
+            self.assertIn("raw_gated", kwargs)
+            self.assertIn("skill_gated", kwargs)
+            self.assertIn("level_gated", kwargs)
+            self.assertIn("extraction_degraded", kwargs)
+            self.assertIn("returned", kwargs)
+            self.assertEqual(kwargs["fetched"], 2)
+            self.assertEqual(kwargs["raw_gated"], 1)
+            self.assertEqual(kwargs["returned"], 1)
 
 if __name__ == "__main__":
     unittest.main()

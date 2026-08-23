@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class RecommendResult(BaseModel):
@@ -13,10 +13,26 @@ class RecentClick(BaseModel):
 
 
 class BehavioralSignals(BaseModel):
-    recent_searches: list[str] = []
-    recent_clicks: list[RecentClick] = []
-    recent_saves: list[int] = []
-    recent_positive_outcomes: list[int] = []
+    recent_searches: list[str] = Field(default_factory=list, max_length=5)
+    recent_clicks: list[RecentClick] = Field(default_factory=list, max_length=20)
+    recent_saves: list[int] = Field(default_factory=list, max_length=20)
+    recent_positive_outcomes: list[int] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def _cap_total_cooc(self):
+        # Contract: total co-occurrence ids across clicks/saves/positive_outcomes <= 20.
+        # Keep the tail (most recent) across the three lists; log-free silent trim.
+        clicks = list(self.recent_clicks)
+        saves = list(self.recent_saves)
+        pos = list(self.recent_positive_outcomes)
+        total = len(clicks) + len(saves) + len(pos)
+        if total > 20:
+            combined = [("click", c) for c in clicks] + [("save", s) for s in saves] + [("pos", p) for p in pos]
+            kept = combined[-20:]
+            self.recent_clicks = [v for k, v in kept if k == "click"]
+            self.recent_saves = [v for k, v in kept if k == "save"]
+            self.recent_positive_outcomes = [v for k, v in kept if k == "pos"]
+        return self
 
 
 class RecommendRequest(BaseModel):

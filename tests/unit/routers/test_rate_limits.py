@@ -287,7 +287,7 @@ class TestRecommendBurstLimit(IsolatedAsyncioTestCase):
             "behavioral_signals": {"recent_clicks": []},
         }
 
-        for i in range(20):
+        for i in range(100):
             resp = self.client.post("/api/ai/recommend", json=payload)
             self.assertEqual(
                 resp.status_code, 200,

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 import structlog
 import asyncio
+import concurrent.futures
 
 from app.clients.dependencies import get_qdrant_client, get_llm_client, get_cache_backend, get_rate_limiter
 from app.clients.llm import LLMClient, LLMUnavailableError
@@ -12,6 +13,12 @@ from app.routers._rate_limit_keys import target_id_key
 router = APIRouter(tags=["Recommendation"])
 
 limiter = get_rate_limiter().limiter
+
+# Dedicated executor for the sync recommend hot path. The event loop's default
+# executor is sized to min(32, cpu+4) — with a single-replica CPU-limited
+# container that serializes concurrent /recommend calls. A dedicated pool keeps
+# concurrent requests moving; it is bounded and shared across requests.
+_RECOMMEND_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=32, thread_name_prefix="recommend")
 
 
 from app.schemas.recommendation import (
@@ -25,9 +32,9 @@ from app.schemas.recommendation import (
 
 
 @router.post("/recommend", response_model=RecommendResponse)
-@limiter.limit("500/day")
-@limiter.limit("20/minute")
-@limiter.limit("50/hour", key_func=target_id_key)
+@limiter.limit("5000/day")
+@limiter.limit("100/minute")
+@limiter.limit("300/hour", key_func=target_id_key)
 async def recommend(
     request: Request,
     req: RecommendRequest,
@@ -38,14 +45,15 @@ async def recommend(
     structlog.contextvars.bind_contextvars(entity_id=req.target_id)
     service = RecommendationService(llm=llm, qdrant=qdrant, cache=cache)
     try:
-        raw_results = await asyncio.to_thread(
+        raw_results = await asyncio.get_running_loop().run_in_executor(
+            _RECOMMEND_EXECUTOR,
             service.recommend,
-            rec_type=req.type,
-            target_id=req.target_id,
-            target_version=req.target_version,
-            behavioral_signals=req.behavioral_signals.model_dump(),
-            hard_filters=req.hard_filters,
-            limit=req.limit,
+            req.type,
+            req.target_id,
+            req.target_version,
+            req.behavioral_signals.model_dump(),
+            req.hard_filters,
+            req.limit,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

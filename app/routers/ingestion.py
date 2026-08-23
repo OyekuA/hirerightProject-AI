@@ -27,7 +27,7 @@ from app.clients.dependencies import (
     JOBS_COLLECTION,
 )
 from app.services.interview_session_store import InterviewSessionStore
-from app.clients.qdrant import QdrantClient
+from app.clients.qdrant import QdrantClient, MISSING
 from app.clients.llm import LLMClient
 from app.clients.cache import CacheBackend
 from app.routers._rate_limit_keys import candidate_id_key, job_id_key
@@ -65,7 +65,8 @@ async def ingest_candidate(
 ):
     structlog.contextvars.bind_contextvars(entity_id=req.candidate_id)
     try:
-        await asyncio.to_thread(validate_ingest_url, str(req.cv_url))
+        if req.cv_url is not None:
+            await asyncio.to_thread(validate_ingest_url, str(req.cv_url))
         await asyncio.to_thread(validate_callback_url, str(req.callback_url))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -75,7 +76,7 @@ async def ingest_candidate(
         entity_id=req.candidate_id,
         callback_url=str(req.callback_url),
         payload={
-            "cv_url": str(req.cv_url),
+            "cv_url": str(req.cv_url) if req.cv_url is not None else None,
             "profile_data": req.profile_data.model_dump(),
         },
     )
@@ -84,7 +85,7 @@ async def ingest_candidate(
     background_tasks.add_task(
         run_candidate_ingestion,
         candidate_id=req.candidate_id,
-        cv_url=str(req.cv_url),
+        cv_url=str(req.cv_url) if req.cv_url is not None else None,
         profile_data=req.profile_data.model_dump(),
         callback_url=str(req.callback_url),
         event_id=record.event_id,
@@ -164,8 +165,8 @@ async def delete_candidate(
 ):
     structlog.contextvars.bind_contextvars(entity_id=candidate_id)
     existing = qdrant.get(CANDIDATES_COLLECTION, candidate_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="Candidate not found")
+    if existing is None or existing is MISSING:
+        return {"deleted": True}
     qdrant.delete(CANDIDATES_COLLECTION, candidate_id)
     cache.delete_by_prefix(f"{candidate_id}:")
     sessions = interview_store.get_all_by_candidate_id(candidate_id)
@@ -183,8 +184,8 @@ async def delete_job(
 ):
     structlog.contextvars.bind_contextvars(entity_id=job_id)
     existing = qdrant.get(JOBS_COLLECTION, job_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="Job not found")
+    if existing is None or existing is MISSING:
+        return {"deleted": True}
     qdrant.delete(JOBS_COLLECTION, job_id)
     cache.delete_by_job_id(job_id)
     return {"deleted": True}
