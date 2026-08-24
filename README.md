@@ -971,5 +971,5 @@ Structured logging via `structlog` (configured in [`app/logging_config.py`](app/
 
 - **Production:** `LOG_LEVEL=INFO` — info and above; errors are forwarded to Sentry
 - **Development:** `LOG_LEVEL=DEBUG` — full request/response tracing
-- **Context:** Correlation ID, event ID, entity type/ID are automatically bound to each log entry
+- **Context:** Correlation ID, event ID, and entity type/ID are automatically bound to each log entry
 - **Sentry:** Errors are forwarded to Sentry when `SENTRY_DSN` is configured
