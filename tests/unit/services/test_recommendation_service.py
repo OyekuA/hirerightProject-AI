@@ -1943,3 +1943,69 @@ class TestTelemetryCounters(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPerSkillGate(unittest.TestCase):
+    """Per-skill symmetric-F1 gate: boundary, asymmetry, degraded fallback, cache-miss fallback."""
+
+    def setUp(self):
+        self.mock_llm = MagicMock()
+        self.mock_qdrant = MagicMock()
+        self.mock_cache = MagicMock()
+        self.service = RecommendationService(llm=self.mock_llm, qdrant=self.mock_qdrant, cache=self.mock_cache)
+        from app.clients import skill_vector_cache
+        skill_vector_cache.clear()
+        # Seed the cache with deterministic unit vectors keyed by skill string
+        skill_vector_cache._CACHE["python"] = [1.0, 0.0, 0.0]
+        skill_vector_cache._CACHE["react"] = [0.0, 1.0, 0.0]
+        skill_vector_cache._CACHE["javascript"] = [0.0, 1.0, 0.0]
+        skill_vector_cache._CACHE["project planning"] = [0.9, 0.1, 0.0]
+        skill_vector_cache._CACHE["budget management"] = [0.8, 0.2, 0.0]
+        skill_vector_cache._CACHE["communication"] = [0.5, 0.5, 0.0]
+        skill_vector_cache._CACHE["team collaboration"] = [0.5, 0.5, 0.0]
+        skill_vector_cache._CACHE["agile"] = [0.6, 0.4, 0.0]
+
+    def _signals(self):
+        return {"recent_searches": [], "recent_clicks": [], "recent_saves": [], "recent_positive_outcomes": []}
+
+    def _target(self, skills):
+        return {"skills": skills, "skills_vector": [0.1]*768, "location": "Berlin",
+                "experience_level": "mid level", "employment_type": "full_time", "candidate_version": 1}
+
+    def _job(self, pid, skills, score=0.6):
+        return {"_point_id": pid, "score": score, "required_skills": skills,
+                "skills_vector": [0.1]*768, "location": "Berlin", "experience_level": "mid level",
+                "employment_type": "full_time", "title": f"Job {pid}", "company_id": pid}
+
+    def test_matching_skill_passes_gate(self):
+        # python candidate vs python job -> F1 high -> keep
+        self.mock_qdrant.get_with_vector.return_value = (self._target(["python"]), [0.1]*768)
+        self.mock_qdrant.search.side_effect = [[], [self._job(1, ["python"])]]
+        results = self.service.recommend(rec_type="jobs", target_id=1, target_version=1,
+                                         behavioral_signals=self._signals(), hard_filters={}, limit=10)
+        self.assertEqual(len(results), 1)
+
+    def test_disjoint_skills_dropped_by_gate(self):
+        # python candidate vs react job -> per-skill F1 below gate -> drop
+        self.mock_qdrant.get_with_vector.return_value = (self._target(["python"]), [0.1]*768)
+        self.mock_qdrant.search.side_effect = [[], [self._job(1, ["react", "javascript"])]]
+        results = self.service.recommend(rec_type="jobs", target_id=1, target_version=1,
+                                         behavioral_signals=self._signals(), hard_filters={}, limit=10)
+        self.assertEqual(results, [])
+
+    def test_cache_miss_falls_back_to_whole_list_gate(self):
+        # skills NOT in cache -> _per_skill_score returns None -> whole-list cosine gate applies
+        self.mock_qdrant.get_with_vector.return_value = (self._target(["unknown_skill_a"]), [0.1]*768)
+        # result also has unknown skill, but whole-list cosine high (0.5 >= 0.40) -> keep via fallback
+        self.mock_qdrant.search.side_effect = [[], [self._job(1, ["unknown_skill_b"])]]
+        results = self.service.recommend(rec_type="jobs", target_id=1, target_version=1,
+                                         behavioral_signals=self._signals(), hard_filters={}, limit=10)
+        # whole-list skills_vector cosine of identical [0.1]*768 = 1.0 -> fallback keeps
+        self.assertEqual(len(results), 1)
+
+    def test_symmetric_f1_not_inflated_by_single_match(self):
+        # candidate with ONE matching skill among many: F1 must not be 1.0 (asymmetry guard)
+        ps = self.service._per_skill_score(
+            {"skills": ["python"]}, {"required_skills": ["python", "react", "javascript", "agile"]}, "jobs")
+        self.assertIsNotNone(ps)
+        self.assertLess(ps, 0.9)  # symmetric F1 penalizes the 3 unmatched job skills

@@ -98,6 +98,7 @@ def mock_get_settings():
     mock.RECOMMEND_WEIGHT_EMPLOYMENT = 0.02
     mock.RAW_COSINE_GATE = 0.30
     mock.SKILL_COSINE_GATE = 0.40
+    mock.SKILL_PER_SKILL_GATE = 0.33
     mock.RECOMMEND_SKILL_RESCALE_LO = 0.30
     mock.RECOMMEND_SKILL_RESCALE_HI = 1.0
     mock.LEVEL_GATE_DISTANCE = 4
@@ -133,3 +134,12 @@ def patch_settings():
     yield
     for p in patches:
         p.stop()
+
+
+@pytest.fixture(autouse=True)
+def clear_skill_cache():
+    from app.clients import skill_vector_cache
+
+    skill_vector_cache.clear()
+    yield
+    skill_vector_cache.clear()

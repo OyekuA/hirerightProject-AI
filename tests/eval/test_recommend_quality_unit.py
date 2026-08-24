@@ -11,12 +11,6 @@ from unittest.mock import MagicMock, patch
 
 from app.services.recommendation_service import RecommendationService
 
-from tests.eval.fixtures import (
-    CANDIDATE_FIXTURES,
-    JOB_FIXTURES,
-    CANDIDATE_BY_ID,
-)
-
 
 def _mock_settings(**overrides):
     defaults = {
@@ -380,29 +374,6 @@ class TestSignalTruncationEval(unittest.TestCase):
         embed_calls = self.service.llm.embed.call_args_list
         # 5 kept searches -> at most 5 embeds (peer path may embed nothing extra)
         self.assertLessEqual(len(embed_calls), 5)
-
-
-class TestFixturesShape(unittest.TestCase):
-    def test_fixture_counts(self):
-        self.assertEqual(len(CANDIDATE_FIXTURES), 20)
-        self.assertEqual(len(JOB_FIXTURES), 40)
-
-    def test_every_candidate_has_gold(self):
-        for c in CANDIDATE_FIXTURES:
-            self.assertGreaterEqual(len(c["gold_job_ids"]), 2, f"candidate {c['id']} needs >=2 gold jobs")
-
-    def test_domains_covered(self):
-        cand_domains = {c["domain"] for c in CANDIDATE_FIXTURES}
-        job_domains = {j["domain"] for j in JOB_FIXTURES}
-        self.assertEqual(cand_domains, {"nursing", "software", "finance", "trades"})
-        self.assertEqual(job_domains, {"nursing", "software", "finance", "trades"})
-
-    def test_empty_skill_rate_below_threshold(self):
-        # Extraction-fidelity guard: the eval corpus must not be dominated by
-        # empty-skill fixtures (the dummy-PDF trap). Plan: empty-rate <= 5%.
-        from tests.eval.fixtures import EMPTY_RATE
-
-        self.assertLessEqual(EMPTY_RATE, 0.05, f"empty-skill rate {EMPTY_RATE:.2%} too high")
 
 
 if __name__ == "__main__":

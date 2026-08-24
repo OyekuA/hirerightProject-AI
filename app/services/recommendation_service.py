@@ -3,7 +3,7 @@ import math
 import numpy as np
 import structlog
 from concurrent.futures import wait
-from typing import Literal
+from typing import Literal, Optional
 
 import qdrant_client.http.models as qdrant_models
 
@@ -11,6 +11,7 @@ from app.clients.dependencies import CANDIDATES_COLLECTION, JOBS_COLLECTION
 from app.clients.llm import LLMClient
 from app.clients.qdrant import QdrantClient, MISSING
 from app.clients.cache import CacheBackend
+from app.clients import skill_vector_cache
 from app.config import get_settings
 from app.constants import EXPERIENCE_LEVEL_LADDER, canonicalize_experience_level
 from app.services.scoring_service import ScoringService, resolve_work_mode, _extract_employment_category
@@ -56,6 +57,58 @@ class RecommendationService:
         if hi <= lo:
             return 0.0
         return max(0.0, min(1.0, (cosine - lo) / (hi - lo)))
+
+    def _per_skill_score(self, target_payload: dict, result: dict, search_collection: str) -> Optional[float]:
+        if search_collection == JOBS_COLLECTION:
+            target_skills_raw = target_payload.get("skills") or []
+            result_skills_raw = result.get("required_skills") or []
+        elif search_collection == CANDIDATES_COLLECTION:
+            target_skills_raw = target_payload.get("required_skills") or []
+            result_skills_raw = result.get("skills") or []
+        else:
+            target_skills_raw = target_payload.get("skills") or target_payload.get("required_skills") or []
+            result_skills_raw = result.get("skills") or result.get("required_skills") or []
+
+        if not isinstance(target_skills_raw, list):
+            target_skills_raw = []
+        if not isinstance(result_skills_raw, list):
+            result_skills_raw = []
+
+        target_skills = [str(s).strip() for s in target_skills_raw if s is not None and str(s).strip()]
+        result_skills = [str(s).strip() for s in result_skills_raw if s is not None and str(s).strip()]
+
+        target_vecs = []
+        for skill in target_skills:
+            vec = skill_vector_cache.lookup(skill)
+            if vec is not None:
+                target_vecs.append(vec)
+        result_vecs = []
+        for skill in result_skills:
+            vec = skill_vector_cache.lookup(skill)
+            if vec is not None:
+                result_vecs.append(vec)
+
+        if not target_vecs or not result_vecs:
+            return None
+
+        try:
+            T = np.asarray(target_vecs, dtype=np.float32)
+            R = np.asarray(result_vecs, dtype=np.float32)
+            T_norms = np.linalg.norm(T, axis=1, keepdims=True)
+            R_norms = np.linalg.norm(R, axis=1, keepdims=True)
+            T_norms = np.where(T_norms == 0, 1, T_norms)
+            R_norms = np.where(R_norms == 0, 1, R_norms)
+            T_unit = T / T_norms
+            R_unit = R / R_norms
+            cos_matrix = np.dot(T_unit, R_unit.T)
+            cand_recall = float(np.mean(np.max(cos_matrix, axis=1)))
+            job_recall = float(np.mean(np.max(cos_matrix, axis=0)))
+            denom = cand_recall + job_recall
+            if denom == 0:
+                return 0.0
+            return float(2 * cand_recall * job_recall / denom)
+        except Exception:
+            return None
 
     @staticmethod
     def _canonicalize_level(level: str) -> str:
@@ -297,24 +350,23 @@ class RecommendationService:
                 )
 
                 # --- gates (cold-start: SKILL + LEVEL only, no RAW) ---
-                # skill gate (semantic — cosine of skills_vector payloads)
                 target_vec = target_payload.get("skills_vector")
                 result_vec = result.get("skills_vector")
                 target_has_vec = target_vec is not None
                 result_has_vec = result_vec is not None
-                skill_cosine = self._skill_cosine(target_vec, result_vec)
-
-                if target_has_vec and result_has_vec:
-                    if skill_cosine < settings.SKILL_COSINE_GATE:
+                ps = self._per_skill_score(target_payload, result, search_collection)
+                if ps is not None:
+                    if ps < settings.SKILL_PER_SKILL_GATE:
+                        skill_gated += 1
+                        logger.debug("SKILL_GATE drop", per_skill_score=ps, target_id=target_id, result_id=result_id, gate=settings.SKILL_PER_SKILL_GATE)
+                        continue
+                else:
+                    skill_cosine = self._skill_cosine(target_vec, result_vec)
+                    if target_has_vec and result_has_vec and skill_cosine < settings.SKILL_COSINE_GATE:
                         skill_gated += 1
                         logger.debug("SKILL_GATE drop", raw_cosine=vector_score, skill_cosine=skill_cosine, target_id=target_id, result_id=result_id)
                         continue
-                elif target_has_vec ^ result_has_vec:
                     extraction_degraded += 1
-                    logger.debug("extraction_degraded", reason="one_side_missing_skills_vector", target_id=target_id, result_id=result_id)
-                elif not target_has_vec and not result_has_vec:
-                    extraction_degraded += 1
-                    logger.debug("extraction_degraded", reason="both_missing_skills_vector", target_id=target_id, result_id=result_id)
 
                 # level gate
                 target_level_raw = target_payload.get("experience_level", "") or ""
@@ -477,23 +529,24 @@ class RecommendationService:
                 logger.debug("RAW_GATE drop", target_id=target_id, result_id=result.get("_point_id"), raw_cosine=vector_score, gate=settings.RAW_COSINE_GATE)
                 continue
 
-            # --- SKILL gate (three-state, semantic) ---
+            # --- SKILL gate (three-state, per-skill F1 + fallback) ---
             target_vec = target_payload.get("skills_vector")
             result_vec = result.get("skills_vector")
             target_has_vec = target_vec is not None
             result_has_vec = result_vec is not None
-            skill_cosine = self._skill_cosine(target_vec, result_vec)
-            if target_has_vec and result_has_vec:
-                if skill_cosine < settings.SKILL_COSINE_GATE:
+            ps = self._per_skill_score(target_payload, result, search_collection)
+            if ps is not None:
+                if ps < settings.SKILL_PER_SKILL_GATE:
+                    skill_gated += 1
+                    logger.debug("SKILL_GATE drop", per_skill_score=ps, target_id=target_id, result_id=result.get("_point_id"), gate=settings.SKILL_PER_SKILL_GATE)
+                    continue
+            else:
+                skill_cosine = self._skill_cosine(target_vec, result_vec)
+                if target_has_vec and result_has_vec and skill_cosine < settings.SKILL_COSINE_GATE:
                     skill_gated += 1
                     logger.debug("SKILL_GATE drop", raw_cosine=vector_score, skill_cosine=skill_cosine, target_id=target_id, result_id=result.get("_point_id"))
                     continue
-            elif target_has_vec ^ result_has_vec:
                 extraction_degraded += 1
-                logger.debug("extraction_degraded", reason="one_side_missing_skills_vector", target_id=target_id, result_id=result.get("_point_id"))
-            elif not target_has_vec and not result_has_vec:
-                extraction_degraded += 1
-                logger.debug("extraction_degraded", reason="both_missing_skills_vector", target_id=target_id, result_id=result.get("_point_id"))
 
             # --- LEVEL gate ---
             target_level_raw = target_payload.get("experience_level", "") or ""

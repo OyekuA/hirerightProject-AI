@@ -9,6 +9,7 @@ from typing import Callable, Awaitable, Optional, List, Tuple
 from app.clients.dependencies import CANDIDATES_COLLECTION, JOBS_COLLECTION
 from app.clients.llm import LLMClient, LLMUnavailableError
 from app.clients.qdrant import QdrantClient, MISSING
+from app.clients import skill_vector_cache
 from app.services.ingestion_store import IngestionStatusStore
 from app.utils.ingestion import fetch_and_parse_cv, truncate_to_prompt_cap, truncate_to_embed_cap
 from app.services.callback_client import CallbackClient
@@ -468,6 +469,10 @@ async def run_candidate_ingestion(
             validated_extraction.skills,
         )
         object.__setattr__(validated_extraction, "skills", merged_skills)
+        try:
+            await asyncio.to_thread(skill_vector_cache.warm, merged_skills, llm)
+        except Exception:
+            logger.warning("skill_vector_cache warm failed (candidate); degrading", candidate_id=candidate_id)
 
         embed_text = truncate_to_embed_cap(
             _build_candidate_embed_text(validated_profile, validated_extraction, raw_profile_summary)
@@ -550,6 +555,10 @@ async def run_job_ingestion(
             validated_extraction.required_skills,
         )
         object.__setattr__(validated_extraction, "required_skills", merged_required_skills)
+        try:
+            await asyncio.to_thread(skill_vector_cache.warm, merged_required_skills, llm)
+        except Exception:
+            logger.warning("skill_vector_cache warm failed (job); degrading", job_id=job_id)
 
         embed_text = truncate_to_embed_cap(
             _build_job_embed_text(validated_metadata, validated_extraction, raw_jd_summary)

@@ -255,6 +255,57 @@ async def lifespan(app: FastAPI):
     llm_client = get_llm_client()
     logger.info("LLM client ready")
 
+    try:
+        from app.clients import skill_vector_cache
+        from app.clients.dependencies import CANDIDATES_COLLECTION, JOBS_COLLECTION as _JOBS_COLLECTION
+        all_skills: list[str] = []
+        try:
+            next_offset = None
+            while True:
+                points, next_offset = qdrant_client._client.scroll(
+                    collection_name=CANDIDATES_COLLECTION,
+                    limit=500,
+                    with_payload=True,
+                    with_vectors=False,
+                    offset=next_offset,
+                )
+                for rec in points:
+                    payload = rec.payload or {}
+                    skills = payload.get("skills") or []
+                    if isinstance(skills, list):
+                        all_skills.extend([str(s) for s in skills if s and str(s).strip()])
+                if next_offset is None:
+                    break
+        except Exception as e:
+            logger.warning("Startup skill cache scroll candidates failed", error=str(e))
+        try:
+            next_offset = None
+            while True:
+                points, next_offset = qdrant_client._client.scroll(
+                    collection_name=_JOBS_COLLECTION,
+                    limit=500,
+                    with_payload=True,
+                    with_vectors=False,
+                    offset=next_offset,
+                )
+                for rec in points:
+                    payload = rec.payload or {}
+                    skills = payload.get("required_skills") or []
+                    if isinstance(skills, list):
+                        all_skills.extend([str(s) for s in skills if s and str(s).strip()])
+                if next_offset is None:
+                    break
+        except Exception as e:
+            logger.warning("Startup skill cache scroll jobs failed", error=str(e))
+        if all_skills:
+            try:
+                skill_vector_cache.warm(all_skills, llm_client)
+                logger.info("Skill vector cache warmed at startup", skill_count=len(set(all_skills)), cache_size=skill_vector_cache.cache_size())
+            except Exception as e:
+                logger.warning("Skill vector cache warm failed at startup", error=str(e))
+    except Exception as e:
+        logger.warning("Skill vector cache startup warm outer failure", error=str(e))
+
     store = get_ingestion_store()
     callback_client = get_callback_client()
     incomplete = store.get_all_incomplete()
