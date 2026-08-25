@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     RECOMMEND_WEIGHT_EMPLOYMENT: float = 0.02
     RAW_COSINE_GATE: float = 0.30
     SKILL_COSINE_GATE: float = 0.40
-    SKILL_PER_SKILL_GATE: float = 0.35
+    SKILL_PER_SKILL_GATE: float = 0.37
     RECOMMEND_SKILL_RESCALE_LO: float = 0.30
     RECOMMEND_SKILL_RESCALE_HI: float = 1.0
     LEVEL_GATE_DISTANCE: int = 4
